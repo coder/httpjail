@@ -220,7 +220,6 @@ pub async fn handle_http_request(
     }
 }
 
-
 async fn proxy_request(
     mut req: Request<Incoming>,
     full_url: &str,

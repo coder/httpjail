@@ -4,10 +4,14 @@ use anyhow::Result;
 pub trait Jail: Send + Sync {
     /// Setup jail for a specific session
     fn setup(&mut self, proxy_port: u16) -> Result<()>;
-    
+
     /// Execute a command within the jail with additional environment variables
-    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<std::process::ExitStatus>;
-    
+    fn execute(
+        &self,
+        command: &[String],
+        extra_env: &[(String, String)],
+    ) -> Result<std::process::ExitStatus>;
+
     /// Cleanup jail resources
     fn cleanup(&self) -> Result<()>;
 }
@@ -17,13 +21,13 @@ pub trait Jail: Send + Sync {
 pub struct JailConfig {
     /// Port where the HTTP proxy is listening
     pub http_proxy_port: u16,
-    
+
     /// Port for HTTPS proxy
     pub https_proxy_port: u16,
-    
+
     /// Whether to use TLS interception
     pub tls_intercept: bool,
-    
+
     /// Name/identifier for this jail instance
     pub jail_name: String,
 }
@@ -56,20 +60,20 @@ pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>>
         use self::weak::WeakJail;
         return Ok(Box::new(WeakJail::new(config)?));
     }
-    
+
     // Otherwise use platform-specific implementation
     #[cfg(target_os = "macos")]
     {
         use self::macos::MacOSJail;
         Ok(Box::new(MacOSJail::new(config)?))
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         use self::linux::LinuxJail;
         Ok(Box::new(LinuxJail::new(config)?))
     }
-    
+
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         anyhow::bail!("Unsupported platform")

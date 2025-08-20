@@ -28,14 +28,18 @@ impl Jail for LinuxJail {
         info!("Linux jail setup for proxy port {} (stub)", proxy_port);
         anyhow::bail!("Linux jail setup not yet implemented")
     }
-    
+
     fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
         // TODO: Execute command in network namespace
         // Use `ip netns exec` or direct namespace switching
-        info!("Linux jail execute command {:?} with {} extra env vars (stub)", command, extra_env.len());
+        info!(
+            "Linux jail execute command {:?} with {} extra env vars (stub)",
+            command,
+            extra_env.len()
+        );
         anyhow::bail!("Linux jail execution not yet implemented")
     }
-    
+
     fn cleanup(&self) -> Result<()> {
         // TODO: Clean up network namespace and iptables rules
         info!("Linux jail cleanup (stub)");

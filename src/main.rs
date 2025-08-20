@@ -46,7 +46,7 @@ struct Args {
     /// Interactive approval mode
     #[arg(long = "interactive")]
     interactive: bool,
-    
+
     /// Use weak mode (environment variables only, no system isolation)
     #[arg(long = "weak")]
     weak: bool,
@@ -76,25 +76,31 @@ fn setup_logging(verbosity: u8) {
 
 fn parse_rule(rule_str: &str) -> Result<Rule> {
     use hyper::Method;
-    
+
     // Split on the first colon to separate action from pattern
     let parts: Vec<&str> = rule_str.splitn(2, ':').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Invalid rule format: '{}'. Expected 'action[-method]: pattern'", rule_str);
+        anyhow::bail!(
+            "Invalid rule format: '{}'. Expected 'action[-method]: pattern'",
+            rule_str
+        );
     }
-    
+
     let action_part = parts[0].trim();
     let pattern = parts[1].trim();
-    
+
     // Parse action and optional method
     let (action, method) = if action_part.contains('-') {
         let action_parts: Vec<&str> = action_part.splitn(2, '-').collect();
         let action = match action_parts[0] {
             "allow" => Action::Allow,
             "deny" => Action::Deny,
-            _ => anyhow::bail!("Invalid action: '{}'. Expected 'allow' or 'deny'", action_parts[0]),
+            _ => anyhow::bail!(
+                "Invalid action: '{}'. Expected 'allow' or 'deny'",
+                action_parts[0]
+            ),
         };
-        
+
         let method = match action_parts[1].to_lowercase().as_str() {
             "get" => Some(Method::GET),
             "post" => Some(Method::POST),
@@ -107,17 +113,20 @@ fn parse_rule(rule_str: &str) -> Result<Rule> {
             "patch" => Some(Method::PATCH),
             _ => anyhow::bail!("Invalid method: '{}'", action_parts[1]),
         };
-        
+
         (action, method)
     } else {
         let action = match action_part {
             "allow" => Action::Allow,
             "deny" => Action::Deny,
-            _ => anyhow::bail!("Invalid action: '{}'. Expected 'allow' or 'deny'", action_part),
+            _ => anyhow::bail!(
+                "Invalid action: '{}'. Expected 'allow' or 'deny'",
+                action_part
+            ),
         };
         (action, None)
     };
-    
+
     // Create rule with optional method restriction
     let rule = Rule::new(action, pattern)?;
     Ok(if let Some(method) = method {
@@ -129,18 +138,18 @@ fn parse_rule(rule_str: &str) -> Result<Rule> {
 
 fn build_rules(args: &Args) -> Result<Vec<Rule>> {
     let mut rules = Vec::new();
-    
+
     // Parse rules in the exact order specified
     for rule_str in &args.rules {
         rules.push(parse_rule(rule_str)?);
     }
-    
+
     // If no rules specified, default to allow all (for testing)
     if rules.is_empty() {
         info!("No rules specified, defaulting to allow all");
         rules.push(Rule::new(Action::Allow, ".*")?);
     }
-    
+
     Ok(rules)
 }
 
@@ -160,7 +169,7 @@ async fn main() -> Result<()> {
     let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
         .ok()
         .and_then(|s| s.parse::<u16>().ok());
-    
+
     let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
         .ok()
         .and_then(|s| s.parse::<u16>().ok());
@@ -168,10 +177,12 @@ async fn main() -> Result<()> {
     // Start the proxy server
     let mut proxy = ProxyServer::new(http_port, https_port, rule_engine.clone());
     let (actual_http_port, actual_https_port) = proxy.start().await?;
-    
-    info!("Proxy server started on ports {} (HTTP) and {} (HTTPS)", 
-         actual_http_port, actual_https_port);
-    
+
+    info!(
+        "Proxy server started on ports {} (HTTP) and {} (HTTPS)",
+        actual_http_port, actual_https_port
+    );
+
     // Create jail configuration with actual bound ports
     let jail_config = JailConfig {
         http_proxy_port: actual_http_port,
@@ -188,19 +199,25 @@ async fn main() -> Result<()> {
 
     // Set up CA certificate environment variables for common tools
     let mut extra_env = Vec::new();
-    
+
     if !args.no_tls_intercept {
         match tls::CertificateManager::get_ca_env_vars() {
             Ok(ca_env_vars) => {
-                debug!("Setting {} CA certificate environment variables", ca_env_vars.len());
+                debug!(
+                    "Setting {} CA certificate environment variables",
+                    ca_env_vars.len()
+                );
                 extra_env = ca_env_vars;
             }
             Err(e) => {
-                warn!("Failed to set up CA certificate environment variables: {}", e);
+                warn!(
+                    "Failed to set up CA certificate environment variables: {}",
+                    e
+                );
             }
         }
     }
-    
+
     // Execute command in jail with extra environment variables
     let status = jail.execute(&args.command, &extra_env)?;
 

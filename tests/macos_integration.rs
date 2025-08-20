@@ -13,7 +13,9 @@ mod tests {
     fn skip_if_not_root() {
         if !check_root() {
             eprintln!("\n⚠️  Test requires root privileges.");
-            eprintln!("   Run the entire test suite with: sudo cargo test --test macos_integration -- --ignored");
+            eprintln!(
+                "   Run the entire test suite with: sudo cargo test --test macos_integration -- --ignored"
+            );
             eprintln!("   or run httpjail tests directly: sudo $(which cargo) test\n");
             panic!("Test skipped: requires root privileges");
         }
@@ -32,7 +34,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_allows_matching_requests() {
         skip_if_not_root();
-        
+
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
             .arg("allow: httpbin\\.org")
@@ -45,9 +47,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -63,7 +63,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_denies_non_matching_requests() {
         skip_if_not_root();
-        
+
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
             .arg("allow: httpbin\\.org")
@@ -76,9 +76,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://example.com");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         // Should get 403 Forbidden from our proxy
@@ -92,7 +90,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_method_specific_rules() {
         skip_if_not_root();
-        
+
         // Test 1: Allow GET to httpbin
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
@@ -108,9 +106,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -134,9 +130,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/post");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(stdout.trim(), "403", "POST request should be denied");
@@ -147,7 +141,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_log_only_mode() {
         skip_if_not_root();
-        
+
         let mut cmd = httpjail_cmd();
         cmd.arg("--log-only")
             .arg("--")
@@ -159,9 +153,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://example.com");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -169,7 +161,11 @@ mod tests {
             eprintln!("stderr: {}", stderr);
         }
         // In log-only mode, all requests should be allowed
-        assert_eq!(stdout.trim(), "200", "Request should be allowed in log-only mode");
+        assert_eq!(
+            stdout.trim(),
+            "200",
+            "Request should be allowed in log-only mode"
+        );
         assert!(output.status.success());
     }
 
@@ -178,11 +174,11 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_dry_run_mode() {
         skip_if_not_root();
-        
+
         let mut cmd = httpjail_cmd();
         cmd.arg("--dry-run")
             .arg("-r")
-            .arg("deny: .*")  // Deny everything
+            .arg("deny: .*") // Deny everything
             .arg("--")
             .arg("curl")
             .arg("-s")
@@ -192,9 +188,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -202,7 +196,11 @@ mod tests {
             eprintln!("stderr: {}", stderr);
         }
         // In dry-run mode, even deny rules should not block
-        assert_eq!(stdout.trim(), "200", "Request should be allowed in dry-run mode");
+        assert_eq!(
+            stdout.trim(),
+            "200",
+            "Request should be allowed in dry-run mode"
+        );
         assert!(output.status.success());
     }
 
@@ -210,9 +208,8 @@ mod tests {
     fn test_jail_requires_command() {
         // This test doesn't require root
         let mut cmd = httpjail_cmd();
-        cmd.arg("-r")
-            .arg("allow: .*");
-        
+        cmd.arg("-r").arg("allow: .*");
+
         cmd.assert()
             .failure()
             .stderr(predicate::str::contains("required but not provided"));
@@ -223,7 +220,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_exit_code_propagation() {
         skip_if_not_root();
-        
+
         // Test that httpjail propagates the exit code of the child process
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
@@ -233,11 +230,13 @@ mod tests {
             .arg("-c")
             .arg("exit 42");
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
-        assert_eq!(output.status.code(), Some(42), "Exit code should be propagated");
+        assert_eq!(
+            output.status.code(),
+            Some(42),
+            "Exit code should be propagated"
+        );
     }
 
     #[test]
@@ -245,7 +244,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_https_connect_allowed() {
         skip_if_not_root();
-        
+
         // Test that CONNECT requests to allowed domains succeed
         // Note: Full TLS interception is not yet implemented, so we just test CONNECT
         let mut cmd = httpjail_cmd();
@@ -256,19 +255,20 @@ mod tests {
             .arg("-v")
             .arg("--connect-timeout")
             .arg("2")
-            .arg("-I")  // HEAD request only
-            .arg("https://example.com");  // HTTPS URL
+            .arg("-I") // HEAD request only
+            .arg("https://example.com"); // HTTPS URL
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         eprintln!("HTTPS CONNECT test stderr: {}", stderr);
-        
+
         // Should see successful CONNECT response even if TLS fails after
-        assert!(stderr.contains("< HTTP/1.1 200"), "CONNECT should be allowed for example.com");
+        assert!(
+            stderr.contains("< HTTP/1.1 200"),
+            "CONNECT should be allowed for example.com"
+        );
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_https_connect_denied() {
         skip_if_not_root();
-        
+
         // Test that CONNECT requests to denied domains are blocked
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
@@ -288,18 +288,19 @@ mod tests {
             .arg("-v")
             .arg("--connect-timeout")
             .arg("2")
-            .arg("-I")  // HEAD request only
-            .arg("https://example.com");  // HTTPS URL that should be denied
+            .arg("-I") // HEAD request only
+            .arg("https://example.com"); // HTTPS URL that should be denied
 
-        let output = cmd
-            .output()
-            .expect("Failed to execute httpjail");
+        let output = cmd.output().expect("Failed to execute httpjail");
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        
+
         eprintln!("HTTPS denied test stderr: {}", stderr);
-        
+
         // Should see 403 Forbidden response to CONNECT
-        assert!(stderr.contains("< HTTP/1.1 403"), "CONNECT should be denied for example.com");
+        assert!(
+            stderr.contains("< HTTP/1.1 403"),
+            "CONNECT should be denied for example.com"
+        );
     }
 }

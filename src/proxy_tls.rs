@@ -12,10 +12,10 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::ServerConfig;
 use std::sync::Arc;
-use tls_parser::{parse_tls_plaintext, TlsMessage};
+use tls_parser::{TlsMessage, parse_tls_plaintext};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
@@ -37,7 +37,7 @@ pub async fn handle_https_connection(
     cert_manager: Arc<CertificateManager>,
 ) -> Result<()> {
     debug!("Handling new HTTPS connection");
-    
+
     // Peek at the first few bytes to determine if this is HTTP or TLS
     let mut peek_buf = [0; 6];
     let n = match timeout(PROTOCOL_DETECT_TIMEOUT, stream.peek(&mut peek_buf)).await {
@@ -51,12 +51,12 @@ pub async fn handle_https_connection(
             return Ok(());
         }
     };
-    
+
     if n == 0 {
         debug!("Connection closed before protocol detection");
         return Ok(());
     }
-    
+
     // Check if this looks like a TLS ClientHello (starts with 0x16 for TLS handshake)
     // or an HTTP request (starts with ASCII text like "CONNECT", "GET", etc.)
     if peek_buf[0] == 0x16 && n > 1 && (peek_buf[1] == 0x03 || peek_buf[1] == 0x02) {
@@ -76,7 +76,10 @@ pub async fn handle_https_connection(
             handle_plain_http(stream, rule_engine, cert_manager).await
         }
     } else {
-        warn!("Unknown protocol on HTTPS port, first byte: 0x{:02x}", peek_buf[0]);
+        warn!(
+            "Unknown protocol on HTTPS port, first byte: 0x{:02x}",
+            peek_buf[0]
+        );
         Ok(())
     }
 }
@@ -86,7 +89,7 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
     // Read enough bytes to parse the ClientHello
     // TLS record header is 5 bytes, ClientHello can be quite large
     let mut buf = vec![0u8; 2048];
-    
+
     let n = match timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await {
         Ok(Ok(n)) => n,
         Ok(Err(e)) => {
@@ -98,12 +101,12 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
             return Ok(None);
         }
     };
-    
+
     if n < 5 {
         debug!("Not enough data for TLS record header");
         return Ok(None);
     }
-    
+
     // Parse the TLS plaintext record
     match parse_tls_plaintext(&buf[..n]) {
         Ok((_, record)) => {
@@ -138,7 +141,7 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
             debug!("Failed to parse TLS record: {:?}", e);
         }
     }
-    
+
     Ok(None)
 }
 
@@ -149,7 +152,7 @@ async fn handle_transparent_tls(
     cert_manager: Arc<CertificateManager>,
 ) -> Result<()> {
     debug!("Handling transparent TLS connection");
-    
+
     // Extract SNI from the ClientHello
     let hostname = match extract_sni_from_stream(&mut stream).await? {
         Some(sni) => {
@@ -162,7 +165,7 @@ async fn handle_transparent_tls(
             default
         }
     };
-    
+
     // Check if this host is allowed
     let full_url = format!("https://{}", hostname);
     match rule_engine.evaluate(Method::GET, &full_url) {
@@ -175,19 +178,20 @@ async fn handle_transparent_tls(
             return Ok(());
         }
     }
-    
+
     // Get certificate for the host
-    let (cert_chain, key) = cert_manager.get_cert_for_host(&hostname)
+    let (cert_chain, key) = cert_manager
+        .get_cert_for_host(&hostname)
         .map_err(|e| anyhow::anyhow!("Failed to get certificate for {}: {}", hostname, e))?;
-    
+
     // Create TLS config with our certificate
     let tls_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, key)
         .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
-    
+
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
-    
+
     // Perform TLS handshake
     debug!("Accepting TLS connection for transparent proxy");
     let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
@@ -201,23 +205,23 @@ async fn handle_transparent_tls(
             return Err(anyhow::anyhow!("TLS handshake timeout"));
         }
     };
-    
+
     debug!("TLS handshake complete for transparent proxy");
-    
+
     // Now handle the decrypted HTTPS requests
     let io = TokioIo::new(tls_stream);
     let service = service_fn(move |req| {
         let host_clone = hostname.clone();
         handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
     });
-    
+
     debug!("Starting HTTP/1.1 server for decrypted requests");
     http1::Builder::new()
         .preserve_header_case(true)
         .title_case_headers(false)
         .serve_connection(io, service)
         .await?;
-    
+
     Ok(())
 }
 
@@ -228,11 +232,11 @@ async fn handle_connect_tunnel(
     cert_manager: Arc<CertificateManager>,
 ) -> Result<()> {
     debug!("Handling CONNECT tunnel");
-    
+
     // Buffer the stream for reading lines
     let mut reader = BufReader::new(stream);
     let mut first_line = String::new();
-    
+
     // Read the first line to get the CONNECT request
     let read_result = timeout(CONNECT_READ_TIMEOUT, reader.read_line(&mut first_line)).await;
     match read_result {
@@ -240,7 +244,7 @@ async fn handle_connect_tunnel(
             debug!("Connection closed before CONNECT request");
             return Ok(());
         }
-        Ok(Ok(_)) => {},
+        Ok(Ok(_)) => {}
         Ok(Err(e)) => {
             debug!("Failed to read CONNECT request: {}", e);
             return Ok(());
@@ -250,24 +254,24 @@ async fn handle_connect_tunnel(
             return Ok(());
         }
     }
-    
+
     debug!("CONNECT line: {}", first_line.trim());
-    
+
     // Parse the CONNECT target
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
         return Ok(());
     }
-    
+
     let target = parts[1];
     let host = if target.contains(':') {
         target.split(':').next().unwrap_or("unknown")
     } else {
         target
     };
-    
+
     info!("CONNECT request for: {}", target);
-    
+
     // Read the rest of the headers until we find the empty line
     let mut headers = vec![first_line.clone()];
     let start_time = tokio::time::Instant::now();
@@ -277,7 +281,7 @@ async fn handle_connect_tunnel(
             warn!("Timeout reading CONNECT headers");
             return Ok(());
         }
-        
+
         let mut line = String::new();
         let remaining_time = CONNECT_READ_TIMEOUT.saturating_sub(start_time.elapsed());
         match timeout(remaining_time, reader.read_line(&mut line)).await {
@@ -298,23 +302,25 @@ async fn handle_connect_tunnel(
             }
         }
     }
-    
+
     // Check if this host is allowed
     let full_url = format!("https://{}", target);
     match rule_engine.evaluate(Method::GET, &full_url) {
         Action::Allow => {
             debug!("CONNECT allowed to: {}", host);
-            
+
             // Get the underlying stream back
             let mut stream = reader.into_inner();
-            
+
             // Send 200 Connection Established response
             let response = b"HTTP/1.1 200 Connection Established\r\n\r\n";
             match timeout(WRITE_TIMEOUT, async {
                 stream.write_all(response).await?;
                 stream.flush().await
-            }).await {
-                Ok(Ok(_)) => {},
+            })
+            .await
+            {
+                Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
                     error!("Failed to write CONNECT response: {}", e);
                     return Err(e.into());
@@ -324,25 +330,27 @@ async fn handle_connect_tunnel(
                     return Err(anyhow::anyhow!("Timeout writing CONNECT response"));
                 }
             }
-            
+
             debug!("Sent 200 Connection Established, starting TLS handshake");
-            
+
             // Now perform TLS handshake with the client
             perform_tls_interception(stream, rule_engine, cert_manager, host).await
         }
         Action::Deny => {
             warn!("CONNECT denied to: {}", host);
-            
+
             // Get the underlying stream back
             let mut stream = reader.into_inner();
-            
+
             // Send 403 Forbidden response
             let response = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 28\r\n\r\nConnection blocked by httpjail";
             match timeout(WRITE_TIMEOUT, async {
                 stream.write_all(response).await?;
                 stream.flush().await
-            }).await {
-                Ok(Ok(_)) => {},
+            })
+            .await
+            {
+                Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
                     debug!("Failed to write 403 response: {}", e);
                 }
@@ -363,17 +371,18 @@ async fn perform_tls_interception(
     host: &str,
 ) -> Result<()> {
     // Get certificate for the host
-    let (cert_chain, key) = cert_manager.get_cert_for_host(host)
+    let (cert_chain, key) = cert_manager
+        .get_cert_for_host(host)
         .map_err(|e| anyhow::anyhow!("Failed to get certificate for {}: {}", host, e))?;
-    
+
     // Create TLS config with our certificate
     let tls_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, key)
         .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
-    
+
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
-    
+
     // Perform TLS handshake
     debug!("Accepting TLS connection for {}", host);
     let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
@@ -387,9 +396,9 @@ async fn perform_tls_interception(
             return Err(anyhow::anyhow!("TLS handshake timeout"));
         }
     };
-    
+
     debug!("TLS handshake complete for {}", host);
-    
+
     // Now handle the decrypted HTTPS requests
     let io = TokioIo::new(tls_stream);
     let host_string = host.to_string();
@@ -397,14 +406,14 @@ async fn perform_tls_interception(
         let host_clone = host_string.clone();
         handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
     });
-    
+
     debug!("Starting HTTP/1.1 server for decrypted requests");
     http1::Builder::new()
         .preserve_header_case(true)
         .title_case_headers(false)
         .serve_connection(io, service)
         .await?;
-    
+
     Ok(())
 }
 
@@ -415,18 +424,18 @@ async fn handle_plain_http(
     cert_manager: Arc<CertificateManager>,
 ) -> Result<()> {
     debug!("Handling plain HTTP on HTTPS port");
-    
+
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| {
         crate::proxy::handle_http_request(req, Arc::clone(&rule_engine), Arc::clone(&cert_manager))
     });
-    
+
     http1::Builder::new()
         .preserve_header_case(true)
         .title_case_headers(false)
         .serve_connection(io, service)
         .await?;
-    
+
     Ok(())
 }
 
@@ -438,13 +447,13 @@ async fn handle_decrypted_https_request(
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
-    
+
     // Build the full URL for rule evaluation
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let full_url = format!("https://{}{}", host, path);
-    
+
     info!("Proxying HTTPS request: {} {}", method, full_url);
-    
+
     // Evaluate rules with method
     match rule_engine.evaluate(method.clone(), &full_url) {
         Action::Allow => {
@@ -459,7 +468,10 @@ async fn handle_decrypted_https_request(
         }
         Action::Deny => {
             warn!("Request denied: {}", full_url);
-            crate::proxy::create_error_response(StatusCode::FORBIDDEN, "Request blocked by httpjail")
+            crate::proxy::create_error_response(
+                StatusCode::FORBIDDEN,
+                "Request blocked by httpjail",
+            )
         }
     }
 }
@@ -470,17 +482,19 @@ async fn proxy_https_request(
     host: &str,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
-    let path = req.uri().path_and_query()
+    let path = req
+        .uri()
+        .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
     let target_url = format!("https://{}{}", host, path);
     let target_uri = target_url.parse::<Uri>()?;
-    
+
     debug!("Forwarding request to: {}", target_url);
-    
+
     // Update the request URI to the target
     *req.uri_mut() = target_uri;
-    
+
     // Remove hop-by-hop headers
     req.headers_mut().remove("proxy-connection");
     req.headers_mut().remove("connection");
@@ -491,17 +505,16 @@ async fn proxy_https_request(
     req.headers_mut().remove("proxy-authorization");
     req.headers_mut().remove("proxy-authenticate");
     req.headers_mut().remove("upgrade");
-    
+
     // Create HTTPS client with TLS
     let https = HttpsConnectorBuilder::new()
         .with_native_roots()?
         .https_only()
         .enable_http1()
         .build();
-    
-    let client = Client::builder(TokioExecutor::new())
-        .build(https);
-    
+
+    let client = Client::builder(TokioExecutor::new()).build(https);
+
     // Forward the request and stream the response
     debug!("Sending request to upstream server");
     let resp = match client.request(req).await {
@@ -511,13 +524,16 @@ async fn proxy_https_request(
             return Err(e.into());
         }
     };
-    
-    debug!("Received response from upstream server: {:?}", resp.status());
-    
+
+    debug!(
+        "Received response from upstream server: {:?}",
+        resp.status()
+    );
+
     // Convert the response body to BoxBody for uniform type
     let (parts, body) = resp.into_parts();
     let boxed_body = body.boxed();
-    
+
     Ok(Response::from_parts(parts, boxed_body))
 }
 
@@ -530,7 +546,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_rustls::{TlsConnector, TlsAcceptor};
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
 
     async fn create_test_cert_manager() -> Arc<CertificateManager> {
         let temp_dir = TempDir::new().unwrap();
@@ -557,7 +573,7 @@ mod tests {
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
             .with_no_client_auth();
-        
+
         config.alpn_protocols = vec![];
         Arc::new(config)
     }
@@ -616,30 +632,34 @@ mod tests {
         // Start a test proxy server
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let cert_manager = create_test_cert_manager().await;
         let rule_engine = create_test_rule_engine(false); // Allow only example.com
-        
+
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let _ = handle_connect_tunnel(stream, rule_engine, cert_manager).await;
         });
-        
+
         // Connect to proxy
         let mut stream = TcpStream::connect(addr).await.unwrap();
-        
+
         // Send CONNECT request for allowed host
         let connect_request = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
         stream.write_all(connect_request.as_bytes()).await.unwrap();
-        
+
         // Read response
         let mut buf = vec![0; 1024];
         let n = stream.read(&mut buf).await.unwrap();
         let response = String::from_utf8_lossy(&buf[..n]);
-        
+
         // Should get 200 Connection Established
-        assert!(response.contains("200 Connection Established"), "Response: {}", response);
+        assert!(
+            response.contains("200 Connection Established"),
+            "Response: {}",
+            response
+        );
     }
 
     #[tokio::test]
@@ -647,31 +667,36 @@ mod tests {
         // Start a test proxy server
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let cert_manager = create_test_cert_manager().await;
         let rule_engine = create_test_rule_engine(false); // Allow only example.com
-        
+
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let _ = handle_connect_tunnel(stream, rule_engine, cert_manager).await;
         });
-        
+
         // Connect to proxy
         let mut stream = TcpStream::connect(addr).await.unwrap();
-        
+
         // Send CONNECT request for denied host
-        let connect_request = "CONNECT malicious.com:443 HTTP/1.1\r\nHost: malicious.com:443\r\n\r\n";
+        let connect_request =
+            "CONNECT malicious.com:443 HTTP/1.1\r\nHost: malicious.com:443\r\n\r\n";
         stream.write_all(connect_request.as_bytes()).await.unwrap();
-        
+
         // Read response
         let mut buf = vec![0; 1024];
         let n = stream.read(&mut buf).await.unwrap();
         let response = String::from_utf8_lossy(&buf[..n]);
-        
+
         // Should get 403 Forbidden
         assert!(response.contains("403 Forbidden"), "Response: {}", response);
-        assert!(response.contains("blocked by httpjail"), "Response: {}", response);
+        assert!(
+            response.contains("blocked by httpjail"),
+            "Response: {}",
+            response
+        );
     }
 
     #[tokio::test]
@@ -679,30 +704,31 @@ mod tests {
         // Start a test proxy server
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let cert_manager = create_test_cert_manager().await;
         let rule_engine = create_test_rule_engine(true); // Allow all
-        
+
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let _ = handle_transparent_tls(stream, rule_engine, cert_manager).await;
         });
-        
+
         // Connect to proxy with TLS directly (transparent mode)
         let stream = TcpStream::connect(addr).await.unwrap();
-        
+
         // Create TLS connector with insecure config
         let tls_config = create_insecure_tls_config();
         let connector = TlsConnector::from(tls_config);
-        
+
         // Perform TLS handshake with SNI
         let server_name = rustls::pki_types::ServerName::try_from("example.com").unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            connector.connect(server_name, stream)
-        ).await;
-        
+            connector.connect(server_name, stream),
+        )
+        .await;
+
         // Should succeed (timeout means handshake succeeded but no HTTP handler after)
         assert!(result.is_ok() || result.is_err()); // Either handshake succeeds or times out waiting for response
     }
@@ -711,31 +737,32 @@ mod tests {
     async fn test_extract_sni_from_client_hello() {
         // This test verifies that SNI extraction from a TLS ClientHello works correctly
         // We'll create a simple test by starting a listener and sending a TLS ClientHello
-        
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         // Spawn a task to accept the connection and extract SNI
         let handle = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             extract_sni_from_stream(&mut stream).await
         });
-        
+
         // Connect and send a TLS ClientHello with SNI
         let stream = TcpStream::connect(addr).await.unwrap();
         let tls_config = create_insecure_tls_config();
         let connector = TlsConnector::from(tls_config);
-        
+
         // Try to connect with TLS (this will send a ClientHello with SNI)
         let server_name = rustls::pki_types::ServerName::try_from("test.example.com").unwrap();
         let _ = tokio::time::timeout(
             Duration::from_millis(100),
-            connector.connect(server_name, stream)
-        ).await;
-        
+            connector.connect(server_name, stream),
+        )
+        .await;
+
         // Get the SNI result from the server side
         let sni_result = tokio::time::timeout(Duration::from_millis(100), handle).await;
-        
+
         // The test passes if we can extract SNI or if the connection fails quickly
         // (since we're not completing the handshake)
         assert!(sni_result.is_ok() || sni_result.is_err());
@@ -746,10 +773,10 @@ mod tests {
         // Test that the proxy correctly detects CONNECT vs direct TLS
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let cert_manager = create_test_cert_manager().await;
         let rule_engine = create_test_rule_engine(true);
-        
+
         // Test CONNECT detection
         {
             let cert_manager = cert_manager.clone();
@@ -758,10 +785,13 @@ mod tests {
                 let (stream, _) = listener.accept().await.unwrap();
                 let _ = handle_https_connection(stream, rule_engine, cert_manager).await;
             });
-            
+
             let mut stream = TcpStream::connect(addr).await.unwrap();
-            stream.write_all(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n").await.unwrap();
-            
+            stream
+                .write_all(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+
             let mut buf = vec![0; 256];
             let n = stream.read(&mut buf).await.unwrap();
             let response = String::from_utf8_lossy(&buf[..n]);
@@ -771,47 +801,47 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_client_through_transparent_proxy() {
+        use bytes::Bytes;
+        use http_body_util::Empty;
         use hyper_util::client::legacy::Client;
         use hyper_util::rt::TokioExecutor;
-        use http_body_util::Empty;
-        use bytes::Bytes;
-        
+
         // Start a transparent TLS proxy
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         let cert_manager = create_test_cert_manager().await;
         let rule_engine = create_test_rule_engine(true); // Allow all
-        
+
         // Start proxy handler
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             // Use the actual transparent TLS handler (which will extract SNI, etc.)
             let _ = handle_transparent_tls(stream, rule_engine, cert_manager).await;
         });
-        
+
         // Give the server time to start
         tokio::time::sleep(Duration::from_millis(100)).await;
-        
+
         // Create HTTPS client that accepts self-signed certificates
         let tls_config = create_insecure_tls_config();
         let mut http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
         http_connector.enforce_http(false);
-        
+
         let https_connector = hyper_rustls::HttpsConnector::from((http_connector, tls_config));
         let client = Client::builder(TokioExecutor::new()).build(https_connector);
-        
+
         // Make an HTTPS request directly to the proxy (transparent mode)
         let uri = format!("https://127.0.0.1:{}/test", addr.port())
             .parse::<hyper::Uri>()
             .unwrap();
-        
+
         let request = hyper::Request::builder()
             .method("GET")
             .uri(uri)
             .body(Empty::<Bytes>::new())
             .unwrap();
-        
+
         // The test passes if we can establish a TLS connection
         // (actual upstream may fail, but TLS interception should work)
         let result = tokio::time::timeout(Duration::from_secs(1), client.request(request)).await;

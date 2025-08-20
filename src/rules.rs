@@ -71,13 +71,23 @@ impl RuleEngine {
             if rule.matches(method.clone(), url) {
                 match &rule.action {
                     Action::Allow => {
-                        info!("ALLOW: {} {} (matched: {:?})", method, url, rule.pattern.as_str());
+                        info!(
+                            "ALLOW: {} {} (matched: {:?})",
+                            method,
+                            url,
+                            rule.pattern.as_str()
+                        );
                         if !self.dry_run {
                             return Action::Allow;
                         }
                     }
                     Action::Deny => {
-                        warn!("DENY: {} {} (matched: {:?})", method, url, rule.pattern.as_str());
+                        warn!(
+                            "DENY: {} {} (matched: {:?})",
+                            method,
+                            url,
+                            rule.pattern.as_str()
+                        );
                         if !self.dry_run {
                             return Action::Deny;
                         }
@@ -113,7 +123,7 @@ mod tests {
         let rule = Rule::new(Action::Allow, r"api\.example\.com")
             .unwrap()
             .with_methods(vec![Method::GET, Method::HEAD]);
-        
+
         assert!(rule.matches(Method::GET, "https://api.example.com/users"));
         assert!(rule.matches(Method::HEAD, "https://api.example.com/users"));
         assert!(!rule.matches(Method::POST, "https://api.example.com/users"));
@@ -131,13 +141,22 @@ mod tests {
         let engine = RuleEngine::new(rules, false, false);
 
         // Test allow rule
-        matches!(engine.evaluate(Method::GET, "https://github.com/api"), Action::Allow);
-        
+        matches!(
+            engine.evaluate(Method::GET, "https://github.com/api"),
+            Action::Allow
+        );
+
         // Test deny rule
-        matches!(engine.evaluate(Method::POST, "https://telemetry.example.com"), Action::Deny);
-        
+        matches!(
+            engine.evaluate(Method::POST, "https://telemetry.example.com"),
+            Action::Deny
+        );
+
         // Test default deny
-        matches!(engine.evaluate(Method::GET, "https://example.com"), Action::Deny);
+        matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Deny
+        );
     }
 
     #[test]
@@ -152,33 +171,41 @@ mod tests {
         let engine = RuleEngine::new(rules, false, false);
 
         // GET should be allowed
-        matches!(engine.evaluate(Method::GET, "https://api.example.com/data"), Action::Allow);
-        
+        matches!(
+            engine.evaluate(Method::GET, "https://api.example.com/data"),
+            Action::Allow
+        );
+
         // POST should be denied (doesn't match method filter)
-        matches!(engine.evaluate(Method::POST, "https://api.example.com/data"), Action::Deny);
+        matches!(
+            engine.evaluate(Method::POST, "https://api.example.com/data"),
+            Action::Deny
+        );
     }
 
     #[test]
     fn test_dry_run_mode() {
-        let rules = vec![
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
+        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
 
         let engine = RuleEngine::new(rules, true, false);
 
         // In dry-run mode, everything should be allowed
-        matches!(engine.evaluate(Method::GET, "https://example.com"), Action::Allow);
+        matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Allow
+        );
     }
 
     #[test]
     fn test_log_only_mode() {
-        let rules = vec![
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
+        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
 
         let engine = RuleEngine::new(rules, false, true);
 
         // In log-only mode, everything should be allowed
-        matches!(engine.evaluate(Method::POST, "https://example.com"), Action::Allow);
+        matches!(
+            engine.evaluate(Method::POST, "https://example.com"),
+            Action::Allow
+        );
     }
 }
