@@ -15,7 +15,7 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 
 ```bash
 # Allow only requests to github.com
-httpjail -r "allow: github\.com" -r "deny: .*" -- curl https://github.com
+httpjail -r "allow: github\.com" -r "deny: .*" -- claude
 
 # Monitor all requests without blocking
 httpjail --log-only -- npm install
@@ -276,3 +276,10 @@ EXAMPLES:
     httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
     httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
+
+## TODO
+
+- [ ] Update README to be more reflective of AI agent restrictions
+- [ ] Block all other TCP traffic by default (disabled via flag) (perhaps should be a rule?)
+- [ ] When ran under sudo should drop into original user before executing the command
+- [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command

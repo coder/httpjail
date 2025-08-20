@@ -224,16 +224,15 @@ async fn main() -> Result<()> {
 
     // Execute command in jail with extra environment variables
     let status = if let Some(timeout_secs) = args.timeout {
-        
         info!("Executing command with {}s timeout", timeout_secs);
-        
+
         // For timeout, we need to execute directly with a wrapper
         // Since we can't easily timeout the jail.execute call itself,
         // we'll pass the timeout to the jail implementation
         // For now, let's use the timeout command if available
         let mut timeout_cmd = vec!["timeout".to_string(), timeout_secs.to_string()];
         timeout_cmd.extend(args.command.clone());
-        
+
         match jail.execute(&timeout_cmd, &extra_env) {
             Ok(status) => {
                 if status.code() == Some(124) {
