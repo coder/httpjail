@@ -31,10 +31,18 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 
 // Shared HTTPS client for upstream requests
-static HTTPS_CLIENT: OnceLock<Client<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, BoxBody<Bytes, HyperError>>> = OnceLock::new();
+static HTTPS_CLIENT: OnceLock<
+    Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        BoxBody<Bytes, HyperError>,
+    >,
+> = OnceLock::new();
 
 /// Get or create the shared HTTPS client
-fn get_https_client() -> &'static Client<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, BoxBody<Bytes, HyperError>> {
+fn get_https_client() -> &'static Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    BoxBody<Bytes, HyperError>,
+> {
     HTTPS_CLIENT.get_or_init(|| {
         let https = HttpsConnectorBuilder::new()
             .with_native_roots()
@@ -516,10 +524,10 @@ async fn proxy_https_request(
 
     // Convert the incoming body to BoxBody for the client
     let (mut parts, incoming_body) = req.into_parts();
-    
+
     // Update the URI
     parts.uri = target_uri;
-    
+
     // Remove hop-by-hop headers
     parts.headers.remove("proxy-connection");
     parts.headers.remove("connection");
@@ -533,7 +541,7 @@ async fn proxy_https_request(
 
     // Convert incoming body to boxed body
     let boxed_request_body = incoming_body.boxed();
-    
+
     // Create new request with boxed body
     let new_req = Request::from_parts(parts, boxed_request_body);
 
@@ -547,15 +555,23 @@ async fn proxy_https_request(
         Ok(r) => {
             let elapsed = start.elapsed();
             if elapsed > Duration::from_secs(2) {
-                warn!("HTTPS request took {}ms: {}", elapsed.as_millis(), target_url);
+                warn!(
+                    "HTTPS request took {}ms: {}",
+                    elapsed.as_millis(),
+                    target_url
+                );
             } else {
                 debug!("HTTPS request completed in {}ms", elapsed.as_millis());
             }
             r
-        },
+        }
         Err(e) => {
             let elapsed = start.elapsed();
-            error!("Failed to forward HTTPS request after {}ms: {}", elapsed.as_millis(), e);
+            error!(
+                "Failed to forward HTTPS request after {}ms: {}",
+                elapsed.as_millis(),
+                e
+            );
             return Err(e.into());
         }
     };

@@ -65,17 +65,42 @@ struct Args {
 }
 
 fn setup_logging(verbosity: u8) {
-    let level = match verbosity {
-        0 => "error",
-        1 => "warn",
-        2 => "info",
-        3 => "debug",
-        _ => "trace",
-    };
+    use tracing_subscriber::fmt::time::FormatTime;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(format!("httpjail={}", level))
-        .init();
+    // Custom time format that only shows time, not date
+    struct TimeOnly;
+    impl FormatTime for TimeOnly {
+        fn format_time(
+            &self,
+            w: &mut tracing_subscriber::fmt::format::Writer<'_>,
+        ) -> std::fmt::Result {
+            let now = chrono::Local::now();
+            write!(w, "{}", now.format("%H:%M:%S%.3f"))
+        }
+    }
+
+    // Check if RUST_LOG is set
+    if std::env::var("RUST_LOG").is_ok() {
+        // Use RUST_LOG environment variable
+        tracing_subscriber::fmt()
+            .with_timer(TimeOnly)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    } else {
+        // Use verbosity flag
+        let level = match verbosity {
+            0 => "error",
+            1 => "warn",
+            2 => "info",
+            3 => "debug",
+            _ => "trace",
+        };
+
+        tracing_subscriber::fmt()
+            .with_timer(TimeOnly)
+            .with_env_filter(format!("httpjail={}", level))
+            .init();
+    }
 }
 
 fn parse_rule(rule_str: &str) -> Result<Rule> {

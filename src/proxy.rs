@@ -19,10 +19,13 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 // Shared HTTP client for upstream requests
-static HTTP_CLIENT: OnceLock<Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>>> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<
+    Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>>,
+> = OnceLock::new();
 
 /// Get or create the shared HTTP client
-fn get_http_client() -> &'static Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>> {
+fn get_http_client()
+-> &'static Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>> {
     HTTP_CLIENT.get_or_init(|| {
         Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(30))
@@ -211,7 +214,7 @@ pub async fn handle_http_request(
             .get("host")
             .and_then(|h| h.to_str().ok())
             .unwrap_or("unknown");
-        
+
         let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
         format!("http://{}{}", host, path)
     };
@@ -246,10 +249,10 @@ async fn proxy_request(
 
     // Convert the incoming body to BoxBody for the client
     let (mut parts, incoming_body) = req.into_parts();
-    
+
     // Update the URI
     parts.uri = target_uri;
-    
+
     // Remove hop-by-hop headers
     parts.headers.remove("proxy-connection");
     parts.headers.remove("connection");
@@ -263,7 +266,7 @@ async fn proxy_request(
 
     // Convert incoming body to boxed body
     let boxed_request_body = incoming_body.boxed();
-    
+
     // Create new request with boxed body
     let new_req = Request::from_parts(parts, boxed_request_body);
 
@@ -282,15 +285,22 @@ async fn proxy_request(
                 debug!("HTTP request completed in {}ms", elapsed.as_millis());
             }
             r
-        },
+        }
         Err(e) => {
             let elapsed = start.elapsed();
-            error!("Failed to forward HTTP request after {}ms: {}", elapsed.as_millis(), e);
+            error!(
+                "Failed to forward HTTP request after {}ms: {}",
+                elapsed.as_millis(),
+                e
+            );
             return Err(e.into());
         }
     };
 
-    debug!("Received HTTP response from upstream server: {:?}", resp.status());
+    debug!(
+        "Received HTTP response from upstream server: {:?}",
+        resp.status()
+    );
 
     // Convert the response body to BoxBody for uniform type
     let (parts, body) = resp.into_parts();
