@@ -38,7 +38,7 @@ httpjail creates an isolated network environment for the target process, interce
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                 httpjail Process                 │
+│                 httpjail Process                │
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
 │  2. Setup iptables rules                        │
