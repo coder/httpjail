@@ -61,30 +61,38 @@ httpjail creates an isolated network environment for the target process, interce
 ┌─────────────────────────────────────────────────┐
 │                 httpjail Process                 │
 ├─────────────────────────────────────────────────┤
-│  1. Configure pfctl packet filter               │
-│  2. Create sandbox-exec profile                 │
-│  3. Start embedded proxy                        │
-│  4. Add CA cert to Keychain                     │
-│  5. Execute target in sandbox                   │
+│  1. Start HTTP/HTTPS proxy servers              │
+│  2. Configure PF (Packet Filter) rules          │
+│  3. Create httpjail group (GID-based isolation) │
+│  4. Generate/load CA certificate                │
+│  5. Execute target with group membership        │
 └─────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────┐
 │              Target Process                     │
-│  • Running in sandbox-exec                      │
-│  • Traffic redirected via pfctl                 │
-│  • CA cert trusted in Keychain                  │
+│  • Running with httpjail GID                    │
+│  • TCP traffic redirected via PF rules          │
+│  • HTTP → port 8xxx, HTTPS → port 8xxx          │
+│  • CA cert via environment variables            │
 └─────────────────────────────────────────────────┘
 ```
 
+The macOS implementation uses PF (Packet Filter) for transparent TCP redirection:
+
+- Creates a dedicated `httpjail` group for process isolation
+- Uses PF rules to redirect TCP traffic from processes with the httpjail GID
+- HTTP traffic (port 80) → local proxy (port 8xxx)
+- HTTPS traffic (port 443) → local proxy (port 8xxx)
+- Supports both CONNECT tunneling and transparent TLS interception
+- CA certificate distributed via environment variables
+
 ## Platform Support
 
-| Feature             | Linux                 | macOS             | Windows       |
-| ------------------- | --------------------- | ----------------- | ------------- |
-| Process isolation   | ✅ Network namespaces | ✅ sandbox-exec   | 🚧 Planned    |
-| Traffic redirection | ✅ iptables           | ✅ pfctl          | 🚧 WFP        |
-| TLS interception    | ✅ CA injection       | ✅ Keychain       | 🚧 Cert store |
-| No-sudo mode        | ❌                    | ⚠️ Limited (DYLD) | 🚧            |
-| Performance         | ✅ Kernel-level       | ✅ Kernel-level   | -             |
+| Feature           | Linux                    | macOS               | Windows       | Weak Mode (All) |
+| ----------------- | ------------------------ | ------------------- | ------------- | --------------- |
+| Traffic isolation | ✅ Namespaces + iptables | ✅ GID + PF (pfctl) | 🚧 Planned    | ✅ Env vars     |
+| TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store | ✅ Env vars     |
+| Sudo required     | ⚠️ Yes                   | ⚠️ Yes              | 🚧            | ✅ No           |
 
 ## Installation
 
@@ -101,7 +109,8 @@ httpjail creates an isolated network environment for the target process, interce
 
 - macOS 10.15+ (Catalina or later)
 - pfctl (included in macOS)
-- sudo access (for pfctl rules)
+- sudo access (for PF rules and group creation)
+- coreutils (optional, for gtimeout support)
 
 ### Install from source
 
@@ -244,6 +253,7 @@ OPTIONS:
     --no-tls-intercept          Disable HTTPS interception
     --interactive               Interactive approval mode
     --weak                      Use weak mode (env vars only, no system isolation)
+    --timeout <SECONDS>         Timeout for command execution
     -v, --verbose               Increase verbosity (-vvv for max)
     -h, --help                  Print help
     -V, --version               Print version
@@ -251,13 +261,13 @@ OPTIONS:
 RULE FORMAT:
     Rules are specified with -r/--rule and use the format:
     "action[-method]: pattern"
-    
+
     Examples:
     -r "allow: github\.com"              # Allow all methods to github.com
     -r "allow-get: api\..*"              # Allow only GET requests to api.*
     -r "deny-post: telemetry\..*"        # Deny POST requests to telemetry.*
     -r "deny: .*"                        # Deny everything (usually last rule)
-    
+
     Rules are evaluated in the order specified.
 
 EXAMPLES:
@@ -266,16 +276,3 @@ EXAMPLES:
     httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
     httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup instructions
-- Testing guidelines
-- Code style requirements
-- Pull request process
-
-## License
-
-MIT License - see LICENSE file for details
-

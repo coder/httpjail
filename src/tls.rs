@@ -214,6 +214,7 @@ impl CertificateManager {
     }
 
     /// Get the CA certificate in PEM format (for client trust)
+    #[allow(dead_code)]
     pub fn get_ca_cert_pem(&self) -> String {
         self.ca_cert.pem()
     }

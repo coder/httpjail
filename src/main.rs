@@ -55,6 +55,10 @@ struct Args {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     verbose: u8,
 
+    /// Timeout for command execution in seconds
+    #[arg(long = "timeout")]
+    timeout: Option<u64>,
+
     /// Command and arguments to execute
     #[arg(trailing_var_arg = true, required = true)]
     command: Vec<String>,
@@ -219,7 +223,37 @@ async fn main() -> Result<()> {
     }
 
     // Execute command in jail with extra environment variables
-    let status = jail.execute(&args.command, &extra_env)?;
+    let status = if let Some(timeout_secs) = args.timeout {
+        
+        info!("Executing command with {}s timeout", timeout_secs);
+        
+        // For timeout, we need to execute directly with a wrapper
+        // Since we can't easily timeout the jail.execute call itself,
+        // we'll pass the timeout to the jail implementation
+        // For now, let's use the timeout command if available
+        let mut timeout_cmd = vec!["timeout".to_string(), timeout_secs.to_string()];
+        timeout_cmd.extend(args.command.clone());
+        
+        match jail.execute(&timeout_cmd, &extra_env) {
+            Ok(status) => {
+                if status.code() == Some(124) {
+                    warn!("Command timed out after {}s", timeout_secs);
+                }
+                status
+            }
+            Err(e) => {
+                // If timeout command doesn't exist, fall back to regular execution
+                if e.to_string().contains("timeout") || e.to_string().contains("No such file") {
+                    warn!("timeout command not available, executing without timeout");
+                    jail.execute(&args.command, &extra_env)?
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    } else {
+        jail.execute(&args.command, &extra_env)?
+    };
 
     // Cleanup jail
     jail.cleanup()?;

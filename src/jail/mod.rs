@@ -26,6 +26,7 @@ pub struct JailConfig {
     pub https_proxy_port: u16,
 
     /// Whether to use TLS interception
+    #[allow(dead_code)]
     pub tls_intercept: bool,
 
     /// Name/identifier for this jail instance

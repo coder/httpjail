@@ -7,7 +7,7 @@ use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
+use hyper::{Error as HyperError, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::Rng;
@@ -141,6 +141,7 @@ impl ProxyServer {
     }
 
     /// Get the CA certificate for client trust
+    #[allow(dead_code)]
     pub fn get_ca_cert_pem(&self) -> String {
         self.cert_manager.get_ca_cert_pem()
     }
