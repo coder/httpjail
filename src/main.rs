@@ -179,10 +179,7 @@ async fn main() -> Result<()> {
     proxy.start().await?;
 
     // Create and setup jail
-    let jail = create_jail(jail_config.clone())?;
-
-    // Initialize jail
-    jail.init()?;
+    let mut jail = create_jail(jail_config.clone())?;
 
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;

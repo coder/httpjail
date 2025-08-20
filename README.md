@@ -236,3 +236,16 @@ EXAMPLES:
     httpjail --config rules.yaml -- npm install
     httpjail --dry-run --deny "telemetry" --allow ".*" -- ./application
 ```
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development setup instructions
+- Testing guidelines
+- Code style requirements
+- Pull request process
+
+## License
+
+MIT License - see LICENSE file for details
+

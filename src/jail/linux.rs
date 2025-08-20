@@ -19,16 +19,7 @@ impl LinuxJail {
 }
 
 impl Jail for LinuxJail {
-    fn init(&self) -> Result<()> {
-        // TODO: Check for required capabilities and tools
-        // - Check for CAP_NET_ADMIN capability
-        // - Verify iptables is available
-        // - Verify ip command is available
-        info!("Linux jail initialization (stub)");
-        anyhow::bail!("Linux jail implementation not yet complete")
-    }
-    
-    fn setup(&self, proxy_port: u16) -> Result<()> {
+    fn setup(&mut self, proxy_port: u16) -> Result<()> {
         // TODO: Implement network namespace setup
         // 1. Create network namespace
         // 2. Create veth pair

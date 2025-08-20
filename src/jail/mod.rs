@@ -2,11 +2,8 @@ use anyhow::Result;
 
 /// Trait for platform-specific jail implementations
 pub trait Jail: Send + Sync {
-    /// Initialize the jail environment (one-time setup)
-    fn init(&self) -> Result<()>;
-    
     /// Setup jail for a specific session
-    fn setup(&self, proxy_port: u16) -> Result<()>;
+    fn setup(&mut self, proxy_port: u16) -> Result<()>;
     
     /// Execute a command within the jail
     fn execute(&self, command: &[String]) -> Result<std::process::ExitStatus>;

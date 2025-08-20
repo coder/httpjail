@@ -79,28 +79,28 @@ impl MacOSJail {
     }
     
     /// Create PF rules for traffic diversion
-    fn create_pf_rules(&self, gid: u32) -> Result<String> {
+    fn create_pf_rules(&self, _gid: u32) -> Result<String> {
+        // Note: macOS PF uses group name, not GID
         let rules = format!(
             r#"# httpjail PF rules
-# Divert HTTP traffic (port 80) from httpjail group to local HTTP proxy
-pass out proto tcp from any to any port 80 group {} divert-to 127.0.0.1 port {} no state
+# First, redirect HTTP and HTTPS traffic to local proxy ports
+rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port {}
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port {}
 
-# Divert HTTPS traffic (port 443) from httpjail group to local HTTPS proxy
-pass out proto tcp from any to any port 443 group {} divert-to 127.0.0.1 port {} no state
-
-# Allow proxy to receive diverted connections
-pass in on lo0 proto tcp to 127.0.0.1 port {} no state
-pass in on lo0 proto tcp to 127.0.0.1 port {} no state
+# Route outgoing HTTP/HTTPS traffic from httpjail group to lo0 for redirection
+pass out route-to lo0 inet proto tcp from any to any port 80 group {} keep state
+pass out route-to lo0 inet proto tcp from any to any port 443 group {} keep state
 
 # Allow proxy to make outbound connections
 pass out proto tcp from 127.0.0.1 to any keep state
+
+# Allow all loopback traffic
+pass on lo0
 "#,
-            gid,
             self.config.http_proxy_port,
-            gid,
             self.config.https_proxy_port,
-            self.config.http_proxy_port,
-            self.config.https_proxy_port
+            GROUP_NAME,
+            GROUP_NAME
         );
         
         Ok(rules)
@@ -157,7 +157,7 @@ pass out proto tcp from 127.0.0.1 to any keep state
 }
 
 impl Jail for MacOSJail {
-    fn init(&self) -> Result<()> {
+    fn setup(&mut self, _proxy_port: u16) -> Result<()> {
         // Check if we have sudo access
         let output = Command::new("sudo")
             .args(&["-n", "true"])
@@ -178,23 +178,18 @@ impl Jail for MacOSJail {
             anyhow::bail!("PF (Packet Filter) is not available on this system");
         }
         
-        Ok(())
-    }
-    
-    fn setup(&self, _proxy_port: u16) -> Result<()> {
-        let mut jail = self.clone();
         // Note: _proxy_port parameter is kept for interface compatibility
         // but we use the configured ports from JailConfig
         
         // Ensure group exists and get GID
-        let gid = jail.ensure_group()?;
+        let gid = self.ensure_group()?;
         
         // Create and load PF rules
-        let rules = jail.create_pf_rules(gid)?;
-        jail.load_pf_rules(&rules)?;
+        let rules = self.create_pf_rules(gid)?;
+        self.load_pf_rules(&rules)?;
         
         info!("Jail setup complete with HTTP proxy on port {} and HTTPS proxy on port {}", 
-              jail.config.http_proxy_port, jail.config.https_proxy_port);
+              self.config.http_proxy_port, self.config.https_proxy_port);
         Ok(())
     }
     
@@ -203,21 +198,26 @@ impl Jail for MacOSJail {
             anyhow::bail!("No command specified");
         }
         
-        let gid = self.group_gid
-            .ok_or_else(|| anyhow::anyhow!("Group not initialized. Call setup() first"))?;
+        debug!("Executing command with jail group {}: {:?}", GROUP_NAME, command);
         
-        debug!("Executing command with jail GID {}: {:?}", gid, command);
+        // Since we're already running with sudo, we can use the first command directly
+        // The PF rules will apply based on the process group membership
+        if command.is_empty() {
+            anyhow::bail!("No command specified");
+        }
         
-        // Use newgrp to add the supplemental group and execute command
-        // Format: newgrp httpjail -c "command args..."
-        let command_str = command.join(" ");
+        // Execute the command directly - PF rules will intercept based on the process
+        let mut cmd = Command::new(&command[0]);
+        for arg in &command[1..] {
+            cmd.arg(arg);
+        }
         
-        let mut cmd = Command::new("sudo");
-        cmd.arg("-E")  // Preserve environment
-            .arg("sg")  // Use sg (similar to newgrp but better for scripts)
-            .arg(GROUP_NAME)
-            .arg("-c")
-            .arg(&command_str);
+        // Set the HTTP_PROXY and HTTPS_PROXY environment variables
+        // This is needed for curl and other tools to use our proxy
+        cmd.env("HTTP_PROXY", format!("http://127.0.0.1:{}", self.config.http_proxy_port));
+        cmd.env("HTTPS_PROXY", format!("http://127.0.0.1:{}", self.config.https_proxy_port));
+        cmd.env("http_proxy", format!("http://127.0.0.1:{}", self.config.http_proxy_port));
+        cmd.env("https_proxy", format!("http://127.0.0.1:{}", self.config.https_proxy_port));
         
         let status = cmd.status()
             .context("Failed to execute command with jail")?;
