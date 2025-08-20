@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use lru::LruCache;
 use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::fs;
 use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
@@ -23,9 +25,51 @@ pub struct CertificateManager {
 }
 
 impl CertificateManager {
-    /// Create a new certificate manager with a self-signed CA
-    pub fn new() -> Result<Self> {
-        // Generate CA certificate
+    /// Get the config directory path (platform-specific)
+    fn get_config_dir() -> Result<PathBuf> {
+        // Use platform-specific config directory
+        // macOS: ~/Library/Application Support/httpjail
+        // Linux: ~/.config/httpjail
+        // Windows: %APPDATA%\httpjail
+        let config_dir = dirs::config_dir()
+            .context("Could not find user config directory")?
+            .join("httpjail");
+        Ok(config_dir)
+    }
+
+    /// Load or generate CA certificate and key
+    fn load_or_generate_ca() -> Result<(Certificate, KeyPair)> {
+        let config_dir = Self::get_config_dir()?;
+        
+        // Create directory if it doesn't exist
+        fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
+        
+        let ca_cert_path = config_dir.join("ca-cert.pem");
+        let ca_key_path = config_dir.join("ca-key.pem");
+        
+        // Try to load existing CA
+        if ca_cert_path.exists() && ca_key_path.exists() {
+            debug!("Loading cached CA certificate from {:?}", ca_cert_path);
+            
+            let cert_pem = fs::read_to_string(&ca_cert_path)
+                .context("Failed to read CA certificate")?;
+            let key_pem = fs::read_to_string(&ca_key_path)
+                .context("Failed to read CA key")?;
+            
+            // Parse the PEM files
+            let key_pair = KeyPair::from_pem(&key_pem)
+                .context("Failed to parse CA key")?;
+            let ca_params = CertificateParams::from_ca_cert_pem(&cert_pem)
+                .context("Failed to parse CA certificate")?;
+            let ca_cert = ca_params.self_signed(&key_pair)
+                .context("Failed to recreate CA certificate")?;
+            
+            info!("Loaded cached CA certificate from {}", ca_cert_path.display());
+            return Ok((ca_cert, key_pair));
+        }
+        
+        // Generate new CA certificate
+        info!("Generating new CA certificate");
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
 
@@ -44,6 +88,30 @@ impl CertificateManager {
         let ca_key_pair = KeyPair::generate()?;
         let ca_cert = ca_params.self_signed(&ca_key_pair)
             .context("Failed to generate CA certificate")?;
+        
+        // Save to disk
+        fs::write(&ca_cert_path, ca_cert.pem())
+            .context("Failed to write CA certificate")?;
+        fs::write(&ca_key_path, ca_key_pair.serialize_pem())
+            .context("Failed to write CA key")?;
+        
+        // Set permissions to 600 (read/write for owner only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&ca_key_path)?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&ca_key_path, perms)?;
+        }
+        
+        info!("Saved new CA certificate to {}", ca_cert_path.display());
+        Ok((ca_cert, ca_key_pair))
+    }
+
+    /// Create a new certificate manager with a self-signed CA
+    pub fn new() -> Result<Self> {
+        // Load or generate CA certificate
+        let (ca_cert, ca_key_pair) = Self::load_or_generate_ca()?;
 
         // Generate a single key pair to be used for all server certificates
         let server_key_pair = KeyPair::generate().context("Failed to generate server key pair")?;
@@ -53,7 +121,7 @@ impl CertificateManager {
         let server_key_der = PrivateKeyDer::try_from(key_der_vec.clone())
             .map_err(|_| anyhow::anyhow!("Failed to convert private key to DER"))?;
 
-        info!("Generated CA certificate and server key pair for HTTPS interception");
+        info!("Certificate manager initialized");
 
         let cache_size = NonZeroUsize::new(CERT_CACHE_SIZE).expect("Cache size must be non-zero");
 

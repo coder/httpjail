@@ -1,27 +1,26 @@
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode, Uri, Error as HyperError};
+use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use rand::Rng;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
-use rand::Rng;
 
 /// Try to bind to an available port in the given range (up to 16 attempts)
 async fn bind_to_available_port(start: u16, end: u16) -> Result<TcpListener> {
     let mut rng = rand::thread_rng();
-    let range_size = (end - start + 1) as usize;
-    
+
     for _ in 0..16 {
         let port = rng.gen_range(start..=end);
         match TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await {
@@ -32,7 +31,11 @@ async fn bind_to_available_port(start: u16, end: u16) -> Result<TcpListener> {
             Err(_) => continue,
         }
     }
-    anyhow::bail!("No available port found after 16 attempts in range {}-{}", start, end)
+    anyhow::bail!(
+        "No available port found after 16 attempts in range {}-{}",
+        start,
+        end
+    )
 }
 
 pub struct ProxyServer {
@@ -44,9 +47,8 @@ pub struct ProxyServer {
 
 impl ProxyServer {
     pub fn new(http_port: Option<u16>, https_port: Option<u16>, rule_engine: RuleEngine) -> Self {
-        let cert_manager = CertificateManager::new()
-            .expect("Failed to create certificate manager");
-        
+        let cert_manager = CertificateManager::new().expect("Failed to create certificate manager");
+
         ProxyServer {
             http_port,
             https_port,
@@ -65,10 +67,10 @@ impl ProxyServer {
             self.http_port = Some(listener.local_addr()?.port());
             listener
         };
-        
+
         let http_port = http_listener.local_addr()?.port();
         info!("Starting HTTP proxy on port {}", http_port);
-        
+
         let rule_engine = Arc::clone(&self.rule_engine);
         let cert_manager = Arc::clone(&self.cert_manager);
 
@@ -80,9 +82,11 @@ impl ProxyServer {
                         debug!("New HTTP connection from {}", addr);
                         let rule_engine = Arc::clone(&rule_engine);
                         let cert_manager = Arc::clone(&cert_manager);
-                        
+
                         tokio::spawn(async move {
-                            if let Err(e) = handle_http_connection(stream, rule_engine, cert_manager).await {
+                            if let Err(e) =
+                                handle_http_connection(stream, rule_engine, cert_manager).await
+                            {
                                 error!("Error handling HTTP connection: {:?}", e);
                             }
                         });
@@ -103,10 +107,10 @@ impl ProxyServer {
             self.https_port = Some(listener.local_addr()?.port());
             listener
         };
-        
+
         let https_port = https_listener.local_addr()?.port();
         info!("Starting HTTPS proxy on port {}", https_port);
-        
+
         let rule_engine = Arc::clone(&self.rule_engine);
         let cert_manager = Arc::clone(&self.cert_manager);
 
@@ -118,9 +122,11 @@ impl ProxyServer {
                         debug!("New HTTPS connection from {}", addr);
                         let rule_engine = Arc::clone(&rule_engine);
                         let cert_manager = Arc::clone(&cert_manager);
-                        
+
                         tokio::spawn(async move {
-                            if let Err(e) = handle_https_connection(stream, rule_engine, cert_manager).await {
+                            if let Err(e) =
+                                handle_https_connection(stream, rule_engine, cert_manager).await
+                            {
                                 error!("Error handling HTTPS connection: {:?}", e);
                             }
                         });
@@ -134,7 +140,7 @@ impl ProxyServer {
 
         Ok((http_port, https_port))
     }
-    
+
     /// Get the CA certificate for client trust
     pub fn get_ca_cert_pem(&self) -> String {
         self.cert_manager.get_ca_cert_pem()
@@ -156,7 +162,7 @@ async fn handle_http_connection(
         .title_case_headers(false)
         .serve_connection(io, service)
         .await?;
-    
+
     Ok(())
 }
 
@@ -176,7 +182,7 @@ async fn handle_https_connection(
         .title_case_headers(false)
         .serve_connection(io, service)
         .await?;
-    
+
     Ok(())
 }
 
@@ -188,27 +194,25 @@ async fn handle_http_request(
     let method = req.method().clone();
     let uri = req.uri().clone();
     let headers = req.headers().clone();
-    
+
     // Build the full URL for rule evaluation
     let host = headers
         .get("host")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("unknown");
-    
+
     let scheme = if uri.scheme_str().is_some() {
         uri.scheme_str().unwrap()
     } else {
         "http"
     };
-    
-    let path = uri.path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    
+
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+
     let full_url = format!("{}://{}{}", scheme, host, path);
-    
+
     info!("Proxying HTTP request: {} {}", method, full_url);
-    
+
     // Evaluate rules with method
     match rule_engine.evaluate(method, &full_url) {
         Action::Allow => {
@@ -238,14 +242,14 @@ async fn handle_connect_request(
         // If it's not CONNECT, treat it as a regular HTTP request through the HTTPS proxy
         return handle_http_request(req, rule_engine, cert_manager).await;
     }
-    
+
     let uri = req.uri().clone();
     let host = uri.host().unwrap_or("unknown");
     let port = uri.port_u16().unwrap_or(443);
-    
+
     let full_url = format!("https://{}:{}", host, port);
     info!("CONNECT request for: {}", full_url);
-    
+
     // Check rules for the CONNECT destination
     match rule_engine.evaluate(Method::GET, &full_url) {
         Action::Allow => {
@@ -270,25 +274,26 @@ async fn proxy_request(
 
     // Update the request URI to the target
     *req.uri_mut() = target_uri;
-    
+
     // Create HTTP client
     let client = Client::builder(TokioExecutor::new()).build_http();
-    
+
     // Forward the request and stream the response directly
     let resp = client.request(req).await?;
-    
+
     // Convert the response body to BoxBody for uniform type
     let (parts, body) = resp.into_parts();
     let boxed_body = body.boxed();
-    
+
     Ok(Response::from_parts(parts, boxed_body))
 }
 
-fn create_tunnel_response() -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
+fn create_tunnel_response() -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible>
+{
     let body = Full::new(Bytes::from(""))
         .map_err(|never| match never {})
         .boxed();
-    
+
     Ok(Response::builder()
         .status(StatusCode::OK)
         .body(body)
@@ -302,7 +307,7 @@ fn create_error_response(
     let body = Full::new(Bytes::from(message.to_string()))
         .map_err(|never| match never {})
         .boxed();
-    
+
     Ok(Response::builder()
         .status(status)
         .header("Content-Type", "text/plain")
@@ -322,25 +327,23 @@ mod tests {
             Rule::new(Action::Allow, r"github\.com").unwrap(),
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
-        
+
         let rule_engine = RuleEngine::new(rules, false, false);
         let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine);
-        
+
         assert_eq!(proxy.http_port, Some(8080));
         assert_eq!(proxy.https_port, Some(8443));
     }
-    
+
     #[tokio::test]
     async fn test_proxy_server_auto_port() {
-        let rules = vec![
-            Rule::new(Action::Allow, r".*").unwrap(),
-        ];
-        
+        let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
+
         let rule_engine = RuleEngine::new(rules, false, false);
         let mut proxy = ProxyServer::new(None, None, rule_engine);
-        
+
         let (http_port, https_port) = proxy.start().await.unwrap();
-        
+
         assert!(http_port >= 8000 && http_port <= 8999);
         assert!(https_port >= 8000 && https_port <= 8999);
         assert_ne!(http_port, https_port);

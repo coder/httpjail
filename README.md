@@ -15,13 +15,16 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 
 ```bash
 # Allow only requests to github.com
-httpjail --allow "github\.com" --deny ".*" -- curl https://github.com
+httpjail -r "allow: github\.com" -r "deny: .*" -- curl https://github.com
 
 # Monitor all requests without blocking
 httpjail --log-only -- npm install
 
 # Block specific domains
-httpjail --deny "telemetry\..*" --allow ".*" -- ./my-app
+httpjail -r "deny: telemetry\..*" -r "allow: .*" -- ./my-app
+
+# Method-specific rules
+httpjail -r "allow-get: api\.github\.com" -r "deny: .*" -- git pull
 
 # Use config file for complex rules
 httpjail --config rules.yaml -- python script.py
@@ -128,21 +131,28 @@ cargo install httpjail
 
 ```bash
 # Simple allow/deny rules
-httpjail --allow "api\.github\.com" --deny ".*" -- git pull
+httpjail -r "allow: api\.github\.com" -r "deny: .*" -- git pull
 
-# Multiple allow patterns
+# Multiple allow patterns (order matters!)
 httpjail \
-  --allow "github\.com" \
-  --allow "githubusercontent\.com" \
-  --deny ".*" \
+  -r "allow: github\.com" \
+  -r "allow: githubusercontent\.com" \
+  -r "deny: .*" \
   -- npm install
 
 # Deny telemetry while allowing everything else
 httpjail \
-  --deny "telemetry\." \
-  --deny "analytics\." \
-  --deny "sentry\." \
-  --allow ".*" \
+  -r "deny: telemetry\." \
+  -r "deny: analytics\." \
+  -r "deny: sentry\." \
+  -r "allow: .*" \
+  -- ./application
+
+# Method-specific rules
+httpjail \
+  -r "allow-get: api\..*\.com" \
+  -r "deny-post: telemetry\..*" \
+  -r "allow: .*" \
   -- ./application
 ```
 
@@ -195,16 +205,21 @@ httpjail --interactive -- ./app
 
 httpjail uses a locally-generated Certificate Authority (CA) to intercept HTTPS traffic:
 
-1. **Automatic CA Generation**: On first run, httpjail generates a unique CA certificate and caches it in `~/.httpjail/`
-2. **Trust Store Injection**: The CA is temporarily added to the system trust store
-3. **Certificate Generation**: Dynamic certificate generation for intercepted domains
-4. **Cleanup**: CA is removed from trust store after process termination
+1. **Automatic CA Generation**: On first run, httpjail generates a unique CA certificate
+2. **Persistent CA Storage**: The CA is cached in the user's config directory:
+   - macOS: `~/Library/Application Support/httpjail/`
+   - Linux: `~/.config/httpjail/`
+   - Windows: `%APPDATA%\httpjail\`
+3. **Trust Store Injection**: The CA is temporarily added to the system trust store
+4. **Certificate Generation**: Dynamic certificate generation for intercepted domains
+5. **Cleanup**: CA is removed from trust store after process termination
 
 ### Security Considerations
 
-- CA private key is stored with 600 permissions in `~/.httpjail/`
+- CA private key is stored with 600 permissions (Unix) in the config directory
 - CA is only trusted for the duration of the jailed process
 - Each httpjail installation has a unique CA
+- The same CA is reused across runs for consistency
 - Certificates are generated on-the-fly and not persisted
 
 ### Disable TLS Interception
@@ -220,21 +235,36 @@ httpjail --no-tls-intercept --allow ".*" -- ./app
 httpjail [OPTIONS] -- <COMMAND> [ARGS]
 
 OPTIONS:
-    -a, --allow <PATTERN>         Allow requests matching regex pattern
-    -d, --deny <PATTERN>          Deny requests matching regex pattern
-    -c, --config <FILE>           Use configuration file
-    --dry-run                     Log actions without blocking
-    --log-only                    Monitor without filtering
-    --no-tls-intercept           Disable HTTPS interception
-    --interactive                Interactive approval mode
-    -v, --verbose                Increase verbosity (-vvv for max)
-    -h, --help                   Print help
-    -V, --version                Print version
+    -r, --rule <RULE>            Add a rule (format: "action[-method]: pattern")
+                                 Actions: allow, deny
+                                 Methods: get, post, put, delete, head, options, connect, trace, patch
+    -c, --config <FILE>          Use configuration file
+    --dry-run                    Log actions without blocking
+    --log-only                   Monitor without filtering
+    --no-tls-intercept          Disable HTTPS interception
+    --interactive               Interactive approval mode
+    --weak                      Use weak mode (env vars only, no system isolation)
+    -v, --verbose               Increase verbosity (-vvv for max)
+    -h, --help                  Print help
+    -V, --version               Print version
+
+RULE FORMAT:
+    Rules are specified with -r/--rule and use the format:
+    "action[-method]: pattern"
+    
+    Examples:
+    -r "allow: github\.com"              # Allow all methods to github.com
+    -r "allow-get: api\..*"              # Allow only GET requests to api.*
+    -r "deny-post: telemetry\..*"        # Deny POST requests to telemetry.*
+    -r "deny: .*"                        # Deny everything (usually last rule)
+    
+    Rules are evaluated in the order specified.
 
 EXAMPLES:
-    httpjail --allow "github\.com" --deny ".*" -- git clone https://github.com/user/repo
+    httpjail -r "allow: github\.com" -r "deny: .*" -- git clone https://github.com/user/repo
     httpjail --config rules.yaml -- npm install
-    httpjail --dry-run --deny "telemetry" --allow ".*" -- ./application
+    httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
+    httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
 
 ## Contributing
