@@ -111,30 +111,30 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
     match parse_tls_plaintext(&buf[..n]) {
         Ok((_, record)) => {
             // Check if this is a handshake message
-            if let Some(TlsMessage::Handshake(handshake)) = record.msg.first() {
-                // Check if it's a ClientHello
-                if let tls_parser::TlsMessageHandshake::ClientHello(client_hello) = &handshake {
-                    // Look for the SNI extension in the raw extensions
-                    if let Some(ext_data) = client_hello.ext {
-                        // Parse the extensions
-                        if let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) {
-                            for ext in exts.1 {
-                                if let tls_parser::TlsExtension::SNI(sni_list) = ext {
-                                    // Get the first hostname from the SNI list
-                                    for sni in sni_list.iter() {
-                                        if let (tls_parser::SNIType::HostName, data) = sni {
-                                            if let Ok(hostname) = std::str::from_utf8(data) {
-                                                debug!("Extracted SNI hostname: {}", hostname);
-                                                return Ok(Some(hostname.to_string()));
-                                            }
-                                        }
+            if let Some(TlsMessage::Handshake(tls_parser::TlsMessageHandshake::ClientHello(
+                client_hello,
+            ))) = record.msg.first()
+            {
+                // Look for the SNI extension in the raw extensions
+                if let Some(ext_data) = client_hello.ext {
+                    // Parse the extensions
+                    if let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) {
+                        for ext in exts.1 {
+                            if let tls_parser::TlsExtension::SNI(sni_list) = ext {
+                                // Get the first hostname from the SNI list
+                                for sni in sni_list.iter() {
+                                    if let (tls_parser::SNIType::HostName, data) = sni
+                                        && let Ok(hostname) = std::str::from_utf8(data)
+                                    {
+                                        debug!("Extracted SNI hostname: {}", hostname);
+                                        return Ok(Some(hostname.to_string()));
                                     }
                                 }
                             }
                         }
                     }
-                    debug!("ClientHello has no SNI extension");
                 }
+                debug!("ClientHello has no SNI extension");
             }
         }
         Err(e) => {
@@ -541,12 +541,12 @@ async fn proxy_https_request(
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use rustls::{ClientConfig, ServerConfig};
+    use rustls::ClientConfig;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_rustls::{TlsAcceptor, TlsConnector};
+    use tokio_rustls::TlsConnector;
 
     async fn create_test_cert_manager() -> Arc<CertificateManager> {
         let temp_dir = TempDir::new().unwrap();

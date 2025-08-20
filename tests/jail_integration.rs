@@ -11,7 +11,7 @@ mod macos_jail_integration {
     fn ensure_httpjail_group() -> Result<(), String> {
         // Check if group exists
         let check = Command::new("dscl")
-            .args(&[".", "-read", "/Groups/httpjail"])
+            .args([".", "-read", "/Groups/httpjail"])
             .output()
             .map_err(|e| format!("Failed to check group: {}", e))?;
 
@@ -19,7 +19,7 @@ mod macos_jail_integration {
             // Create the group
             println!("Creating httpjail group...");
             let create = Command::new("sudo")
-                .args(&["dseditgroup", "-o", "create", "httpjail"])
+                .args(["dseditgroup", "-o", "create", "httpjail"])
                 .output()
                 .map_err(|e| format!("Failed to create group: {}", e))?;
 
@@ -37,7 +37,7 @@ mod macos_jail_integration {
     /// Clean up PF rules
     fn cleanup_pf_rules() {
         let _ = Command::new("sudo")
-            .args(&["pfctl", "-a", "httpjail", "-F", "all"])
+            .args(["pfctl", "-a", "httpjail", "-F", "all"])
             .output();
     }
 
@@ -45,7 +45,7 @@ mod macos_jail_integration {
     fn run_httpjail(args: Vec<&str>) -> Result<(i32, String, String), String> {
         // Build the httpjail binary first
         let build = Command::new("cargo")
-            .args(&["build", "--bin", "httpjail"])
+            .args(["build", "--bin", "httpjail"])
             .output()
             .map_err(|e| format!("Failed to build: {}", e))?;
 

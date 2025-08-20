@@ -288,8 +288,8 @@ mod tests {
 
         let (http_port, https_port) = proxy.start().await.unwrap();
 
-        assert!(http_port >= 8000 && http_port <= 8999);
-        assert!(https_port >= 8000 && https_port <= 8999);
+        assert!((8000..=8999).contains(&http_port));
+        assert!((8000..=8999).contains(&https_port));
         assert_ne!(http_port, https_port);
     }
 }

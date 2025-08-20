@@ -29,7 +29,7 @@ impl MacOSJail {
     fn ensure_group(&mut self) -> Result<u32> {
         // Check if group already exists
         let output = Command::new("dscl")
-            .args(&[
+            .args([
                 ".",
                 "-read",
                 &format!("/Groups/{}", GROUP_NAME),
@@ -41,20 +41,20 @@ impl MacOSJail {
         if output.status.success() {
             // Parse GID from output
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().find(|l| l.contains("PrimaryGroupID")) {
-                if let Some(gid_str) = line.split_whitespace().last() {
-                    let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-                    info!("Using existing group {} with GID {}", GROUP_NAME, gid);
-                    self.group_gid = Some(gid);
-                    return Ok(gid);
-                }
+            if let Some(line) = stdout.lines().find(|l| l.contains("PrimaryGroupID"))
+                && let Some(gid_str) = line.split_whitespace().last()
+            {
+                let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
+                info!("Using existing group {} with GID {}", GROUP_NAME, gid);
+                self.group_gid = Some(gid);
+                return Ok(gid);
             }
         }
 
         // Create group if it doesn't exist
         info!("Creating group {}", GROUP_NAME);
         let output = Command::new("sudo")
-            .args(&["dseditgroup", "-o", "create", GROUP_NAME])
+            .args(["dseditgroup", "-o", "create", GROUP_NAME])
             .output()
             .context("Failed to create group")?;
 
@@ -67,7 +67,7 @@ impl MacOSJail {
 
         // Get the newly created group's GID
         let output = Command::new("dscl")
-            .args(&[
+            .args([
                 ".",
                 "-read",
                 &format!("/Groups/{}", GROUP_NAME),
@@ -77,13 +77,13 @@ impl MacOSJail {
             .context("Failed to read group GID")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(line) = stdout.lines().find(|l| l.contains("PrimaryGroupID")) {
-            if let Some(gid_str) = line.split_whitespace().last() {
-                let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-                info!("Created group {} with GID {}", GROUP_NAME, gid);
-                self.group_gid = Some(gid);
-                return Ok(gid);
-            }
+        if let Some(line) = stdout.lines().find(|l| l.contains("PrimaryGroupID"))
+            && let Some(gid_str) = line.split_whitespace().last()
+        {
+            let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
+            info!("Created group {} with GID {}", GROUP_NAME, gid);
+            self.group_gid = Some(gid);
+            return Ok(gid);
         }
 
         anyhow::bail!("Failed to get GID for group {}", GROUP_NAME)
@@ -122,7 +122,7 @@ pass on lo0
         // Load rules into anchor
         info!("Loading PF rules from {}", self.pf_rules_path);
         let output = Command::new("sudo")
-            .args(&["pfctl", "-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
+            .args(["pfctl", "-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
             .output()
             .context("Failed to load PF rules")?;
 
@@ -134,7 +134,7 @@ pass on lo0
         }
 
         // Enable PF if not already enabled
-        let _ = Command::new("sudo").args(&["pfctl", "-E"]).output();
+        let _ = Command::new("sudo").args(["pfctl", "-E"]).output();
 
         info!("PF rules loaded successfully");
         Ok(())
@@ -146,7 +146,7 @@ pass on lo0
 
         // Flush the anchor
         let output = Command::new("sudo")
-            .args(&["pfctl", "-a", PF_ANCHOR_NAME, "-F", "all"])
+            .args(["pfctl", "-a", PF_ANCHOR_NAME, "-F", "all"])
             .output()
             .context("Failed to flush PF anchor")?;
 
@@ -170,7 +170,7 @@ impl Jail for MacOSJail {
     fn setup(&mut self, _proxy_port: u16) -> Result<()> {
         // Check if we have sudo access
         let output = Command::new("sudo")
-            .args(&["-n", "true"])
+            .args(["-n", "true"])
             .output()
             .context("Failed to check sudo access")?;
 
@@ -182,7 +182,7 @@ impl Jail for MacOSJail {
 
         // Check if PF is available
         let output = Command::new("pfctl")
-            .args(&["-s", "info"])
+            .args(["-s", "info"])
             .output()
             .context("Failed to check PF availability")?;
 

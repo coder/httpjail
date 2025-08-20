@@ -3,7 +3,7 @@ use std::process::Command;
 /// Build httpjail binary and return the path
 pub fn build_httpjail() -> Result<String, String> {
     let output = Command::new("cargo")
-        .args(&["build", "--bin", "httpjail"])
+        .args(["build", "--bin", "httpjail"])
         .output()
         .map_err(|e| format!("Failed to build httpjail: {}", e))?;
 
@@ -148,18 +148,20 @@ pub fn has_sudo() -> bool {
 #[allow(dead_code)]
 pub fn cleanup_pf_rules() {
     let _ = Command::new("sudo")
-        .args(&["pfctl", "-a", "httpjail", "-F", "all"])
+        .args(["pfctl", "-a", "httpjail", "-F", "all"])
         .output();
 }
 
 /// Check if running as root (for macOS sudo tests)
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
 /// Skip test if not running as root  
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub fn require_sudo() {
     if !is_root() {
         eprintln!("\n⚠️  Test requires root privileges.");

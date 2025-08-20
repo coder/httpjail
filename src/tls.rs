@@ -197,11 +197,11 @@ impl CertificateManager {
 
         // Sign certificate with CA using the shared key pair
         let cert = params.signed_by(&self.server_key_pair, &self.ca_cert, &self.ca_key_pair)?;
-        let cert_der = CertificateDer::from(cert.der().clone());
+        let cert_der = cert.der().clone();
 
         // Also include CA cert in chain
         let ca_cert_der = self.ca_cert.der().clone();
-        let ca_cert_der = CertificateDer::from(ca_cert_der);
+        // ca_cert_der is already the correct type
         let cert_chain = vec![cert_der, ca_cert_der];
 
         // Cache the certificate chain (not the key, since it's shared)
@@ -241,23 +241,19 @@ impl CertificateManager {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        let mut env_vars = Vec::new();
-
-        // OpenSSL/LibreSSL-based tools (generic)
-        env_vars.push(("SSL_CERT_FILE".to_string(), ca_path_str.clone()));
-        env_vars.push(("SSL_CERT_DIR".to_string(), ca_dir));
-
-        // curl (works with OpenSSL/LibreSSL builds)
-        env_vars.push(("CURL_CA_BUNDLE".to_string(), ca_path_str.clone()));
-
-        // Git
-        env_vars.push(("GIT_SSL_CAINFO".to_string(), ca_path_str.clone()));
-
-        // Python requests
-        env_vars.push(("REQUESTS_CA_BUNDLE".to_string(), ca_path_str.clone()));
-
-        // Node.js
-        env_vars.push(("NODE_EXTRA_CA_CERTS".to_string(), ca_path_str));
+        let env_vars = vec![
+            // OpenSSL/LibreSSL-based tools (generic)
+            ("SSL_CERT_FILE".to_string(), ca_path_str.clone()),
+            ("SSL_CERT_DIR".to_string(), ca_dir),
+            // curl (works with OpenSSL/LibreSSL builds)
+            ("CURL_CA_BUNDLE".to_string(), ca_path_str.clone()),
+            // Git
+            ("GIT_SSL_CAINFO".to_string(), ca_path_str.clone()),
+            // Python requests
+            ("REQUESTS_CA_BUNDLE".to_string(), ca_path_str.clone()),
+            // Node.js
+            ("NODE_EXTRA_CA_CERTS".to_string(), ca_path_str),
+        ];
 
         Ok(env_vars)
     }
