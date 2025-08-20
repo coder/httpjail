@@ -1,5 +1,13 @@
 # Agent instructions
 
+## Performance
+
+All proxying must be done on a streaming basis so that all types of requests are
+supported at minimal latency and a constant memory overhead.
+
+Any time we need to read a specific number of bytes from the stream (e.g. to determine
+protocol), we must establish a timeout for the operation.
+
 ## Testing
 
 When writing tests, prefer pure rust solutions over shell script wrappers.

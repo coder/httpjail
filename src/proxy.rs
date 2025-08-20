@@ -1,4 +1,5 @@
 use crate::rules::{Action, RuleEngine};
+#[allow(unused_imports)]
 use crate::tls::CertificateManager;
 use anyhow::Result;
 use bytes::Bytes;
@@ -169,22 +170,11 @@ async fn handle_https_connection(
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
 ) -> Result<()> {
-    // For HTTPS proxy, we first receive a CONNECT request
-    let io = TokioIo::new(stream);
-    let service = service_fn(move |req| {
-        handle_connect_request(req, Arc::clone(&rule_engine), Arc::clone(&cert_manager))
-    });
-
-    http1::Builder::new()
-        .preserve_header_case(true)
-        .title_case_headers(false)
-        .serve_connection(io, service)
-        .await?;
-
-    Ok(())
+    // Delegate to the TLS-specific module
+    crate::proxy_tls::handle_https_connection(stream, rule_engine, cert_manager).await
 }
 
-async fn handle_http_request(
+pub async fn handle_http_request(
     req: Request<Incoming>,
     rule_engine: Arc<RuleEngine>,
     _cert_manager: Arc<CertificateManager>,
@@ -230,38 +220,6 @@ async fn handle_http_request(
     }
 }
 
-async fn handle_connect_request(
-    req: Request<Incoming>,
-    rule_engine: Arc<RuleEngine>,
-    cert_manager: Arc<CertificateManager>,
-) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
-    // CONNECT method is used for HTTPS tunneling
-    if req.method() != Method::CONNECT {
-        // If it's not CONNECT, treat it as a regular HTTP request through the HTTPS proxy
-        return handle_http_request(req, rule_engine, cert_manager).await;
-    }
-
-    let uri = req.uri().clone();
-    let host = uri.host().unwrap_or("unknown");
-    let port = uri.port_u16().unwrap_or(443);
-
-    let full_url = format!("https://{}:{}", host, port);
-    info!("CONNECT request for: {}", full_url);
-
-    // Check rules for the CONNECT destination
-    match rule_engine.evaluate(Method::GET, &full_url) {
-        Action::Allow => {
-            debug!("CONNECT allowed to: {}", host);
-            // For now, return 200 OK to establish the tunnel
-            // In a full implementation, we'd perform TLS interception here
-            create_tunnel_response()
-        }
-        Action::Deny => {
-            warn!("CONNECT denied to: {}", host);
-            create_error_response(StatusCode::FORBIDDEN, "Connection blocked by httpjail")
-        }
-    }
-}
 
 async fn proxy_request(
     mut req: Request<Incoming>,
@@ -286,19 +244,7 @@ async fn proxy_request(
     Ok(Response::from_parts(parts, boxed_body))
 }
 
-fn create_tunnel_response() -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible>
-{
-    let body = Full::new(Bytes::from(""))
-        .map_err(|never| match never {})
-        .boxed();
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .body(body)
-        .unwrap())
-}
-
-fn create_error_response(
+pub fn create_error_response(
     status: StatusCode,
     message: &str,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {

@@ -1,5 +1,6 @@
 mod jail;
 mod proxy;
+mod proxy_tls;
 mod rules;
 mod tls;
 

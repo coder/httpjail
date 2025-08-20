@@ -1,0 +1,522 @@
+use crate::rules::{Action, RuleEngine};
+use crate::tls::CertificateManager;
+use anyhow::Result;
+use bytes::Bytes;
+use http_body_util::{BodyExt, combinators::BoxBody};
+use hyper::body::Incoming;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls::ServerConfig;
+use std::sync::Arc;
+use tls_parser::{parse_tls_plaintext, parse_tls_extensions, TlsMessage};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
+use tokio_rustls::TlsAcceptor;
+use tracing::{debug, error, info, warn};
+
+// Timeout for initial protocol detection
+const PROTOCOL_DETECT_TIMEOUT: Duration = Duration::from_secs(5);
+// Timeout for reading CONNECT headers
+const CONNECT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+// Timeout for TLS handshake
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+// Timeout for writing responses
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+// Timeout for reading TLS ClientHello
+const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Handle an HTTPS connection with potential CONNECT tunneling and TLS interception
+pub async fn handle_https_connection(
+    mut stream: TcpStream,
+    rule_engine: Arc<RuleEngine>,
+    cert_manager: Arc<CertificateManager>,
+) -> Result<()> {
+    debug!("Handling new HTTPS connection");
+    
+    // Peek at the first few bytes to determine if this is HTTP or TLS
+    let mut peek_buf = [0; 6];
+    let n = match timeout(PROTOCOL_DETECT_TIMEOUT, stream.peek(&mut peek_buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            debug!("Failed to peek at stream: {}", e);
+            return Ok(());
+        }
+        Err(_) => {
+            warn!("Timeout while detecting protocol");
+            return Ok(());
+        }
+    };
+    
+    if n == 0 {
+        debug!("Connection closed before protocol detection");
+        return Ok(());
+    }
+    
+    // Check if this looks like a TLS ClientHello (starts with 0x16 for TLS handshake)
+    // or an HTTP request (starts with ASCII text like "CONNECT", "GET", etc.)
+    if peek_buf[0] == 0x16 && n > 1 && (peek_buf[1] == 0x03 || peek_buf[1] == 0x02) {
+        // This is a TLS ClientHello - we're in transparent proxy mode
+        debug!("Detected TLS ClientHello - transparent proxy mode");
+        handle_transparent_tls(stream, rule_engine, cert_manager).await
+    } else if peek_buf[0] >= 0x41 && peek_buf[0] <= 0x5A {
+        // This looks like HTTP (starts with uppercase ASCII letter)
+        // Check if it's a CONNECT request
+        let request_str = String::from_utf8_lossy(&peek_buf);
+        if request_str.starts_with("CONNEC") {
+            debug!("Detected CONNECT request - explicit proxy mode");
+            handle_connect_tunnel(stream, rule_engine, cert_manager).await
+        } else {
+            // Regular HTTP on HTTPS port
+            debug!("Detected plain HTTP on HTTPS port");
+            handle_plain_http(stream, rule_engine, cert_manager).await
+        }
+    } else {
+        warn!("Unknown protocol on HTTPS port, first byte: 0x{:02x}", peek_buf[0]);
+        Ok(())
+    }
+}
+
+/// Extract SNI hostname from a TLS ClientHello
+async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String>> {
+    // Read enough bytes to parse the ClientHello
+    // TLS record header is 5 bytes, ClientHello can be quite large
+    let mut buf = vec![0u8; 2048];
+    
+    let n = match timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            debug!("Failed to peek ClientHello: {}", e);
+            return Ok(None);
+        }
+        Err(_) => {
+            debug!("Timeout reading ClientHello");
+            return Ok(None);
+        }
+    };
+    
+    if n < 5 {
+        debug!("Not enough data for TLS record header");
+        return Ok(None);
+    }
+    
+    // Parse the TLS plaintext record
+    match parse_tls_plaintext(&buf[..n]) {
+        Ok((_, record)) => {
+            // Check if this is a handshake message
+            if let Some(TlsMessage::Handshake(handshake)) = record.msg.first() {
+                // Check if it's a ClientHello
+                if let tls_parser::TlsMessageHandshake::ClientHello(client_hello) = &handshake {
+                    // Look for the SNI extension in the raw extensions
+                    if let Some(ext_data) = client_hello.ext {
+                        // Parse the extensions
+                        if let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) {
+                            for ext in exts.1 {
+                                if let tls_parser::TlsExtension::SNI(sni_list) = ext {
+                                    // Get the first hostname from the SNI list
+                                    for sni in sni_list.iter() {
+                                        if let (tls_parser::SNIType::HostName, data) = sni {
+                                            if let Ok(hostname) = std::str::from_utf8(data) {
+                                                debug!("Extracted SNI hostname: {}", hostname);
+                                                return Ok(Some(hostname.to_string()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    debug!("ClientHello has no SNI extension");
+                }
+            }
+        }
+        Err(e) => {
+            debug!("Failed to parse TLS record: {:?}", e);
+        }
+    }
+    
+    Ok(None)
+}
+
+/// Handle transparent TLS interception (no CONNECT, direct TLS)
+async fn handle_transparent_tls(
+    mut stream: TcpStream,
+    rule_engine: Arc<RuleEngine>,
+    cert_manager: Arc<CertificateManager>,
+) -> Result<()> {
+    debug!("Handling transparent TLS connection");
+    
+    // Extract SNI from the ClientHello
+    let hostname = match extract_sni_from_stream(&mut stream).await? {
+        Some(sni) => {
+            info!("Extracted SNI hostname: {}", sni);
+            sni
+        }
+        None => {
+            let default = "example.com".to_string();
+            warn!("Could not extract SNI, using default host: {}", default);
+            default
+        }
+    };
+    
+    // Check if this host is allowed
+    let full_url = format!("https://{}", hostname);
+    match rule_engine.evaluate(Method::GET, &full_url) {
+        Action::Allow => {
+            debug!("Transparent TLS allowed to: {}", hostname);
+        }
+        Action::Deny => {
+            warn!("Transparent TLS denied to: {}", hostname);
+            // Just close the connection for denied hosts
+            return Ok(());
+        }
+    }
+    
+    // Get certificate for the host
+    let (cert_chain, key) = cert_manager.get_cert_for_host(&hostname)
+        .map_err(|e| anyhow::anyhow!("Failed to get certificate for {}: {}", hostname, e))?;
+    
+    // Create TLS config with our certificate
+    let tls_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key)
+        .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
+    
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+    
+    // Perform TLS handshake
+    debug!("Accepting TLS connection for transparent proxy");
+    let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            error!("TLS handshake failed: {}", e);
+            return Err(e.into());
+        }
+        Err(_) => {
+            error!("TLS handshake timeout");
+            return Err(anyhow::anyhow!("TLS handshake timeout"));
+        }
+    };
+    
+    debug!("TLS handshake complete for transparent proxy");
+    
+    // Now handle the decrypted HTTPS requests
+    let io = TokioIo::new(tls_stream);
+    let service = service_fn(move |req| {
+        let host_clone = hostname.clone();
+        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
+    });
+    
+    debug!("Starting HTTP/1.1 server for decrypted requests");
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(false)
+        .serve_connection(io, service)
+        .await?;
+    
+    Ok(())
+}
+
+/// Handle a CONNECT tunnel request with TLS interception
+async fn handle_connect_tunnel(
+    stream: TcpStream,
+    rule_engine: Arc<RuleEngine>,
+    cert_manager: Arc<CertificateManager>,
+) -> Result<()> {
+    debug!("Handling CONNECT tunnel");
+    
+    // Buffer the stream for reading lines
+    let mut reader = BufReader::new(stream);
+    let mut first_line = String::new();
+    
+    // Read the first line to get the CONNECT request
+    let read_result = timeout(CONNECT_READ_TIMEOUT, reader.read_line(&mut first_line)).await;
+    match read_result {
+        Ok(Ok(0)) => {
+            debug!("Connection closed before CONNECT request");
+            return Ok(());
+        }
+        Ok(Ok(_)) => {},
+        Ok(Err(e)) => {
+            debug!("Failed to read CONNECT request: {}", e);
+            return Ok(());
+        }
+        Err(_) => {
+            warn!("Timeout reading CONNECT request");
+            return Ok(());
+        }
+    }
+    
+    debug!("CONNECT line: {}", first_line.trim());
+    
+    // Parse the CONNECT target
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Ok(());
+    }
+    
+    let target = parts[1];
+    let host = if target.contains(':') {
+        target.split(':').next().unwrap_or("unknown")
+    } else {
+        target
+    };
+    
+    info!("CONNECT request for: {}", target);
+    
+    // Read the rest of the headers until we find the empty line
+    let mut headers = vec![first_line.clone()];
+    let start_time = tokio::time::Instant::now();
+    loop {
+        // Check if we've exceeded the total timeout
+        if start_time.elapsed() > CONNECT_READ_TIMEOUT {
+            warn!("Timeout reading CONNECT headers");
+            return Ok(());
+        }
+        
+        let mut line = String::new();
+        let remaining_time = CONNECT_READ_TIMEOUT.saturating_sub(start_time.elapsed());
+        match timeout(remaining_time, reader.read_line(&mut line)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(_)) => {
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                headers.push(line);
+            }
+            Ok(Err(e)) => {
+                debug!("Error reading header: {}", e);
+                break;
+            }
+            Err(_) => {
+                warn!("Timeout reading headers");
+                break;
+            }
+        }
+    }
+    
+    // Check if this host is allowed
+    let full_url = format!("https://{}", target);
+    match rule_engine.evaluate(Method::GET, &full_url) {
+        Action::Allow => {
+            debug!("CONNECT allowed to: {}", host);
+            
+            // Get the underlying stream back
+            let mut stream = reader.into_inner();
+            
+            // Send 200 Connection Established response
+            let response = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+            match timeout(WRITE_TIMEOUT, async {
+                stream.write_all(response).await?;
+                stream.flush().await
+            }).await {
+                Ok(Ok(_)) => {},
+                Ok(Err(e)) => {
+                    error!("Failed to write CONNECT response: {}", e);
+                    return Err(e.into());
+                }
+                Err(_) => {
+                    error!("Timeout writing CONNECT response");
+                    return Err(anyhow::anyhow!("Timeout writing CONNECT response"));
+                }
+            }
+            
+            debug!("Sent 200 Connection Established, starting TLS handshake");
+            
+            // Now perform TLS handshake with the client
+            perform_tls_interception(stream, rule_engine, cert_manager, host).await
+        }
+        Action::Deny => {
+            warn!("CONNECT denied to: {}", host);
+            
+            // Get the underlying stream back
+            let mut stream = reader.into_inner();
+            
+            // Send 403 Forbidden response
+            let response = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 28\r\n\r\nConnection blocked by httpjail";
+            match timeout(WRITE_TIMEOUT, async {
+                stream.write_all(response).await?;
+                stream.flush().await
+            }).await {
+                Ok(Ok(_)) => {},
+                Ok(Err(e)) => {
+                    debug!("Failed to write 403 response: {}", e);
+                }
+                Err(_) => {
+                    debug!("Timeout writing 403 response");
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Perform TLS interception on a stream
+async fn perform_tls_interception(
+    stream: TcpStream,
+    rule_engine: Arc<RuleEngine>,
+    cert_manager: Arc<CertificateManager>,
+    host: &str,
+) -> Result<()> {
+    // Get certificate for the host
+    let (cert_chain, key) = cert_manager.get_cert_for_host(host)
+        .map_err(|e| anyhow::anyhow!("Failed to get certificate for {}: {}", host, e))?;
+    
+    // Create TLS config with our certificate
+    let tls_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key)
+        .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
+    
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+    
+    // Perform TLS handshake
+    debug!("Accepting TLS connection for {}", host);
+    let tls_stream = match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            error!("TLS handshake failed for {}: {}", host, e);
+            return Err(e.into());
+        }
+        Err(_) => {
+            error!("TLS handshake timeout for {}", host);
+            return Err(anyhow::anyhow!("TLS handshake timeout"));
+        }
+    };
+    
+    debug!("TLS handshake complete for {}", host);
+    
+    // Now handle the decrypted HTTPS requests
+    let io = TokioIo::new(tls_stream);
+    let host_string = host.to_string();
+    let service = service_fn(move |req| {
+        let host_clone = host_string.clone();
+        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
+    });
+    
+    debug!("Starting HTTP/1.1 server for decrypted requests");
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(false)
+        .serve_connection(io, service)
+        .await?;
+    
+    Ok(())
+}
+
+/// Handle a plain HTTP request on the HTTPS port
+async fn handle_plain_http(
+    stream: TcpStream,
+    rule_engine: Arc<RuleEngine>,
+    cert_manager: Arc<CertificateManager>,
+) -> Result<()> {
+    debug!("Handling plain HTTP on HTTPS port");
+    
+    let io = TokioIo::new(stream);
+    let service = service_fn(move |req| {
+        crate::proxy::handle_http_request(req, Arc::clone(&rule_engine), Arc::clone(&cert_manager))
+    });
+    
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(false)
+        .serve_connection(io, service)
+        .await?;
+    
+    Ok(())
+}
+
+/// Handle a decrypted HTTPS request after TLS interception
+async fn handle_decrypted_https_request(
+    req: Request<Incoming>,
+    rule_engine: Arc<RuleEngine>,
+    host: String,
+) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    
+    // Build the full URL for rule evaluation
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let full_url = format!("https://{}{}", host, path);
+    
+    info!("Proxying HTTPS request: {} {}", method, full_url);
+    
+    // Evaluate rules with method
+    match rule_engine.evaluate(method.clone(), &full_url) {
+        Action::Allow => {
+            debug!("Request allowed: {}", full_url);
+            match proxy_https_request(req, &host).await {
+                Ok(resp) => Ok(resp),
+                Err(e) => {
+                    error!("Proxy error: {}", e);
+                    crate::proxy::create_error_response(StatusCode::BAD_GATEWAY, "Proxy error")
+                }
+            }
+        }
+        Action::Deny => {
+            warn!("Request denied: {}", full_url);
+            crate::proxy::create_error_response(StatusCode::FORBIDDEN, "Request blocked by httpjail")
+        }
+    }
+}
+
+/// Forward an HTTPS request to the target server
+async fn proxy_https_request(
+    mut req: Request<Incoming>,
+    host: &str,
+) -> Result<Response<BoxBody<Bytes, HyperError>>> {
+    // Build the target URL
+    let path = req.uri().path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let target_url = format!("https://{}{}", host, path);
+    let target_uri = target_url.parse::<Uri>()?;
+    
+    debug!("Forwarding request to: {}", target_url);
+    
+    // Update the request URI to the target
+    *req.uri_mut() = target_uri;
+    
+    // Remove hop-by-hop headers
+    req.headers_mut().remove("proxy-connection");
+    req.headers_mut().remove("connection");
+    req.headers_mut().remove("keep-alive");
+    req.headers_mut().remove("transfer-encoding");
+    req.headers_mut().remove("te");
+    req.headers_mut().remove("trailer");
+    req.headers_mut().remove("proxy-authorization");
+    req.headers_mut().remove("proxy-authenticate");
+    req.headers_mut().remove("upgrade");
+    
+    // Create HTTPS client with TLS
+    let https = HttpsConnectorBuilder::new()
+        .with_native_roots()?
+        .https_only()
+        .enable_http1()
+        .build();
+    
+    let client = Client::builder(TokioExecutor::new())
+        .build(https);
+    
+    // Forward the request and stream the response
+    debug!("Sending request to upstream server");
+    let resp = match client.request(req).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to forward request: {}", e);
+            return Err(e.into());
+        }
+    };
+    
+    debug!("Received response from upstream server: {:?}", resp.status());
+    
+    // Convert the response body to BoxBody for uniform type
+    let (parts, body) = resp.into_parts();
+    let boxed_body = body.boxed();
+    
+    Ok(Response::from_parts(parts, boxed_body))
+}
