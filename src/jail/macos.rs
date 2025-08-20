@@ -193,18 +193,12 @@ impl Jail for MacOSJail {
         Ok(())
     }
     
-    fn execute(&self, command: &[String]) -> Result<ExitStatus> {
+    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
         if command.is_empty() {
             anyhow::bail!("No command specified");
         }
         
         debug!("Executing command with jail group {}: {:?}", GROUP_NAME, command);
-        
-        // Since we're already running with sudo, we can use the first command directly
-        // The PF rules will apply based on the process group membership
-        if command.is_empty() {
-            anyhow::bail!("No command specified");
-        }
         
         // Execute the command directly - PF rules will intercept based on the process
         let mut cmd = Command::new(&command[0]);
@@ -218,6 +212,11 @@ impl Jail for MacOSJail {
         cmd.env("HTTPS_PROXY", format!("http://127.0.0.1:{}", self.config.https_proxy_port));
         cmd.env("http_proxy", format!("http://127.0.0.1:{}", self.config.http_proxy_port));
         cmd.env("https_proxy", format!("http://127.0.0.1:{}", self.config.https_proxy_port));
+        
+        // Set any extra environment variables (e.g., CA cert paths)
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         
         let status = cmd.status()
             .context("Failed to execute command with jail")?;

@@ -8,7 +8,7 @@ use clap::Parser;
 use jail::{JailConfig, create_jail};
 use proxy::ProxyServer;
 use rules::{Action, Rule, RuleEngine};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "httpjail")]
@@ -185,8 +185,23 @@ async fn main() -> Result<()> {
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
 
-    // Execute command in jail
-    let status = jail.execute(&args.command)?;
+    // Set up CA certificate environment variables for common tools
+    let mut extra_env = Vec::new();
+    
+    if !args.no_tls_intercept {
+        match tls::CertificateManager::get_ca_env_vars() {
+            Ok(ca_env_vars) => {
+                debug!("Setting {} CA certificate environment variables", ca_env_vars.len());
+                extra_env = ca_env_vars;
+            }
+            Err(e) => {
+                warn!("Failed to set up CA certificate environment variables: {}", e);
+            }
+        }
+    }
+    
+    // Execute command in jail with extra environment variables
+    let status = jail.execute(&args.command, &extra_env)?;
 
     // Cleanup jail
     jail.cleanup()?;

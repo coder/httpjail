@@ -1,6 +1,6 @@
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Incoming;
@@ -10,11 +10,9 @@ use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::Rng;
-use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 /// Try to bind to an available port in the given range (up to 16 attempts)

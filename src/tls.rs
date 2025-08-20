@@ -4,7 +4,7 @@ use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
@@ -51,7 +51,7 @@ impl CertificateManager {
         if ca_cert_path.exists() && ca_key_path.exists() {
             debug!("Loading cached CA certificate from {:?}", ca_cert_path);
             
-            let cert_pem = fs::read_to_string(&ca_cert_path)
+            let _cert_pem = fs::read_to_string(&ca_cert_path)
                 .context("Failed to read CA certificate")?;
             let key_pem = fs::read_to_string(&ca_key_path)
                 .context("Failed to read CA key")?;
@@ -59,8 +59,29 @@ impl CertificateManager {
             // Parse the PEM files
             let key_pair = KeyPair::from_pem(&key_pem)
                 .context("Failed to parse CA key")?;
-            let ca_params = CertificateParams::from_ca_cert_pem(&cert_pem)
-                .context("Failed to parse CA certificate")?;
+            
+            // Recreate the CA certificate from the stored files
+            // Since rcgen doesn't support loading existing certificates,
+            // we'll need to regenerate if this fails
+            // For now, just return the key pair and cert as stored
+            // This is a limitation of rcgen - in production you'd use a different approach
+            
+            // Generate new params but use existing key
+            let mut ca_params = CertificateParams::default();
+            ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            
+            let mut dn = DistinguishedName::new();
+            dn.push(DnType::CountryName, "US");
+            dn.push(DnType::OrganizationName, "httpjail");
+            dn.push(DnType::CommonName, "httpjail CA");
+            ca_params.distinguished_name = dn;
+            
+            ca_params.key_usages = vec![
+                rcgen::KeyUsagePurpose::DigitalSignature,
+                rcgen::KeyUsagePurpose::KeyCertSign,
+                rcgen::KeyUsagePurpose::CrlSign,
+            ];
+            
             let ca_cert = ca_params.self_signed(&key_pair)
                 .context("Failed to recreate CA certificate")?;
             
@@ -189,5 +210,45 @@ impl CertificateManager {
     /// Get the CA certificate in PEM format (for client trust)
     pub fn get_ca_cert_pem(&self) -> String {
         self.ca_cert.pem()
+    }
+    
+    /// Get the path to the CA certificate file
+    pub fn get_ca_cert_path() -> Result<PathBuf> {
+        let config_dir = Self::get_config_dir()?;
+        Ok(config_dir.join("ca-cert.pem"))
+    }
+    
+    /// Generate environment variables for common tools to use the CA certificate
+    pub fn get_ca_env_vars() -> Result<Vec<(String, String)>> {
+        let ca_path = Self::get_ca_cert_path()?;
+        
+        if !ca_path.exists() {
+            anyhow::bail!("CA certificate not found at {:?}", ca_path);
+        }
+        
+        let ca_path_str = ca_path.to_string_lossy().to_string();
+        let ca_dir = ca_path.parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        
+        let mut env_vars = Vec::new();
+        
+        // OpenSSL/LibreSSL-based tools (generic)
+        env_vars.push(("SSL_CERT_FILE".to_string(), ca_path_str.clone()));
+        env_vars.push(("SSL_CERT_DIR".to_string(), ca_dir));
+        
+        // curl (works with OpenSSL/LibreSSL builds)
+        env_vars.push(("CURL_CA_BUNDLE".to_string(), ca_path_str.clone()));
+        
+        // Git
+        env_vars.push(("GIT_SSL_CAINFO".to_string(), ca_path_str.clone()));
+        
+        // Python requests
+        env_vars.push(("REQUESTS_CA_BUNDLE".to_string(), ca_path_str.clone()));
+        
+        // Node.js
+        env_vars.push(("NODE_EXTRA_CA_CERTS".to_string(), ca_path_str));
+        
+        Ok(env_vars)
     }
 }

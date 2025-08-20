@@ -29,10 +29,10 @@ impl Jail for LinuxJail {
         anyhow::bail!("Linux jail setup not yet implemented")
     }
     
-    fn execute(&self, command: &[String]) -> Result<ExitStatus> {
+    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
         // TODO: Execute command in network namespace
         // Use `ip netns exec` or direct namespace switching
-        info!("Linux jail execute command {:?} (stub)", command);
+        info!("Linux jail execute command {:?} with {} extra env vars (stub)", command, extra_env.len());
         anyhow::bail!("Linux jail execution not yet implemented")
     }
     

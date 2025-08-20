@@ -23,7 +23,7 @@ impl Jail for WeakJail {
         Ok(())
     }
     
-    fn execute(&self, command: &[String]) -> Result<ExitStatus> {
+    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
         if command.is_empty() {
             anyhow::bail!("No command specified");
         }
@@ -48,6 +48,11 @@ impl Jail for WeakJail {
         // Also set NO_PROXY for localhost to avoid proxying local connections
         cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
         cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+        
+        // Set any extra environment variables
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         
         info!("Running command with HTTP_PROXY={} HTTPS_PROXY={}", http_proxy, https_proxy);
         

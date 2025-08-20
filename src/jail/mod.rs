@@ -5,8 +5,8 @@ pub trait Jail: Send + Sync {
     /// Setup jail for a specific session
     fn setup(&mut self, proxy_port: u16) -> Result<()>;
     
-    /// Execute a command within the jail
-    fn execute(&self, command: &[String]) -> Result<std::process::ExitStatus>;
+    /// Execute a command within the jail with additional environment variables
+    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<std::process::ExitStatus>;
     
     /// Cleanup jail resources
     fn cleanup(&self) -> Result<()>;
