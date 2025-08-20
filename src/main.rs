@@ -159,10 +159,20 @@ async fn main() -> Result<()> {
     let rules = build_rules(&args)?;
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
 
-    // Create jail configuration with default ports
+    // Create jail configuration with ports from env vars or defaults
+    let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(8040);
+    
+    let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(8043);
+    
     let jail_config = JailConfig {
-        http_proxy_port: 8040,
-        https_proxy_port: 8043,
+        http_proxy_port: http_port,
+        https_proxy_port: https_port,
         tls_intercept: !args.no_tls_intercept,
         jail_name: "httpjail".to_string(),
     };

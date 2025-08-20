@@ -1,9 +1,23 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serial_test::serial;
 
 #[cfg(target_os = "macos")]
 mod tests {
     use super::*;
+
+    fn check_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    fn skip_if_not_root() {
+        if !check_root() {
+            eprintln!("\n⚠️  Test requires root privileges.");
+            eprintln!("   Run the entire test suite with: sudo cargo test --test macos_integration -- --ignored");
+            eprintln!("   or run httpjail tests directly: sudo $(which cargo) test\n");
+            panic!("Test skipped: requires root privileges");
+        }
+    }
 
     fn httpjail_cmd() -> Command {
         let mut cmd = Command::cargo_bin("httpjail").unwrap();
@@ -12,36 +26,12 @@ mod tests {
         cmd
     }
 
-    fn with_sudo(cmd: Command) -> std::process::Command {
-        let mut sudo_cmd = std::process::Command::new("sudo");
-        
-        // Use askpass if available
-        if let Ok(cwd) = std::env::current_dir() {
-            let askpass_path = cwd.join("askpass_macos.sh");
-            if askpass_path.exists() {
-                sudo_cmd.env("SUDO_ASKPASS", askpass_path);
-                sudo_cmd.arg("-A");
-            }
-        }
-        
-        // Preserve environment for cargo test
-        sudo_cmd.arg("-E");
-        
-        // Get the actual binary path from assert_cmd
-        let binary_path = cmd.get_program().to_string_lossy().to_string();
-        sudo_cmd.arg(binary_path);
-        
-        // Add all the arguments
-        for arg in cmd.get_args() {
-            sudo_cmd.arg(arg);
-        }
-        
-        sudo_cmd
-    }
-
     #[test]
-    #[ignore] // Requires sudo - run with: cargo test -- --ignored
+    #[ignore] // Requires sudo - run with: sudo cargo test -- --ignored
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_allows_matching_requests() {
+        skip_if_not_root();
+        
         let mut cmd = httpjail_cmd();
         cmd.arg("--allow")
             .arg("httpbin\\.org")
@@ -54,7 +44,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -69,7 +59,10 @@ mod tests {
 
     #[test]
     #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_denies_non_matching_requests() {
+        skip_if_not_root();
+        
         let mut cmd = httpjail_cmd();
         cmd.arg("--allow")
             .arg("httpbin\\.org")
@@ -82,7 +75,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://example.com");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -95,7 +88,10 @@ mod tests {
 
     #[test]
     #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_method_specific_rules() {
+        skip_if_not_root();
+        
         // Test 1: Allow GET to httpbin
         let mut cmd = httpjail_cmd();
         cmd.arg("--allow-get")
@@ -111,7 +107,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -137,7 +133,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/post");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -147,7 +143,10 @@ mod tests {
 
     #[test]
     #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_log_only_mode() {
+        skip_if_not_root();
+        
         let mut cmd = httpjail_cmd();
         cmd.arg("--log-only")
             .arg("--")
@@ -159,7 +158,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://example.com");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -175,7 +174,10 @@ mod tests {
 
     #[test]
     #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_dry_run_mode() {
+        skip_if_not_root();
+        
         let mut cmd = httpjail_cmd();
         cmd.arg("--dry-run")
             .arg("--deny")
@@ -189,7 +191,7 @@ mod tests {
             .arg("%{http_code}")
             .arg("http://httpbin.org/get");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
@@ -205,6 +207,7 @@ mod tests {
 
     #[test]
     fn test_jail_requires_command() {
+        // This test doesn't require root
         let mut cmd = httpjail_cmd();
         cmd.arg("--allow")
             .arg(".*");
@@ -216,7 +219,10 @@ mod tests {
 
     #[test]
     #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
     fn test_jail_exit_code_propagation() {
+        skip_if_not_root();
+        
         // Test that httpjail propagates the exit code of the child process
         let mut cmd = httpjail_cmd();
         cmd.arg("--allow")
@@ -226,7 +232,7 @@ mod tests {
             .arg("-c")
             .arg("exit 42");
 
-        let output = with_sudo(cmd)
+        let output = cmd
             .output()
             .expect("Failed to execute httpjail");
 
