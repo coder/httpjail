@@ -11,6 +11,14 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 - ⚡ **Zero configuration** - Works out of the box with sensible defaults
 
+## MVP TODO
+
+- [ ] Update README to be more reflective of AI agent restrictions
+- [ ] Block all other TCP traffic by default (disabled via flag) (perhaps should be a rule?)
+- [ ] When ran under sudo should drop into original user before executing the command
+- [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
+- [ ] Requests occasionally take a very long time to complete.
+
 ## Quick Start
 
 ```bash
@@ -276,10 +284,3 @@ EXAMPLES:
     httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
     httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
-
-## TODO
-
-- [ ] Update README to be more reflective of AI agent restrictions
-- [ ] Block all other TCP traffic by default (disabled via flag) (perhaps should be a rule?)
-- [ ] When ran under sudo should drop into original user before executing the command
-- [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command

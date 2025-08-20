@@ -12,9 +12,26 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::Rng;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
+
+// Shared HTTP client for upstream requests
+static HTTP_CLIENT: OnceLock<Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>>> = OnceLock::new();
+
+/// Get or create the shared HTTP client
+fn get_http_client() -> &'static Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>> {
+    HTTP_CLIENT.get_or_init(|| {
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(2)
+            .http1_title_case_headers(false)
+            .http1_preserve_header_case(true)
+            .build_http()
+    })
+}
 
 /// Try to bind to an available port in the given range (up to 16 attempts)
 async fn bind_to_available_port(start: u16, end: u16) -> Result<TcpListener> {
@@ -184,21 +201,20 @@ pub async fn handle_http_request(
     let uri = req.uri().clone();
     let headers = req.headers().clone();
 
-    // Build the full URL for rule evaluation
-    let host = headers
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("unknown");
-
-    let scheme = if uri.scheme_str().is_some() {
-        uri.scheme_str().unwrap()
+    // Check if the URI already contains the full URL (proxy request)
+    let full_url = if uri.scheme().is_some() && uri.authority().is_some() {
+        // This is a proxy request with absolute URL (e.g., GET http://example.com/ HTTP/1.1)
+        uri.to_string()
     } else {
-        "http"
+        // This is a regular request, build the full URL from headers
+        let host = headers
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown");
+        
+        let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+        format!("http://{}{}", host, path)
     };
-
-    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-
-    let full_url = format!("{}://{}{}", scheme, host, path);
 
     info!("Proxying HTTP request: {} {}", method, full_url);
 
@@ -222,20 +238,59 @@ pub async fn handle_http_request(
 }
 
 async fn proxy_request(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     full_url: &str,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Parse the target URL
     let target_uri = full_url.parse::<Uri>()?;
 
-    // Update the request URI to the target
-    *req.uri_mut() = target_uri;
+    // Convert the incoming body to BoxBody for the client
+    let (mut parts, incoming_body) = req.into_parts();
+    
+    // Update the URI
+    parts.uri = target_uri;
+    
+    // Remove hop-by-hop headers
+    parts.headers.remove("proxy-connection");
+    parts.headers.remove("connection");
+    parts.headers.remove("keep-alive");
+    parts.headers.remove("transfer-encoding");
+    parts.headers.remove("te");
+    parts.headers.remove("trailer");
+    parts.headers.remove("proxy-authorization");
+    parts.headers.remove("proxy-authenticate");
+    parts.headers.remove("upgrade");
 
-    // Create HTTP client
-    let client = Client::builder(TokioExecutor::new()).build_http();
+    // Convert incoming body to boxed body
+    let boxed_request_body = incoming_body.boxed();
+    
+    // Create new request with boxed body
+    let new_req = Request::from_parts(parts, boxed_request_body);
 
-    // Forward the request and stream the response directly
-    let resp = client.request(req).await?;
+    // Use the shared HTTP client
+    let client = get_http_client();
+
+    // Forward the request - no timeout to support long-running connections
+    debug!("Sending HTTP request to upstream server: {}", full_url);
+    let start = Instant::now();
+    let resp = match client.request(new_req).await {
+        Ok(r) => {
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_secs(2) {
+                warn!("HTTP request took {}ms: {}", elapsed.as_millis(), full_url);
+            } else {
+                debug!("HTTP request completed in {}ms", elapsed.as_millis());
+            }
+            r
+        },
+        Err(e) => {
+            let elapsed = start.elapsed();
+            error!("Failed to forward HTTP request after {}ms: {}", elapsed.as_millis(), e);
+            return Err(e.into());
+        }
+    };
+
+    debug!("Received HTTP response from upstream server: {:?}", resp.status());
 
     // Convert the response body to BoxBody for uniform type
     let (parts, body) = resp.into_parts();

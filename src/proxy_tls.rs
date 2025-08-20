@@ -11,11 +11,11 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::ServerConfig;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tls_parser::{TlsMessage, parse_tls_plaintext};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
@@ -29,6 +29,28 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 // Timeout for reading TLS ClientHello
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Shared HTTPS client for upstream requests
+static HTTPS_CLIENT: OnceLock<Client<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, BoxBody<Bytes, HyperError>>> = OnceLock::new();
+
+/// Get or create the shared HTTPS client
+fn get_https_client() -> &'static Client<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, BoxBody<Bytes, HyperError>> {
+    HTTPS_CLIENT.get_or_init(|| {
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("Failed to load native roots")
+            .https_only()
+            .enable_http1()
+            .build();
+
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(2)
+            .http1_title_case_headers(false)
+            .http1_preserve_header_case(true)
+            .build(https)
+    })
+}
 
 /// Handle an HTTPS connection with potential CONNECT tunneling and TLS interception
 pub async fn handle_https_connection(
@@ -478,7 +500,7 @@ async fn handle_decrypted_https_request(
 
 /// Forward an HTTPS request to the target server
 async fn proxy_https_request(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     host: &str,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
@@ -492,35 +514,48 @@ async fn proxy_https_request(
 
     debug!("Forwarding request to: {}", target_url);
 
-    // Update the request URI to the target
-    *req.uri_mut() = target_uri;
-
+    // Convert the incoming body to BoxBody for the client
+    let (mut parts, incoming_body) = req.into_parts();
+    
+    // Update the URI
+    parts.uri = target_uri;
+    
     // Remove hop-by-hop headers
-    req.headers_mut().remove("proxy-connection");
-    req.headers_mut().remove("connection");
-    req.headers_mut().remove("keep-alive");
-    req.headers_mut().remove("transfer-encoding");
-    req.headers_mut().remove("te");
-    req.headers_mut().remove("trailer");
-    req.headers_mut().remove("proxy-authorization");
-    req.headers_mut().remove("proxy-authenticate");
-    req.headers_mut().remove("upgrade");
+    parts.headers.remove("proxy-connection");
+    parts.headers.remove("connection");
+    parts.headers.remove("keep-alive");
+    parts.headers.remove("transfer-encoding");
+    parts.headers.remove("te");
+    parts.headers.remove("trailer");
+    parts.headers.remove("proxy-authorization");
+    parts.headers.remove("proxy-authenticate");
+    parts.headers.remove("upgrade");
 
-    // Create HTTPS client with TLS
-    let https = HttpsConnectorBuilder::new()
-        .with_native_roots()?
-        .https_only()
-        .enable_http1()
-        .build();
+    // Convert incoming body to boxed body
+    let boxed_request_body = incoming_body.boxed();
+    
+    // Create new request with boxed body
+    let new_req = Request::from_parts(parts, boxed_request_body);
 
-    let client = Client::builder(TokioExecutor::new()).build(https);
+    // Use the shared HTTPS client
+    let client = get_https_client();
 
-    // Forward the request and stream the response
-    debug!("Sending request to upstream server");
-    let resp = match client.request(req).await {
-        Ok(r) => r,
+    // Forward the request - no timeout to support long-running connections (WebSocket, gRPC, etc.)
+    debug!("Sending HTTPS request to upstream server: {}", target_url);
+    let start = Instant::now();
+    let resp = match client.request(new_req).await {
+        Ok(r) => {
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_secs(2) {
+                warn!("HTTPS request took {}ms: {}", elapsed.as_millis(), target_url);
+            } else {
+                debug!("HTTPS request completed in {}ms", elapsed.as_millis());
+            }
+            r
+        },
         Err(e) => {
-            error!("Failed to forward request: {}", e);
+            let elapsed = start.elapsed();
+            error!("Failed to forward HTTPS request after {}ms: {}", elapsed.as_millis(), e);
             return Err(e.into());
         }
     };
