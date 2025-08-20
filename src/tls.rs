@@ -22,24 +22,22 @@ pub struct CertificateManager {
     server_key_der: PrivateKeyDer<'static>,
     /// LRU cache of generated certificates per hostname
     cert_cache: Arc<RwLock<LruCache<String, Vec<CertificateDer<'static>>>>>,
+    /// Custom config directory (for testing)
+    #[allow(dead_code)]
+    config_dir: Option<PathBuf>,
 }
 
 impl CertificateManager {
-    /// Get the config directory path (platform-specific)
-    fn get_config_dir() -> Result<PathBuf> {
-        // Use platform-specific config directory
-        // macOS: ~/Library/Application Support/httpjail
-        // Linux: ~/.config/httpjail
-        // Windows: %APPDATA%\httpjail
-        let config_dir = dirs::config_dir()
-            .context("Could not find user config directory")?
-            .join("httpjail");
-        Ok(config_dir)
-    }
 
-    /// Load or generate CA certificate and key
-    fn load_or_generate_ca() -> Result<(Certificate, KeyPair)> {
-        let config_dir = Self::get_config_dir()?;
+    /// Load or generate CA certificate and key with custom dir
+    fn load_or_generate_ca_with_dir(config_dir: Option<&PathBuf>) -> Result<(Certificate, KeyPair)> {
+        let config_dir = if let Some(dir) = config_dir {
+            dir.clone()
+        } else {
+            dirs::config_dir()
+                .context("Could not find user config directory")?
+                .join("httpjail")
+        };
         
         // Create directory if it doesn't exist
         fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
@@ -131,8 +129,13 @@ impl CertificateManager {
 
     /// Create a new certificate manager with a self-signed CA
     pub fn new() -> Result<Self> {
-        // Load or generate CA certificate
-        let (ca_cert, ca_key_pair) = Self::load_or_generate_ca()?;
+        Self::with_config_dir(None)
+    }
+    
+    /// Create a new certificate manager with a custom config directory (for testing)
+    pub fn with_config_dir(config_dir: Option<PathBuf>) -> Result<Self> {
+        // Load or generate CA certificate with custom config dir
+        let (ca_cert, ca_key_pair) = Self::load_or_generate_ca_with_dir(config_dir.as_ref())?;
 
         // Generate a single key pair to be used for all server certificates
         let server_key_pair = KeyPair::generate().context("Failed to generate server key pair")?;
@@ -152,6 +155,7 @@ impl CertificateManager {
             server_key_pair,
             server_key_der,
             cert_cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
+            config_dir,
         })
     }
 
@@ -214,7 +218,9 @@ impl CertificateManager {
     
     /// Get the path to the CA certificate file
     pub fn get_ca_cert_path() -> Result<PathBuf> {
-        let config_dir = Self::get_config_dir()?;
+        let config_dir = dirs::config_dir()
+            .context("Could not find user config directory")?
+            .join("httpjail");
         Ok(config_dir.join("ca-cert.pem"))
     }
     
