@@ -1,11 +1,12 @@
+mod jail;
 mod proxy;
 mod rules;
 
 use anyhow::Result;
 use clap::Parser;
+use jail::{JailConfig, create_jail};
 use proxy::ProxyServer;
 use rules::{Action, Rule, RuleEngine};
-use std::process::Command;
 use tracing::{debug, info};
 
 #[derive(Parser, Debug)]
@@ -17,9 +18,41 @@ struct Args {
     #[arg(short = 'a', long = "allow", value_name = "PATTERN")]
     allow: Vec<String>,
 
+    /// Allow GET requests matching regex pattern
+    #[arg(long = "allow-get", value_name = "PATTERN")]
+    allow_get: Vec<String>,
+
+    /// Allow POST requests matching regex pattern
+    #[arg(long = "allow-post", value_name = "PATTERN")]
+    allow_post: Vec<String>,
+
+    /// Allow PUT requests matching regex pattern
+    #[arg(long = "allow-put", value_name = "PATTERN")]
+    allow_put: Vec<String>,
+
+    /// Allow DELETE requests matching regex pattern
+    #[arg(long = "allow-delete", value_name = "PATTERN")]
+    allow_delete: Vec<String>,
+
     /// Deny requests matching regex pattern (can be specified multiple times)
     #[arg(short = 'd', long = "deny", value_name = "PATTERN")]
     deny: Vec<String>,
+
+    /// Deny GET requests matching regex pattern
+    #[arg(long = "deny-get", value_name = "PATTERN")]
+    deny_get: Vec<String>,
+
+    /// Deny POST requests matching regex pattern
+    #[arg(long = "deny-post", value_name = "PATTERN")]
+    deny_post: Vec<String>,
+
+    /// Deny PUT requests matching regex pattern
+    #[arg(long = "deny-put", value_name = "PATTERN")]
+    deny_put: Vec<String>,
+
+    /// Deny DELETE requests matching regex pattern
+    #[arg(long = "deny-delete", value_name = "PATTERN")]
+    deny_delete: Vec<String>,
 
     /// Use configuration file
     #[arg(short = 'c', long = "config", value_name = "FILE")]
@@ -65,16 +98,45 @@ fn setup_logging(verbosity: u8) {
 }
 
 fn build_rules(args: &Args) -> Result<Vec<Rule>> {
+    use hyper::Method;
     let mut rules = Vec::new();
 
-    // Add allow rules
+    // Add allow rules (all methods)
     for pattern in &args.allow {
         rules.push(Rule::new(Action::Allow, pattern)?);
     }
 
-    // Add deny rules
+    // Add method-specific allow rules
+    for pattern in &args.allow_get {
+        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::GET]));
+    }
+    for pattern in &args.allow_post {
+        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::POST]));
+    }
+    for pattern in &args.allow_put {
+        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::PUT]));
+    }
+    for pattern in &args.allow_delete {
+        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::DELETE]));
+    }
+
+    // Add deny rules (all methods)
     for pattern in &args.deny {
         rules.push(Rule::new(Action::Deny, pattern)?);
+    }
+
+    // Add method-specific deny rules
+    for pattern in &args.deny_get {
+        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::GET]));
+    }
+    for pattern in &args.deny_post {
+        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::POST]));
+    }
+    for pattern in &args.deny_put {
+        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::PUT]));
+    }
+    for pattern in &args.deny_delete {
+        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::DELETE]));
     }
 
     // If no rules specified, default to allow all (for testing)
@@ -95,54 +157,41 @@ async fn main() -> Result<()> {
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
-
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
 
-    // Check if we should start the proxy server
-    let start_proxy = std::env::var("HTTPJAIL_ENABLE_PROXY").is_ok();
+    // Create jail configuration with default ports
+    let jail_config = JailConfig {
+        http_proxy_port: 8040,
+        https_proxy_port: 8043,
+        tls_intercept: !args.no_tls_intercept,
+        jail_name: "httpjail".to_string(),
+    };
 
-    if start_proxy {
-        // Start the proxy server
-        let proxy = ProxyServer::new(8080, 8443, rule_engine.clone());
-        proxy.start().await?;
-        
-        info!("Proxy server started on http://127.0.0.1:8080");
-        
-        // Set environment variables for the child process to use the proxy
-        unsafe {
-            std::env::set_var("http_proxy", "http://127.0.0.1:8080");
-            std::env::set_var("https_proxy", "http://127.0.0.1:8080");
-            std::env::set_var("HTTP_PROXY", "http://127.0.0.1:8080");
-            std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:8080");
-        }
-        
-        // Give the proxy server time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
+    info!("Starting proxy server on ports {} (HTTP) and {} (HTTPS)", 
+         jail_config.http_proxy_port, jail_config.https_proxy_port);
 
-    debug!("Executing command: {:?}", args.command);
+    // Start the proxy server
+    let proxy = ProxyServer::new(
+        jail_config.http_proxy_port, 
+        jail_config.https_proxy_port, 
+        rule_engine.clone()
+    );
+    proxy.start().await?;
 
-    if args.command.is_empty() {
-        anyhow::bail!("No command specified");
-    }
+    // Create and setup jail
+    let jail = create_jail(jail_config.clone())?;
 
-    // Execute the command with proxy environment if enabled
-    let mut cmd = Command::new(&args.command[0]);
-    if args.command.len() > 1 {
-        cmd.args(&args.command[1..]);
-    }
+    // Initialize jail
+    jail.init()?;
 
-    // For testing purposes, we can set environment variables
-    // that a mock server could read to determine rules
-    if std::env::var("HTTPJAIL_TEST_MODE").is_ok() {
-        // In test mode, pass rules via environment
-        let rules_json = serde_json::to_string(&format!("{:?}", rule_engine.rules))?;
-        cmd.env("HTTPJAIL_RULES", rules_json);
-        cmd.env("HTTPJAIL_DRY_RUN", args.dry_run.to_string());
-        cmd.env("HTTPJAIL_LOG_ONLY", args.log_only.to_string());
-    }
+    // Setup jail (pass 0 as the port parameter is ignored)
+    jail.setup(0)?;
 
-    let status = cmd.status()?;
+    // Execute command in jail
+    let status = jail.execute(&args.command)?;
+
+    // Cleanup jail
+    jail.cleanup()?;
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -154,13 +203,14 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hyper::Method;
 
     #[test]
     fn test_rule_matching() {
         let rule = Rule::new(Action::Allow, r"github\.com").unwrap();
-        assert!(rule.matches("https://github.com/user/repo"));
-        assert!(rule.matches("http://api.github.com/v3/repos"));
-        assert!(!rule.matches("https://gitlab.com/user/repo"));
+        assert!(rule.matches(Method::GET, "https://github.com/user/repo"));
+        assert!(rule.matches(Method::POST, "http://api.github.com/v3/repos"));
+        assert!(!rule.matches(Method::GET, "https://gitlab.com/user/repo"));
     }
 
     #[test]
@@ -174,16 +224,22 @@ mod tests {
         let engine = RuleEngine::new(rules, false, false);
 
         // Test allow rule
-        matches!(engine.evaluate("https://github.com/api"), Action::Allow);
+        matches!(
+            engine.evaluate(Method::GET, "https://github.com/api"),
+            Action::Allow
+        );
 
         // Test deny rule
         matches!(
-            engine.evaluate("https://telemetry.example.com"),
+            engine.evaluate(Method::POST, "https://telemetry.example.com"),
             Action::Deny
         );
 
         // Test default deny
-        matches!(engine.evaluate("https://example.com"), Action::Deny);
+        matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Deny
+        );
     }
 
     #[test]
@@ -193,7 +249,10 @@ mod tests {
         let engine = RuleEngine::new(rules, true, false);
 
         // In dry-run mode, everything should be allowed
-        matches!(engine.evaluate("https://example.com"), Action::Allow);
+        matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Allow
+        );
     }
 
     #[test]
@@ -203,6 +262,9 @@ mod tests {
         let engine = RuleEngine::new(rules, false, true);
 
         // In log-only mode, everything should be allowed
-        matches!(engine.evaluate("https://example.com"), Action::Allow);
+        matches!(
+            engine.evaluate(Method::POST, "https://example.com"),
+            Action::Allow
+        );
     }
 }

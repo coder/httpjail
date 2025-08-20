@@ -97,8 +97,8 @@ async fn handle_request(
     
     info!("Proxying request: {} {}", method, full_url);
     
-    // Evaluate rules
-    match rule_engine.evaluate(&full_url) {
+    // Evaluate rules with method
+    match rule_engine.evaluate(method, &full_url) {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
             match proxy_request(req, &full_url).await {
