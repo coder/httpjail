@@ -12,6 +12,13 @@ hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["full"] }
 bytes = "1.5"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2.0"
+rcgen = "0.13"
+webpki-roots = "0.26"
+lru = "0.12"
+rand = "0.8"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

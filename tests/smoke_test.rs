@@ -24,7 +24,7 @@ fn test_httpjail_version() {
 #[test]
 fn test_httpjail_requires_command() {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    cmd.arg("--allow").arg(".*");
+    cmd.arg("-r").arg("allow: .*");
     
     cmd.assert()
         .failure()
@@ -34,8 +34,8 @@ fn test_httpjail_requires_command() {
 #[test]
 fn test_httpjail_invalid_regex() {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    cmd.arg("--allow")
-        .arg("[invalid regex")
+    cmd.arg("-r")
+        .arg("allow: [invalid regex")
         .arg("--")
         .arg("echo")
         .arg("test");
@@ -50,8 +50,8 @@ fn test_httpjail_invalid_regex() {
 fn test_httpjail_basic_execution() {
     // Simple test that doesn't make network requests
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    cmd.arg("--allow")
-        .arg(".*")
+    cmd.arg("-r")
+        .arg("allow: .*")
         .arg("--")
         .arg("echo")
         .arg("Hello from jail");

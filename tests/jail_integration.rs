@@ -90,7 +90,7 @@ mod macos_jail_integration {
         
         // Run a simple command with httpjail
         let result = run_httpjail(vec![
-            "--allow", ".*",
+            "-r", "allow: .*",
             "--", "echo", "test"
         ]);
         
@@ -119,7 +119,7 @@ mod macos_jail_integration {
         
         // Test allowing httpbin.org
         let result = run_httpjail(vec![
-            "--allow", "httpbin\\.org",
+            "-r", "allow: httpbin\\.org",
             "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
             "http://httpbin.org/get"
         ]);
@@ -148,7 +148,7 @@ mod macos_jail_integration {
         
         // Test denying example.com while allowing httpbin.org
         let result = run_httpjail(vec![
-            "--allow", "httpbin\\.org",
+            "-r", "allow: httpbin\\.org",
             "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
             "http://example.com"
         ]);
@@ -177,7 +177,7 @@ mod macos_jail_integration {
         
         // Test allowing only GET requests
         let get_result = run_httpjail(vec![
-            "--allow-get", "httpbin\\.org",
+            "-r", "allow-get: httpbin\\.org",
             "--", "curl", "-X", "GET", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
             "http://httpbin.org/get"
         ]);
@@ -192,7 +192,7 @@ mod macos_jail_integration {
         
         // Test that POST is denied with same rule
         let post_result = run_httpjail(vec![
-            "--allow-get", "httpbin\\.org",
+            "-r", "allow-get: httpbin\\.org",
             "--", "curl", "-X", "POST", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
             "http://httpbin.org/post"
         ]);
@@ -221,7 +221,7 @@ mod macos_jail_integration {
         
         // Test that exit codes are propagated
         let result = run_httpjail(vec![
-            "--allow", ".*",
+            "-r", "allow: .*",
             "--", "sh", "-c", "exit 42"
         ]);
         
@@ -277,7 +277,7 @@ mod macos_jail_integration {
         
         // In dry-run mode, deny rules should not actually block
         let result = run_httpjail(vec![
-            "--dry-run", "--deny", ".*",
+            "--dry-run", "-r", "deny: .*",
             "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", 
             "http://httpbin.org/get"
         ]);

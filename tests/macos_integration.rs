@@ -23,6 +23,7 @@ mod tests {
         let mut cmd = Command::cargo_bin("httpjail").unwrap();
         // Tests require sudo on macOS
         cmd.env("RUST_LOG", "httpjail=debug");
+        // No need to specify ports - they'll be auto-assigned
         cmd
     }
 
@@ -33,8 +34,8 @@ mod tests {
         skip_if_not_root();
         
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow")
-            .arg("httpbin\\.org")
+        cmd.arg("-r")
+            .arg("allow: httpbin\\.org")
             .arg("--")
             .arg("curl")
             .arg("-s")
@@ -64,8 +65,8 @@ mod tests {
         skip_if_not_root();
         
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow")
-            .arg("httpbin\\.org")
+        cmd.arg("-r")
+            .arg("allow: httpbin\\.org")
             .arg("--")
             .arg("curl")
             .arg("-s")
@@ -94,8 +95,8 @@ mod tests {
         
         // Test 1: Allow GET to httpbin
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow-get")
-            .arg("httpbin\\.org")
+        cmd.arg("-r")
+            .arg("allow-get: httpbin\\.org")
             .arg("--")
             .arg("curl")
             .arg("-X")
@@ -120,8 +121,8 @@ mod tests {
 
         // Test 2: Deny POST to same URL
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow-get")
-            .arg("httpbin\\.org")
+        cmd.arg("-r")
+            .arg("allow-get: httpbin\\.org")
             .arg("--")
             .arg("curl")
             .arg("-X")
@@ -180,8 +181,8 @@ mod tests {
         
         let mut cmd = httpjail_cmd();
         cmd.arg("--dry-run")
-            .arg("--deny")
-            .arg(".*")  // Deny everything
+            .arg("-r")
+            .arg("deny: .*")  // Deny everything
             .arg("--")
             .arg("curl")
             .arg("-s")
@@ -209,8 +210,8 @@ mod tests {
     fn test_jail_requires_command() {
         // This test doesn't require root
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow")
-            .arg(".*");
+        cmd.arg("-r")
+            .arg("allow: .*");
         
         cmd.assert()
             .failure()
@@ -225,8 +226,8 @@ mod tests {
         
         // Test that httpjail propagates the exit code of the child process
         let mut cmd = httpjail_cmd();
-        cmd.arg("--allow")
-            .arg(".*")
+        cmd.arg("-r")
+            .arg("allow: .*")
             .arg("--")
             .arg("sh")
             .arg("-c")
@@ -237,5 +238,68 @@ mod tests {
             .expect("Failed to execute httpjail");
 
         assert_eq!(output.status.code(), Some(42), "Exit code should be propagated");
+    }
+
+    #[test]
+    #[ignore] // Requires sudo - TLS interception not fully implemented yet
+    #[serial] // PF rules are global state, must run sequentially
+    fn test_jail_https_connect_allowed() {
+        skip_if_not_root();
+        
+        // Test that CONNECT requests to allowed domains succeed
+        // Note: Full TLS interception is not yet implemented, so we just test CONNECT
+        let mut cmd = httpjail_cmd();
+        cmd.arg("-r")
+            .arg("allow: example\\.com")
+            .arg("--")
+            .arg("curl")
+            .arg("-v")
+            .arg("--connect-timeout")
+            .arg("2")
+            .arg("-I")  // HEAD request only
+            .arg("https://example.com");  // HTTPS URL
+
+        let output = cmd
+            .output()
+            .expect("Failed to execute httpjail");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        eprintln!("HTTPS CONNECT test stderr: {}", stderr);
+        
+        // Should see successful CONNECT response even if TLS fails after
+        assert!(stderr.contains("< HTTP/1.1 200"), "CONNECT should be allowed for example.com");
+    }
+
+    #[test]
+    #[ignore] // Requires sudo
+    #[serial] // PF rules are global state, must run sequentially
+    fn test_jail_https_connect_denied() {
+        skip_if_not_root();
+        
+        // Test that CONNECT requests to denied domains are blocked
+        let mut cmd = httpjail_cmd();
+        cmd.arg("-r")
+            .arg("allow: httpbin\\.org")
+            .arg("-r")
+            .arg("deny: example\\.com")
+            .arg("--")
+            .arg("curl")
+            .arg("-v")
+            .arg("--connect-timeout")
+            .arg("2")
+            .arg("-I")  // HEAD request only
+            .arg("https://example.com");  // HTTPS URL that should be denied
+
+        let output = cmd
+            .output()
+            .expect("Failed to execute httpjail");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        eprintln!("HTTPS denied test stderr: {}", stderr);
+        
+        // Should see 403 Forbidden response to CONNECT
+        assert!(stderr.contains("< HTTP/1.1 403"), "CONNECT should be denied for example.com");
     }
 }

@@ -47,8 +47,17 @@ mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
 
+mod weak;
+
 /// Create a platform-specific jail implementation
-pub fn create_jail(config: JailConfig) -> Result<Box<dyn Jail>> {
+pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
+    // Use weak jail if requested (works on all platforms)
+    if weak_mode {
+        use self::weak::WeakJail;
+        return Ok(Box::new(WeakJail::new(config)?));
+    }
+    
+    // Otherwise use platform-specific implementation
     #[cfg(target_os = "macos")]
     {
         use self::macos::MacOSJail;

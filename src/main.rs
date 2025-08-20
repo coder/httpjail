@@ -1,6 +1,7 @@
 mod jail;
 mod proxy;
 mod rules;
+mod tls;
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,45 +15,16 @@ use tracing::{debug, info};
 #[command(version, about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
-    /// Allow requests matching regex pattern (can be specified multiple times)
-    #[arg(short = 'a', long = "allow", value_name = "PATTERN")]
-    allow: Vec<String>,
-
-    /// Allow GET requests matching regex pattern
-    #[arg(long = "allow-get", value_name = "PATTERN")]
-    allow_get: Vec<String>,
-
-    /// Allow POST requests matching regex pattern
-    #[arg(long = "allow-post", value_name = "PATTERN")]
-    allow_post: Vec<String>,
-
-    /// Allow PUT requests matching regex pattern
-    #[arg(long = "allow-put", value_name = "PATTERN")]
-    allow_put: Vec<String>,
-
-    /// Allow DELETE requests matching regex pattern
-    #[arg(long = "allow-delete", value_name = "PATTERN")]
-    allow_delete: Vec<String>,
-
-    /// Deny requests matching regex pattern (can be specified multiple times)
-    #[arg(short = 'd', long = "deny", value_name = "PATTERN")]
-    deny: Vec<String>,
-
-    /// Deny GET requests matching regex pattern
-    #[arg(long = "deny-get", value_name = "PATTERN")]
-    deny_get: Vec<String>,
-
-    /// Deny POST requests matching regex pattern
-    #[arg(long = "deny-post", value_name = "PATTERN")]
-    deny_post: Vec<String>,
-
-    /// Deny PUT requests matching regex pattern
-    #[arg(long = "deny-put", value_name = "PATTERN")]
-    deny_put: Vec<String>,
-
-    /// Deny DELETE requests matching regex pattern
-    #[arg(long = "deny-delete", value_name = "PATTERN")]
-    deny_delete: Vec<String>,
+    /// Rules for filtering requests (can be specified multiple times)
+    /// Format: "action[-method]: pattern"
+    /// Examples:
+    ///   -r "allow: github\.com/.*"
+    ///   -r "deny-post: telemetry\..*"
+    ///   -r "allow-get: .*"
+    /// Actions: allow, deny
+    /// Methods (optional): get, post, put, delete, head, options, connect, trace, patch
+    #[arg(short = 'r', long = "rule", value_name = "RULE")]
+    rules: Vec<String>,
 
     /// Use configuration file
     #[arg(short = 'c', long = "config", value_name = "FILE")]
@@ -73,6 +45,10 @@ struct Args {
     /// Interactive approval mode
     #[arg(long = "interactive")]
     interactive: bool,
+    
+    /// Use weak mode (environment variables only, no system isolation)
+    #[arg(long = "weak")]
+    weak: bool,
 
     /// Increase verbosity (-vvv for max)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
@@ -97,53 +73,73 @@ fn setup_logging(verbosity: u8) {
         .init();
 }
 
-fn build_rules(args: &Args) -> Result<Vec<Rule>> {
+fn parse_rule(rule_str: &str) -> Result<Rule> {
     use hyper::Method;
+    
+    // Split on the first colon to separate action from pattern
+    let parts: Vec<&str> = rule_str.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid rule format: '{}'. Expected 'action[-method]: pattern'", rule_str);
+    }
+    
+    let action_part = parts[0].trim();
+    let pattern = parts[1].trim();
+    
+    // Parse action and optional method
+    let (action, method) = if action_part.contains('-') {
+        let action_parts: Vec<&str> = action_part.splitn(2, '-').collect();
+        let action = match action_parts[0] {
+            "allow" => Action::Allow,
+            "deny" => Action::Deny,
+            _ => anyhow::bail!("Invalid action: '{}'. Expected 'allow' or 'deny'", action_parts[0]),
+        };
+        
+        let method = match action_parts[1].to_lowercase().as_str() {
+            "get" => Some(Method::GET),
+            "post" => Some(Method::POST),
+            "put" => Some(Method::PUT),
+            "delete" => Some(Method::DELETE),
+            "head" => Some(Method::HEAD),
+            "options" => Some(Method::OPTIONS),
+            "connect" => Some(Method::CONNECT),
+            "trace" => Some(Method::TRACE),
+            "patch" => Some(Method::PATCH),
+            _ => anyhow::bail!("Invalid method: '{}'", action_parts[1]),
+        };
+        
+        (action, method)
+    } else {
+        let action = match action_part {
+            "allow" => Action::Allow,
+            "deny" => Action::Deny,
+            _ => anyhow::bail!("Invalid action: '{}'. Expected 'allow' or 'deny'", action_part),
+        };
+        (action, None)
+    };
+    
+    // Create rule with optional method restriction
+    let rule = Rule::new(action, pattern)?;
+    Ok(if let Some(method) = method {
+        rule.with_methods(vec![method])
+    } else {
+        rule
+    })
+}
+
+fn build_rules(args: &Args) -> Result<Vec<Rule>> {
     let mut rules = Vec::new();
-
-    // Add allow rules (all methods)
-    for pattern in &args.allow {
-        rules.push(Rule::new(Action::Allow, pattern)?);
+    
+    // Parse rules in the exact order specified
+    for rule_str in &args.rules {
+        rules.push(parse_rule(rule_str)?);
     }
-
-    // Add method-specific allow rules
-    for pattern in &args.allow_get {
-        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::GET]));
-    }
-    for pattern in &args.allow_post {
-        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::POST]));
-    }
-    for pattern in &args.allow_put {
-        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::PUT]));
-    }
-    for pattern in &args.allow_delete {
-        rules.push(Rule::new(Action::Allow, pattern)?.with_methods(vec![Method::DELETE]));
-    }
-
-    // Add deny rules (all methods)
-    for pattern in &args.deny {
-        rules.push(Rule::new(Action::Deny, pattern)?);
-    }
-
-    // Add method-specific deny rules
-    for pattern in &args.deny_get {
-        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::GET]));
-    }
-    for pattern in &args.deny_post {
-        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::POST]));
-    }
-    for pattern in &args.deny_put {
-        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::PUT]));
-    }
-    for pattern in &args.deny_delete {
-        rules.push(Rule::new(Action::Deny, pattern)?.with_methods(vec![Method::DELETE]));
-    }
-
+    
     // If no rules specified, default to allow all (for testing)
     if rules.is_empty() {
+        info!("No rules specified, defaulting to allow all");
         rules.push(Rule::new(Action::Allow, ".*")?);
     }
-
+    
     Ok(rules)
 }
 
@@ -159,37 +155,32 @@ async fn main() -> Result<()> {
     let rules = build_rules(&args)?;
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
 
-    // Create jail configuration with ports from env vars or defaults
+    // Get ports from env vars (optional)
     let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8040);
+        .and_then(|s| s.parse::<u16>().ok());
     
     let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8043);
+        .and_then(|s| s.parse::<u16>().ok());
+
+    // Start the proxy server
+    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine.clone());
+    let (actual_http_port, actual_https_port) = proxy.start().await?;
     
+    info!("Proxy server started on ports {} (HTTP) and {} (HTTPS)", 
+         actual_http_port, actual_https_port);
+    
+    // Create jail configuration with actual bound ports
     let jail_config = JailConfig {
-        http_proxy_port: http_port,
-        https_proxy_port: https_port,
+        http_proxy_port: actual_http_port,
+        https_proxy_port: actual_https_port,
         tls_intercept: !args.no_tls_intercept,
         jail_name: "httpjail".to_string(),
     };
 
-    info!("Starting proxy server on ports {} (HTTP) and {} (HTTPS)", 
-         jail_config.http_proxy_port, jail_config.https_proxy_port);
-
-    // Start the proxy server
-    let proxy = ProxyServer::new(
-        jail_config.http_proxy_port, 
-        jail_config.https_proxy_port, 
-        rule_engine.clone()
-    );
-    proxy.start().await?;
-
     // Create and setup jail
-    let mut jail = create_jail(jail_config.clone())?;
+    let mut jail = create_jail(jail_config.clone(), args.weak)?;
 
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
