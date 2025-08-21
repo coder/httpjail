@@ -23,32 +23,13 @@ use tracing::{debug, error, info, warn};
 pub const HTTPJAIL_HEADER: &str = "HTTPJAIL";
 pub const HTTPJAIL_HEADER_VALUE: &str = "true";
 
-// Shared HTTP client for upstream requests
-static HTTP_CLIENT: OnceLock<
-    Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>>,
-> = OnceLock::new();
-
-// Shared HTTPS client for upstream requests
+// Shared HTTP/HTTPS client for upstream requests
 static HTTPS_CLIENT: OnceLock<
     Client<
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         BoxBody<Bytes, HyperError>,
     >,
 > = OnceLock::new();
-
-/// Get or create the shared HTTP client
-pub fn get_http_client()
--> &'static Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>> {
-    HTTP_CLIENT.get_or_init(|| {
-        Client::builder(TokioExecutor::new())
-            // Keep minimal pooling but with shorter timeouts
-            .pool_idle_timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(1)
-            .http1_title_case_headers(false)
-            .http1_preserve_header_case(true)
-            .build_http()
-    })
-}
 
 /// Prepare a request for forwarding to upstream server
 /// Removes proxy-specific headers and converts body to BoxBody
@@ -74,8 +55,8 @@ pub fn prepare_upstream_request(
     Request::from_parts(parts, boxed_request_body)
 }
 
-/// Get or create the shared HTTPS client
-pub fn get_https_client() -> &'static Client<
+/// Get or create the shared HTTP/HTTPS client
+pub fn get_client() -> &'static Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     BoxBody<Bytes, HyperError>,
 > {
@@ -83,7 +64,7 @@ pub fn get_https_client() -> &'static Client<
         let https = HttpsConnectorBuilder::new()
             .with_native_roots()
             .expect("Failed to load native roots")
-            .https_only()
+            .https_or_http()
             .enable_http1()
             .build();
 
@@ -311,8 +292,8 @@ async fn proxy_request(
     // Prepare request for upstream
     let new_req = prepare_upstream_request(req, target_uri);
 
-    // Use the shared HTTP client
-    let client = get_http_client();
+    // Use the shared HTTP/HTTPS client
+    let client = get_client();
 
     // Forward the request - no timeout to support long-running connections
     debug!("Sending HTTP request to upstream server: {}", full_url);

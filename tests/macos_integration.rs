@@ -285,7 +285,7 @@ mod tests {
     fn test_jail_https_connect_denied() {
         require_sudo();
 
-        // Test that CONNECT requests to denied domains are blocked
+        // Test that HTTPS requests to denied domains are blocked
         let mut cmd = httpjail_cmd();
         cmd.arg("-r")
             .arg("allow: httpbin\\.org")
@@ -305,10 +305,14 @@ mod tests {
 
         eprintln!("HTTPS denied test stderr: {}", stderr);
 
-        // Should see 403 Forbidden response to CONNECT
+        // For transparent TLS interception, denied connections are closed
+        // so we expect connection errors (reset, timeout, etc.)
         assert!(
-            stderr.contains("< HTTP/1.1 403"),
-            "CONNECT should be denied for example.com"
+            stderr.contains("Connection reset by peer")
+                || stderr.contains("Connection refused")
+                || stderr.contains("Timeout")
+                || output.status.code() == Some(35), // SSL connect error
+            "HTTPS connection should be blocked/reset for denied host example.com"
         );
     }
 }

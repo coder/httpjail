@@ -16,6 +16,7 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 - [ ] Update README to be more reflective of AI agent restrictions
 - [ ] Block all other TCP/UDP traffic when in jail mode. Exception for UDP to 53. DNS is pretty darn safe.
 - [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
+- [ ] Expand test cases to include WebSockets
 - [ ] Add Linux support with parity with macOS
 
 ## Quick Start

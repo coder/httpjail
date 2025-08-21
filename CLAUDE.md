@@ -14,11 +14,15 @@ Timeouts must not preclude long-running connections such as GRPC or WebSocket.
 
 When writing tests, prefer pure rust solutions over shell script wrappers.
 
-### Permissions
+When testing behavior outside of the strong jailing, use `--weak` for an environment-only
+invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
+variables to the proxy address.
 
-- On macOS, use `SUDO_ASKPASS=$(pwd)/askpass_macos.sh sudo -A <cmd>` to test jail features with sufficient permissions
-- When testing behavior outside of the strong jailing, use `--weak` for an environment-only
-  invocation of the tool.
+## macOS
+
+- On macOS, use `SUDO_ASKPASS=$(pwd)/askpass_macos.sh sudo -A <cmd>` to test jail features with sufficient permissions.
+- To debug pf, you may run the command with `--no-jail-cleanup` to leave around the `httpjail` group
+  and PF rules.
 
 ## Documentation
 

@@ -494,11 +494,16 @@ async fn proxy_https_request(
     // Prepare request for upstream using common function
     let new_req = crate::proxy::prepare_upstream_request(req, target_uri);
 
-    // Use the shared HTTPS client from proxy module
-    let client = crate::proxy::get_https_client();
+    // Use the shared HTTP/HTTPS client from proxy module
+    let client = crate::proxy::get_client();
 
     // Forward the request - no timeout to support long-running connections (WebSocket, gRPC, etc.)
     debug!("Sending HTTPS request to upstream server: {}", target_url);
+    debug!(
+        "Request URI: {}, Method: {}",
+        new_req.uri(),
+        new_req.method()
+    );
 
     let start = Instant::now();
     let resp_future = client.request(new_req);

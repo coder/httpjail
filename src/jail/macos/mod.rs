@@ -121,40 +121,36 @@ impl MacOSJail {
 
         // PF rules need to:
         // 1. Redirect traffic from processes with httpjail GID to our proxy
-        // 2. Allow the proxy itself to make outbound connections
-        // NOTE: Rule order matters - translation (rdr) must come before filtering (pass)
+        // 2. NOT affect any other traffic on the system
+        // NOTE: On macOS, we need to use route-to to send httpjail group traffic to lo0,
+        // then use rdr on lo0 to redirect to proxy ports
         let rules = format!(
             r#"# httpjail PF rules for GID {} on interface {}
-# Translation rules (rdr) - redirect traffic on lo0
+# First, redirect traffic arriving on lo0 to our proxy ports
 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port {}
 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port {}
 
-# Filtering rules (pass) - route traffic from httpjail group to lo0
-# Using group name '{}' instead of GID for compatibility
+# Route httpjail group traffic to lo0 where it will be redirected
 pass out route-to (lo0 127.0.0.1) inet proto tcp from any to any port 80 group {} keep state
 pass out route-to (lo0 127.0.0.1) inet proto tcp from any to any port 443 group {} keep state
 
-# Also add rules for the specific interface
+# Also handle traffic on the specific interface
 pass out on {} route-to (lo0 127.0.0.1) inet proto tcp from any to any port 80 group {} keep state
 pass out on {} route-to (lo0 127.0.0.1) inet proto tcp from any to any port 443 group {} keep state
 
-# Allow proxy itself to make outbound connections
-pass out proto tcp from 127.0.0.1 to any keep state
-
 # Allow all loopback traffic
-pass on lo0
+pass on lo0 all
 "#,
             gid,
             interface,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
-            GROUP_NAME,
-            GROUP_NAME,
-            GROUP_NAME,
+            gid,
+            gid,
             interface,
-            GROUP_NAME,
+            gid,
             interface,
-            GROUP_NAME
+            gid
         );
 
         Ok(rules)
@@ -361,11 +357,26 @@ impl Jail for MacOSJail {
             debug!("Will drop to user UID {} (from SUDO_UID)", uid);
         }
 
+        // Note: we intentionally do not set the HTTP(S)_PROXY environment variables
+        // to make it easier to check that we're _forcing_ use of the proxy and not
+        // merely getting lucky with cooperative applications.
+
         // Use direct fork/exec to have precise control over UID/GID setting
         unsafe { fork::fork_exec_with_gid(command, gid, target_uid, extra_env) }
     }
 
     fn cleanup(&self) -> Result<()> {
+        // Print verbose PF rules before cleanup for debugging
+        let output = Command::new("pfctl")
+            .args(["-vvv", "-sr", "-a", PF_ANCHOR_NAME])
+            .output()
+            .context("Failed to get verbose PF rules")?;
+
+        if output.status.success() {
+            let rules_output = String::from_utf8_lossy(&output.stdout);
+            info!("PF rules before cleanup:\n{}", rules_output);
+        }
+
         self.unload_pf_rules()?;
         info!("Jail cleanup complete");
         Ok(())
