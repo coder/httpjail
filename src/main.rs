@@ -313,22 +313,22 @@ mod tests {
         let engine = RuleEngine::new(rules, false, false);
 
         // Test allow rule
-        matches!(
+        assert!(matches!(
             engine.evaluate(Method::GET, "https://github.com/api"),
             Action::Allow
-        );
+        ));
 
         // Test deny rule
-        matches!(
+        assert!(matches!(
             engine.evaluate(Method::POST, "https://telemetry.example.com"),
             Action::Deny
-        );
+        ));
 
         // Test default deny
-        matches!(
+        assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
             Action::Deny
-        );
+        ));
     }
 
     #[test]
@@ -338,10 +338,10 @@ mod tests {
         let engine = RuleEngine::new(rules, true, false);
 
         // In dry-run mode, everything should be allowed
-        matches!(
+        assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
             Action::Allow
-        );
+        ));
     }
 
     #[test]
@@ -351,9 +351,9 @@ mod tests {
         let engine = RuleEngine::new(rules, false, true);
 
         // In log-only mode, everything should be allowed
-        matches!(
+        assert!(matches!(
             engine.evaluate(Method::POST, "https://example.com"),
             Action::Allow
-        );
+        ));
     }
 }
