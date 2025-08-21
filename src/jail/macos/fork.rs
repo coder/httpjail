@@ -26,20 +26,24 @@ pub unsafe fn fork_exec_with_gid(
     // Set extra environment variables in current process
     // execvp will inherit the environment
     for (key, val) in extra_env {
-        std::env::set_var(key, val);
+        unsafe {
+            std::env::set_var(key, val);
+        }
     }
 
     // Fork the process
-    let pid = libc::fork();
+    let pid = unsafe { libc::fork() };
     if pid < 0 {
         anyhow::bail!("Fork failed: {}", std::io::Error::last_os_error());
     } else if pid == 0 {
         // Child process
-        child_process(prog.as_ptr(), arg_ptrs.as_ptr(), gid, target_uid);
+        unsafe {
+            child_process(prog.as_ptr(), arg_ptrs.as_ptr(), gid, target_uid);
+        }
         // child_process never returns
     } else {
         // Parent process - wait for child
-        parent_wait(pid)
+        unsafe { parent_wait(pid) }
     }
 }
 
@@ -53,13 +57,15 @@ unsafe fn child_process(
 ) -> ! {
     // CRITICAL: Set GID first, before dropping privileges
     // This sets both real and effective GID
-    if libc::setgid(gid) != 0 {
+    if unsafe { libc::setgid(gid) } != 0 {
         debug!(
             "setgid({}) failed: {}",
             gid,
             std::io::Error::last_os_error()
         );
-        libc::_exit(1);
+        unsafe {
+            libc::_exit(1);
+        }
     }
 
     // On macOS, don't drop supplementary groups as it interferes with EGID
@@ -79,28 +85,34 @@ unsafe fn child_process(
     // If we have a target UID, drop privileges to that user
     // Do this AFTER setgid to preserve the effective GID
     if let Some(uid) = target_uid {
-        if libc::setuid(uid) != 0 {
+        if unsafe { libc::setuid(uid) } != 0 {
             debug!(
                 "setuid({}) failed: {}",
                 uid,
                 std::io::Error::last_os_error()
             );
-            libc::_exit(1);
+            unsafe {
+                libc::_exit(1);
+            }
         }
     }
 
     // Execute the program using execvp to search PATH
-    libc::execvp(prog, args);
+    unsafe {
+        libc::execvp(prog, args);
+    }
 
     // If we get here, exec failed
     debug!("execvp failed: {}", std::io::Error::last_os_error());
-    libc::_exit(127);
+    unsafe {
+        libc::_exit(127);
+    }
 }
 
 /// Parent process logic - wait for child and return exit status
 unsafe fn parent_wait(pid: libc::pid_t) -> Result<ExitStatus> {
     let mut status: libc::c_int = 0;
-    let wait_result = libc::waitpid(pid, &mut status, 0);
+    let wait_result = unsafe { libc::waitpid(pid, &mut status, 0) };
 
     if wait_result < 0 {
         anyhow::bail!("waitpid failed: {}", std::io::Error::last_os_error());
