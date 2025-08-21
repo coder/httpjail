@@ -1,3 +1,4 @@
+use crate::proxy::{HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE};
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
 use anyhow::Result;
@@ -535,7 +536,13 @@ async fn proxy_https_request(
     );
 
     // Convert the response body to BoxBody for uniform type
-    let (parts, body) = resp.into_parts();
+    let (mut parts, body) = resp.into_parts();
+
+    // Add HTTPJAIL header to indicate this response went through our proxy
+    parts
+        .headers
+        .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
+
     let boxed_body = body.boxed();
 
     Ok(Response::from_parts(parts, boxed_body))

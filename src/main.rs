@@ -59,6 +59,10 @@ struct Args {
     #[arg(long = "timeout")]
     timeout: Option<u64>,
 
+    /// Skip jail cleanup (hidden flag for testing)
+    #[arg(long = "no-jail-cleanup", hide = true)]
+    no_jail_cleanup: bool,
+
     /// Command and arguments to execute
     #[arg(trailing_var_arg = true, required = true)]
     command: Vec<String>,
@@ -84,6 +88,7 @@ fn setup_logging(verbosity: u8) {
         // Use RUST_LOG environment variable
         tracing_subscriber::fmt()
             .with_timer(TimeOnly)
+            .with_writer(std::io::stderr)
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
     } else {
@@ -98,6 +103,7 @@ fn setup_logging(verbosity: u8) {
 
         tracing_subscriber::fmt()
             .with_timer(TimeOnly)
+            .with_writer(std::io::stderr)
             .with_env_filter(format!("httpjail={}", level))
             .init();
     }
@@ -279,8 +285,12 @@ async fn main() -> Result<()> {
         jail.execute(&args.command, &extra_env)?
     };
 
-    // Cleanup jail
-    jail.cleanup()?;
+    // Cleanup jail (unless testing flag is set)
+    if !args.no_jail_cleanup {
+        jail.cleanup()?;
+    } else {
+        info!("Skipping jail cleanup (--no-jail-cleanup flag set)");
+    }
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));

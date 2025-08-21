@@ -11,8 +11,6 @@ mod tests {
 
     fn httpjail_cmd() -> Command {
         let mut cmd = Command::cargo_bin("httpjail").unwrap();
-        // Tests require sudo on macOS
-        cmd.env("RUST_LOG", "httpjail=debug");
         // Add timeout for all tests
         cmd.arg("--timeout").arg("10");
         // No need to specify ports - they'll be auto-assigned
@@ -20,7 +18,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo - run with: sudo cargo test -- --ignored
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_allows_matching_requests() {
         require_sudo();
@@ -49,7 +46,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_denies_non_matching_requests() {
         require_sudo();
@@ -76,7 +72,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_method_specific_rules() {
         require_sudo();
@@ -127,7 +122,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_log_only_mode() {
         require_sudo();
@@ -171,7 +165,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_dry_run_mode() {
         require_sudo();
@@ -217,7 +210,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_exit_code_propagation() {
         require_sudo();
@@ -241,7 +233,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_native_jail_blocks_https() {
         require_sudo();
@@ -250,7 +241,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_native_jail_allows_https() {
         require_sudo();
@@ -291,7 +281,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires sudo
     #[serial] // PF rules are global state, must run sequentially
     fn test_jail_https_connect_denied() {
         require_sudo();

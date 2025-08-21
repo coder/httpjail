@@ -1,3 +1,4 @@
+/// Common proxy utilities for HTTP and HTTPS.
 use crate::rules::{Action, RuleEngine};
 #[allow(unused_imports)]
 use crate::tls::CertificateManager;
@@ -18,6 +19,9 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
+
+pub const HTTPJAIL_HEADER: &str = "HTTPJAIL";
+pub const HTTPJAIL_HEADER_VALUE: &str = "true";
 
 // Shared HTTP client for upstream requests
 static HTTP_CLIENT: OnceLock<
@@ -340,7 +344,13 @@ async fn proxy_request(
     );
 
     // Convert the response body to BoxBody for uniform type
-    let (parts, body) = resp.into_parts();
+    let (mut parts, body) = resp.into_parts();
+
+    // Add HTTPJAIL header to indicate this response went through our proxy
+    parts
+        .headers
+        .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
+
     let boxed_body = body.boxed();
 
     Ok(Response::from_parts(parts, boxed_body))
@@ -358,6 +368,7 @@ pub fn create_error_response(
         .status(status)
         .header("Content-Type", "text/plain")
         .header("Content-Length", message.len().to_string())
+        .header(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE)
         .body(body)
         .unwrap())
 }

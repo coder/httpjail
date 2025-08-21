@@ -14,10 +14,9 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 ## MVP TODO
 
 - [ ] Update README to be more reflective of AI agent restrictions
-- [ ] Block all other TCP traffic by default (disabled via flag) (perhaps should be a rule?)
-- [ ] When ran under sudo should drop into original user before executing the command
+- [ ] Block all other TCP/UDP traffic when in jail mode. Exception for UDP to 53. DNS is pretty darn safe.
 - [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
-- [ ] Requests occasionally take a very long time to complete.
+- [ ] Add Linux support with parity with macOS
 
 ## Quick Start
 
