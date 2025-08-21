@@ -525,11 +525,21 @@ async fn proxy_https_request(
         }
         Err(e) => {
             let elapsed = start.elapsed();
+
+            // Try to get more detailed error information
+            let error_details = format!("{:?}", e);
+            let error_chain = format!("{:#}", e);
+
             error!(
                 "Failed to forward HTTPS request after {}ms: {}",
                 elapsed.as_millis(),
                 e
             );
+            error!("Error details: {}", error_details);
+            error!("Error chain: {}", error_chain);
+
+            // The hyper_util error doesn't expose underlying IO errors directly
+
             return Err(e.into());
         }
     };

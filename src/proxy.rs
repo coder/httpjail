@@ -61,12 +61,20 @@ pub fn get_client() -> &'static Client<
     BoxBody<Bytes, HyperError>,
 > {
     HTTPS_CLIENT.get_or_init(|| {
-        let https = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("Failed to load native roots")
-            .https_or_http()
-            .enable_http1()
-            .build();
+        // Try native roots first, but add debugging
+        let builder = HttpsConnectorBuilder::new();
+
+        let https = match builder.with_native_roots() {
+            Ok(builder) => {
+                debug!("Successfully loaded native certificate roots");
+                builder.https_or_http().enable_http1().build()
+            }
+            Err(e) => {
+                // This shouldn't happen but log it if it does
+                error!("Failed to load native certificate roots: {}", e);
+                panic!("Cannot proceed without certificate roots: {}", e);
+            }
+        };
 
         Client::builder(TokioExecutor::new())
             // Keep minimal pooling but with shorter timeouts
