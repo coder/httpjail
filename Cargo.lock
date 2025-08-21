@@ -234,6 +234,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
+name = "camino"
+version = "1.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d07aa9a93b00c76f71bc35d598bed923f6d4f3a9ca5c24b7737ae1a292841c0"
+
+[[package]]
 name = "cc"
 version = "1.2.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -688,6 +694,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "bytes",
+ "camino",
  "chrono",
  "clap",
  "dirs",

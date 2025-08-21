@@ -2,7 +2,7 @@ use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use libc;
 use std::fs;
-use std::path::Path;
+use camino::Utf8Path;
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
@@ -282,7 +282,7 @@ anchor "{}"
         }
 
         // Clean up temp file
-        if Path::new(&self.pf_rules_path).exists() {
+        if Utf8Path::new(&self.pf_rules_path).exists() {
             fs::remove_file(&self.pf_rules_path).context("Failed to remove PF rules file")?;
         }
 
