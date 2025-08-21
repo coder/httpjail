@@ -16,12 +16,12 @@ fn test_weak_mode_allows_https_with_allow_rule() {
 
 #[test]
 fn test_weak_mode_blocks_http_correctly() {
-    // Test that HTTP to example.com is blocked in weak mode
+    // Test that HTTP to httpbin.org is blocked in weak mode
     let result = HttpjailCommand::new()
         .weak()
         .rule("deny: .*")
         .verbose(2)
-        .command(vec!["curl", "--max-time", "3", "http://example.com"])
+        .command(vec!["curl", "--max-time", "3", "http://httpbin.org/get"])
         .execute();
 
     match result {
@@ -37,9 +37,9 @@ fn test_weak_mode_blocks_http_correctly() {
                 "Expected request to be blocked, but got normal response"
             );
 
-            // Should not contain the example.com content
-            assert!(!stdout.contains("<!doctype html>"));
-            assert!(!stdout.contains("Example Domain"));
+            // Should not contain httpbin.org content
+            assert!(!stdout.contains("\"url\""));
+            assert!(!stdout.contains("\"args\""));
         }
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);

@@ -7,11 +7,9 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 use rustls::ServerConfig;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tls_parser::{TlsMessage, parse_tls_plaintext};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -29,36 +27,6 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 // Timeout for reading TLS ClientHello
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
-
-// Shared HTTPS client for upstream requests
-static HTTPS_CLIENT: OnceLock<
-    Client<
-        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-        BoxBody<Bytes, HyperError>,
-    >,
-> = OnceLock::new();
-
-/// Get or create the shared HTTPS client
-fn get_https_client() -> &'static Client<
-    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-    BoxBody<Bytes, HyperError>,
-> {
-    HTTPS_CLIENT.get_or_init(|| {
-        let https = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("Failed to load native roots")
-            .https_only()
-            .enable_http1()
-            .build();
-
-        Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(2)
-            .http1_title_case_headers(false)
-            .http1_preserve_header_case(true)
-            .build(https)
-    })
-}
 
 /// Handle an HTTPS connection with potential CONNECT tunneling and TLS interception
 pub async fn handle_https_connection(
@@ -522,36 +490,20 @@ async fn proxy_https_request(
 
     debug!("Forwarding request to: {}", target_url);
 
-    // Convert the incoming body to BoxBody for the client
-    let (mut parts, incoming_body) = req.into_parts();
+    // Prepare request for upstream using common function
+    let new_req = crate::proxy::prepare_upstream_request(req, target_uri);
 
-    // Update the URI
-    parts.uri = target_uri;
-
-    // Remove hop-by-hop headers
-    parts.headers.remove("proxy-connection");
-    parts.headers.remove("connection");
-    parts.headers.remove("keep-alive");
-    parts.headers.remove("transfer-encoding");
-    parts.headers.remove("te");
-    parts.headers.remove("trailer");
-    parts.headers.remove("proxy-authorization");
-    parts.headers.remove("proxy-authenticate");
-    parts.headers.remove("upgrade");
-
-    // Convert incoming body to boxed body
-    let boxed_request_body = incoming_body.boxed();
-
-    // Create new request with boxed body
-    let new_req = Request::from_parts(parts, boxed_request_body);
-
-    // Use the shared HTTPS client
-    let client = get_https_client();
+    // Use the shared HTTPS client from proxy module
+    let client = crate::proxy::get_https_client();
 
     // Forward the request - no timeout to support long-running connections (WebSocket, gRPC, etc.)
     debug!("Sending HTTPS request to upstream server: {}", target_url);
+
     let start = Instant::now();
-    let resp = match client.request(new_req).await {
+    let resp_future = client.request(new_req);
+    debug!("Request future created, awaiting response...");
+
+    let resp = match resp_future.await {
         Ok(r) => {
             let elapsed = start.elapsed();
             if elapsed > Duration::from_secs(2) {
@@ -577,8 +529,9 @@ async fn proxy_https_request(
     };
 
     debug!(
-        "Received response from upstream server: {:?}",
-        resp.status()
+        "Received response from upstream server: status={:?}, version={:?}",
+        resp.status(),
+        resp.version()
     );
 
     // Convert the response body to BoxBody for uniform type

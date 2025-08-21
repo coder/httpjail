@@ -8,6 +8,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Error as HyperError, Request, Response, StatusCode, Uri};
+use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::Rng;
@@ -23,16 +24,72 @@ static HTTP_CLIENT: OnceLock<
     Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>>,
 > = OnceLock::new();
 
+// Shared HTTPS client for upstream requests
+static HTTPS_CLIENT: OnceLock<
+    Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        BoxBody<Bytes, HyperError>,
+    >,
+> = OnceLock::new();
+
 /// Get or create the shared HTTP client
-fn get_http_client()
+pub fn get_http_client()
 -> &'static Client<hyper_util::client::legacy::connect::HttpConnector, BoxBody<Bytes, HyperError>> {
     HTTP_CLIENT.get_or_init(|| {
         Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(2)
+            // Keep minimal pooling but with shorter timeouts
+            .pool_idle_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(1)
             .http1_title_case_headers(false)
             .http1_preserve_header_case(true)
             .build_http()
+    })
+}
+
+/// Prepare a request for forwarding to upstream server
+/// Removes proxy-specific headers and converts body to BoxBody
+pub fn prepare_upstream_request(
+    req: Request<Incoming>,
+    target_uri: Uri,
+) -> Request<BoxBody<Bytes, HyperError>> {
+    let (mut parts, incoming_body) = req.into_parts();
+
+    // Update the URI
+    parts.uri = target_uri;
+
+    // Remove proxy-specific headers only
+    // Don't remove connection-related headers as the client will handle them
+    parts.headers.remove("proxy-connection");
+    parts.headers.remove("proxy-authorization");
+    parts.headers.remove("proxy-authenticate");
+
+    // Convert incoming body to boxed body
+    let boxed_request_body = incoming_body.boxed();
+
+    // Create new request with boxed body
+    Request::from_parts(parts, boxed_request_body)
+}
+
+/// Get or create the shared HTTPS client
+pub fn get_https_client() -> &'static Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    BoxBody<Bytes, HyperError>,
+> {
+    HTTPS_CLIENT.get_or_init(|| {
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("Failed to load native roots")
+            .https_only()
+            .enable_http1()
+            .build();
+
+        Client::builder(TokioExecutor::new())
+            // Keep minimal pooling but with shorter timeouts
+            .pool_idle_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(1)
+            .http1_title_case_headers(false)
+            .http1_preserve_header_case(true)
+            .build(https)
     })
 }
 
@@ -247,28 +304,8 @@ async fn proxy_request(
     // Parse the target URL
     let target_uri = full_url.parse::<Uri>()?;
 
-    // Convert the incoming body to BoxBody for the client
-    let (mut parts, incoming_body) = req.into_parts();
-
-    // Update the URI
-    parts.uri = target_uri;
-
-    // Remove hop-by-hop headers
-    parts.headers.remove("proxy-connection");
-    parts.headers.remove("connection");
-    parts.headers.remove("keep-alive");
-    parts.headers.remove("transfer-encoding");
-    parts.headers.remove("te");
-    parts.headers.remove("trailer");
-    parts.headers.remove("proxy-authorization");
-    parts.headers.remove("proxy-authenticate");
-    parts.headers.remove("upgrade");
-
-    // Convert incoming body to boxed body
-    let boxed_request_body = incoming_body.boxed();
-
-    // Create new request with boxed body
-    let new_req = Request::from_parts(parts, boxed_request_body);
+    // Prepare request for upstream
+    let new_req = prepare_upstream_request(req, target_uri);
 
     // Use the shared HTTP client
     let client = get_http_client();

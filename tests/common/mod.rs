@@ -175,7 +175,7 @@ pub fn require_sudo() {
 
 // Common test implementations that can be used by both weak and strong mode tests
 
-/// Test that HTTPS to example.com is blocked correctly
+/// Test that HTTPS to httpbin.org is blocked correctly
 pub fn test_https_blocking(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -188,7 +188,13 @@ pub fn test_https_blocking(use_sudo: bool) {
     let result = cmd
         .rule("deny: .*")
         .verbose(2)
-        .command(vec!["curl", "-k", "--max-time", "3", "https://example.com"])
+        .command(vec![
+            "curl",
+            "-k",
+            "--max-time",
+            "3",
+            "https://httpbin.org/get",
+        ])
         .execute();
 
     match result {
@@ -204,9 +210,9 @@ pub fn test_https_blocking(use_sudo: bool) {
                 exit_code
             );
 
-            // Should not contain the example.com content
-            assert!(!stdout.contains("<!doctype html>"));
-            assert!(!stdout.contains("Example Domain"));
+            // Should not contain httpbin.org JSON response content
+            assert!(!stdout.contains("\"url\""));
+            assert!(!stdout.contains("\"args\""));
         }
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);
@@ -225,9 +231,15 @@ pub fn test_https_allow(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("allow: example\\.com")
+        .rule("allow: httpbin\\.org")
         .verbose(2)
-        .command(vec!["curl", "-k", "--max-time", "5", "https://example.com"])
+        .command(vec![
+            "curl",
+            "-k",
+            "--max-time",
+            "5",
+            "https://httpbin.org/get",
+        ])
         .execute();
 
     match result {
@@ -252,12 +264,12 @@ pub fn test_https_allow(use_sudo: bool) {
                     exit_code
                 );
 
-                // Should contain example.com content
+                // Should contain httpbin.org content (JSON response)
                 assert!(
-                    stdout.contains("Example Domain")
-                        || stdout.contains("example.com")
-                        || stdout.contains("<!doctype html>"),
-                    "Expected to see example.com content in response"
+                    stdout.contains("\"url\"")
+                        || stdout.contains("httpbin.org")
+                        || stdout.contains("\"args\""),
+                    "Expected to see httpbin.org JSON content in response"
                 );
             }
         }
