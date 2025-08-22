@@ -110,38 +110,46 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
     match parse_tls_plaintext(&buf[..n]) {
         Ok((_, record)) => {
             // Check if this is a handshake message
-            if let Some(TlsMessage::Handshake(tls_parser::TlsMessageHandshake::ClientHello(
+            let Some(TlsMessage::Handshake(tls_parser::TlsMessageHandshake::ClientHello(
                 client_hello,
             ))) = record.msg.first()
-            {
-                // Look for the SNI extension in the raw extensions
-                if let Some(ext_data) = client_hello.ext {
-                    // Parse the extensions
-                    if let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) {
-                        for ext in exts.1 {
-                            if let tls_parser::TlsExtension::SNI(sni_list) = ext {
-                                // Get the first hostname from the SNI list
-                                for sni in sni_list.iter() {
-                                    if let (tls_parser::SNIType::HostName, data) = sni
-                                        && let Ok(hostname) = std::str::from_utf8(data)
-                                    {
-                                        debug!("Extracted SNI hostname: {}", hostname);
-                                        return Ok(Some(hostname.to_string()));
-                                    }
-                                }
-                            }
-                        }
+            else {
+                return Ok(None);
+            };
+
+            // Look for the SNI extension in the raw extensions
+            let Some(ext_data) = client_hello.ext else {
+                debug!("ClientHello has no SNI extension");
+                return Ok(None);
+            };
+            // Parse the extensions
+            let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) else {
+                return Ok(None);
+            };
+            for ext in exts.1 {
+                if let tls_parser::TlsExtension::SNI(sni_list) = ext {
+                    // Get the first hostname from the SNI list
+                    for sni in sni_list.iter() {
+                        let (tls_parser::SNIType::HostName, data) = sni else {
+                            continue;
+                        };
+
+                        let Ok(hostname) = std::str::from_utf8(data) else {
+                            continue;
+                        };
+
+                        debug!("Extracted SNI hostname: {}", hostname);
+                        return Ok(Some(hostname.to_string()));
                     }
                 }
-                debug!("ClientHello has no SNI extension");
             }
+            Ok(None)
         }
         Err(e) => {
             debug!("Failed to parse TLS record: {:?}", e);
+            Ok(None)
         }
     }
-
-    Ok(None)
 }
 
 /// Handle transparent TLS interception (no CONNECT, direct TLS)
