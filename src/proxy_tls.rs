@@ -89,16 +89,14 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
     // TLS record header is 5 bytes, ClientHello can be quite large
     let mut buf = vec![0u8; 2048];
 
-    let n = match timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(e)) => {
-            debug!("Failed to peek ClientHello: {}", e);
-            return Ok(None);
-        }
-        Err(_) => {
-            debug!("Timeout reading ClientHello");
-            return Ok(None);
-        }
+    let Ok(peek_result) = timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await else {
+        debug!("Timeout reading ClientHello");
+        return Ok(None);
+    };
+
+    let Ok(n) = peek_result else {
+        debug!("Failed to peek ClientHello: {}", peek_result.unwrap_err());
+        return Ok(None);
     };
 
     if n < 5 {
