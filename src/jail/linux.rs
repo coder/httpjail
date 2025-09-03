@@ -4,6 +4,10 @@ use std::process::{Command, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
+// Import libc for system calls (getuid, kill)
+#[cfg(target_os = "linux")]
+use libc;
+
 /// Linux jail implementation using network namespaces
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
@@ -44,7 +48,7 @@ impl LinuxJail {
     fn check_root() -> Result<()> {
         // Check UID directly using libc
         #[cfg(target_os = "linux")]
-        let uid = unsafe { ::libc::getuid() };
+        let uid = unsafe { libc::getuid() };
         #[cfg(not(target_os = "linux"))]
         let uid = 1000; // Non-root UID for non-Linux platforms
 
@@ -411,7 +415,7 @@ impl LinuxJail {
                         if let Ok(pid) = parts[1].parse::<u32>() {
                             // Check if process still exists
                             #[cfg(target_os = "linux")]
-                            let exists = unsafe { ::libc::kill(pid as i32, 0) == 0 };
+                            let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
                             #[cfg(not(target_os = "linux"))]
                             let exists = false; // Assume process doesn't exist on non-Linux
 
