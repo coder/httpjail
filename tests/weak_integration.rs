@@ -47,6 +47,10 @@ fn test_weak_mode_blocks_http_correctly() {
     }
 }
 
+// MacOS does not have `timeout` by default. Other options here could be `gtimeout`
+// if coreutils is install or a simple perl script which mac has by default (these suggestions
+// are courtesy of claude).
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_weak_mode_timeout_works() {
     // Test that the timeout mechanism works correctly
