@@ -131,9 +131,11 @@ mod tests {
         // This test would need to run as root to properly test GID setting
         // For now, just test that the function compiles and basic execution works
         unsafe {
+            // Use current GID to avoid permission issues
+            let current_gid = libc::getgid();
             let result = fork_exec_with_gid(
                 &vec!["echo".to_string(), "test".to_string()],
-                0,    // Use current GID
+                current_gid,
                 None, // No UID change
                 &[],
             );
