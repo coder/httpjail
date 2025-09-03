@@ -13,7 +13,7 @@ env:
 jobs:
   test-macos:
     name: macOS Integration Tests
-    runs-on: macos-latest
+    runs-on: macos-15-xlarge
 
     steps:
       - uses: actions/checkout@v4
