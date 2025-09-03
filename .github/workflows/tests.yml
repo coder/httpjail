@@ -118,7 +118,8 @@ jobs:
           # Ensure ip netns support is available
           sudo ip netns list || true
           # Run the Linux-specific jail tests with root privileges
-          sudo -E cargo test --test linux_integration --verbose
+          # Use full path to cargo since sudo doesn't preserve PATH
+          sudo -E $(which cargo) test --test linux_integration --verbose
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
