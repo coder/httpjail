@@ -42,7 +42,12 @@ impl LinuxJail {
 
     /// Check if running as root
     fn check_root() -> Result<()> {
+        // Check UID directly using libc
+        #[cfg(target_os = "linux")]
         let uid = unsafe { libc::getuid() };
+        #[cfg(not(target_os = "linux"))]
+        let uid = 1000; // Non-root UID for non-Linux platforms
+
         if uid != 0 {
             anyhow::bail!(
                 "Network namespace operations require root access. Please run with sudo."
@@ -220,6 +225,10 @@ impl LinuxJail {
 
     /// Add iptables rules inside the namespace for traffic redirection
     fn setup_namespace_iptables(&self) -> Result<()> {
+        // Convert port numbers to strings to extend their lifetime
+        let http_port_str = self.config.http_proxy_port.to_string();
+        let https_port_str = self.config.https_proxy_port.to_string();
+
         let rules = vec![
             // Redirect HTTP traffic to proxy
             vec![
@@ -235,7 +244,7 @@ impl LinuxJail {
                 "-j",
                 "REDIRECT",
                 "--to-port",
-                &self.config.http_proxy_port.to_string(),
+                &http_port_str,
             ],
             // Redirect HTTPS traffic to proxy
             vec![
@@ -251,7 +260,7 @@ impl LinuxJail {
                 "-j",
                 "REDIRECT",
                 "--to-port",
-                &self.config.https_proxy_port.to_string(),
+                &https_port_str,
             ],
             // Allow local traffic (proxy connections)
             vec![
@@ -401,7 +410,11 @@ impl LinuxJail {
                     if parts.len() >= 2 {
                         if let Ok(pid) = parts[1].parse::<u32>() {
                             // Check if process still exists
+                            #[cfg(target_os = "linux")]
                             let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
+                            #[cfg(not(target_os = "linux"))]
+                            let exists = false; // Assume process doesn't exist on non-Linux
+
                             if !exists {
                                 info!("Cleaning up orphaned namespace: {}", ns_name);
                                 let _ = Command::new("ip").args(["netns", "del", ns_name]).output();
