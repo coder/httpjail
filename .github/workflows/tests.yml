@@ -39,7 +39,8 @@ jobs:
         run: |
           # The tests require root privileges for PF rules on macOS
           # GitHub Actions provides passwordless sudo on macOS runners
-          sudo cargo test --test macos_integration --verbose
+          # Use -E to preserve environment and full path to cargo
+          sudo -E $(which cargo) test --test macos_integration --verbose
 
   test-linux:
     name: Linux Tests

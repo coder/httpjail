@@ -7,7 +7,6 @@ use tracing::{debug, error, info, warn};
 /// Linux namespace network configuration constants
 pub const LINUX_NS_HOST_IP: [u8; 4] = [169, 254, 1, 1];
 pub const LINUX_NS_HOST_CIDR: &str = "169.254.1.1/30";
-pub const LINUX_NS_GUEST_IP: [u8; 4] = [169, 254, 1, 2];
 pub const LINUX_NS_GUEST_CIDR: &str = "169.254.1.2/30";
 pub const LINUX_NS_SUBNET: &str = "169.254.1.0/30";
 
