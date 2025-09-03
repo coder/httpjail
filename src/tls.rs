@@ -4,7 +4,7 @@ use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use camino::Utf8PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
@@ -24,13 +24,13 @@ pub struct CertificateManager {
     cert_cache: Arc<RwLock<LruCache<String, Vec<CertificateDer<'static>>>>>,
     /// Custom config directory (for testing)
     #[allow(dead_code)]
-    config_dir: Option<PathBuf>,
+    config_dir: Option<Utf8PathBuf>,
 }
 
 impl CertificateManager {
     /// Load or generate CA certificate and key with custom dir
     fn load_or_generate_ca_with_dir(
-        config_dir: Option<&PathBuf>,
+        config_dir: Option<&Utf8PathBuf>,
     ) -> Result<(Certificate, KeyPair)> {
         let config_dir = if let Some(dir) = config_dir {
             dir.clone()
@@ -38,6 +38,8 @@ impl CertificateManager {
             dirs::config_dir()
                 .context("Could not find user config directory")?
                 .join("httpjail")
+                .try_into()
+                .context("Config directory path is not valid UTF-8")?
         };
 
         // Create directory if it doesn't exist
@@ -85,7 +87,7 @@ impl CertificateManager {
 
             info!(
                 "Loaded cached CA certificate from {}",
-                ca_cert_path.display()
+                ca_cert_path
             );
             return Ok((ca_cert, key_pair));
         }
@@ -125,7 +127,7 @@ impl CertificateManager {
             fs::set_permissions(&ca_key_path, perms)?;
         }
 
-        info!("Saved new CA certificate to {}", ca_cert_path.display());
+        info!("Saved new CA certificate to {}", ca_cert_path);
         Ok((ca_cert, ca_key_pair))
     }
 
@@ -135,7 +137,7 @@ impl CertificateManager {
     }
 
     /// Create a new certificate manager with a custom config directory (for testing)
-    pub fn with_config_dir(config_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn with_config_dir(config_dir: Option<Utf8PathBuf>) -> Result<Self> {
         // Load or generate CA certificate with custom config dir
         let (ca_cert, ca_key_pair) = Self::load_or_generate_ca_with_dir(config_dir.as_ref())?;
 
@@ -220,10 +222,12 @@ impl CertificateManager {
     }
 
     /// Get the path to the CA certificate file
-    pub fn get_ca_cert_path() -> Result<PathBuf> {
+    pub fn get_ca_cert_path() -> Result<Utf8PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not find user config directory")?
             .join("httpjail");
+        let config_dir: Utf8PathBuf = config_dir.try_into()
+            .context("Config directory path is not valid UTF-8")?;
         Ok(config_dir.join("ca-cert.pem"))
     }
 
@@ -235,10 +239,10 @@ impl CertificateManager {
             anyhow::bail!("CA certificate not found at {:?}", ca_path);
         }
 
-        let ca_path_str = ca_path.to_string_lossy().to_string();
+        let ca_path_str = ca_path.to_string();
         let ca_dir = ca_path
             .parent()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.to_string())
             .unwrap_or_else(|| ".".to_string());
 
         let env_vars = vec![

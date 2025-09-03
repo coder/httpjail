@@ -87,7 +87,7 @@ impl HttpjailCommand {
 
             // Use askpass for macOS if available
             #[cfg(target_os = "macos")]
-            if std::path::Path::new("askpass_macos.sh").exists() {
+            if camino::Utf8Path::new("askpass_macos.sh").exists() {
                 sudo_cmd.env(
                     "SUDO_ASKPASS",
                     format!(
