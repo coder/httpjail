@@ -4,10 +4,6 @@ use std::process::{Command, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
-// Import libc for system calls (getuid, kill)
-#[cfg(target_os = "linux")]
-use libc;
-
 /// Linux jail implementation using network namespaces
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
@@ -407,23 +403,23 @@ impl LinuxJail {
         let namespaces = String::from_utf8_lossy(&output.stdout);
         for line in namespaces.lines() {
             // Look for httpjail_<pid>_* pattern
-            if let Some(ns_name) = line.split_whitespace().next() {
-                if ns_name.starts_with("httpjail_") {
-                    // Extract PID from name
-                    let parts: Vec<&str> = ns_name.split('_').collect();
-                    if parts.len() >= 2 {
-                        if let Ok(pid) = parts[1].parse::<u32>() {
-                            // Check if process still exists
-                            #[cfg(target_os = "linux")]
-                            let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
-                            #[cfg(not(target_os = "linux"))]
-                            let exists = false; // Assume process doesn't exist on non-Linux
+            if let Some(ns_name) = line.split_whitespace().next()
+                && ns_name.starts_with("httpjail_")
+            {
+                // Extract PID from name
+                let parts: Vec<&str> = ns_name.split('_').collect();
+                if parts.len() >= 2
+                    && let Ok(pid) = parts[1].parse::<u32>()
+                {
+                    // Check if process still exists
+                    #[cfg(target_os = "linux")]
+                    let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
+                    #[cfg(not(target_os = "linux"))]
+                    let exists = false; // Assume process doesn't exist on non-Linux
 
-                            if !exists {
-                                info!("Cleaning up orphaned namespace: {}", ns_name);
-                                let _ = Command::new("ip").args(["netns", "del", ns_name]).output();
-                            }
-                        }
+                    if !exists {
+                        info!("Cleaning up orphaned namespace: {}", ns_name);
+                        let _ = Command::new("ip").args(["netns", "del", ns_name]).output();
                     }
                 }
             }
@@ -523,10 +519,10 @@ impl Jail for LinuxJail {
 impl Drop for LinuxJail {
     fn drop(&mut self) {
         // Best-effort cleanup on drop
-        if self.namespace_created {
-            if let Err(e) = self.cleanup_internal() {
-                error!("Failed to cleanup namespace on drop: {}", e);
-            }
+        if self.namespace_created
+            && let Err(e) = self.cleanup_internal()
+        {
+            error!("Failed to cleanup namespace on drop: {}", e);
         }
     }
 }

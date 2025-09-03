@@ -4,6 +4,7 @@ mod system_integration;
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+    use crate::system_integration::JailTestPlatform;
     use serial_test::serial;
 
     /// Linux-specific platform implementation

@@ -30,6 +30,7 @@ pub struct JailConfig {
     pub tls_intercept: bool,
 
     /// Name/identifier for this jail instance
+    #[allow(dead_code)]
     pub jail_name: String,
 }
 
