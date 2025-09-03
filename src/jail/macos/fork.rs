@@ -31,6 +31,27 @@ pub unsafe fn fork_exec_with_gid(
         }
     }
 
+    // Ensure PATH includes standard locations for commands
+    // This is especially important in CI environments where sudo might restrict PATH
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let final_path = if !current_path.is_empty() {
+        // Add standard macOS command locations if not already present
+        let standard_paths = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        if current_path.contains("/usr/bin") {
+            current_path
+        } else {
+            format!("{}:{}", current_path, standard_paths)
+        }
+    } else {
+        // No PATH set, use standard macOS paths
+        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+    };
+
+    debug!("Setting PATH for fork_exec: {}", final_path);
+    unsafe {
+        std::env::set_var("PATH", final_path);
+    }
+
     // Fork the process
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -103,7 +124,11 @@ unsafe fn child_process(
     }
 
     // If we get here, exec failed
-    debug!("execvp failed: {}", std::io::Error::last_os_error());
+    let err = std::io::Error::last_os_error();
+    // Try to get the program name for better debugging
+    let prog_name = unsafe { std::ffi::CStr::from_ptr(prog) }.to_string_lossy();
+    eprintln!("execvp failed for '{}': {}", prog_name, err);
+    debug!("execvp failed for '{}': {}", prog_name, err);
     unsafe {
         libc::_exit(127);
     }
