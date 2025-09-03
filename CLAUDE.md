@@ -18,6 +18,11 @@ When testing behavior outside of the strong jailing, use `--weak` for an environ
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.
 
+## Cargo Cache
+
+Occasionally you will encounter permissions issues due to running the tests under sudo. In these cases,
+DO NOT `cargo clean`. Instead, `chown -R <user> target`.
+
 ## macOS
 
 - On macOS, use `SUDO_ASKPASS=$(pwd)/askpass_macos.sh sudo -A <cmd>` to test jail features with sufficient permissions.

@@ -23,6 +23,12 @@ use tracing::{debug, error, info, warn};
 
 pub const HTTPJAIL_HEADER: &str = "HTTPJAIL";
 pub const HTTPJAIL_HEADER_VALUE: &str = "true";
+pub const BLOCKED_MESSAGE: &str = "Request blocked by httpjail\n";
+
+/// Create a raw HTTP/1.1 403 Forbidden response for CONNECT tunnels
+pub fn create_connect_403_response() -> &'static [u8] {
+    b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nRequest blocked by httpjail"
+}
 
 // Shared HTTP/HTTPS client for upstream requests
 static HTTPS_CLIENT: OnceLock<
@@ -350,7 +356,7 @@ pub async fn handle_http_request(
         }
         Action::Deny => {
             warn!("Request denied: {}", full_url);
-            create_error_response(StatusCode::FORBIDDEN, "Request blocked by httpjail")
+            create_forbidden_response()
         }
     }
 }
@@ -408,6 +414,12 @@ async fn proxy_request(
     let boxed_body = body.boxed();
 
     Ok(Response::from_parts(parts, boxed_body))
+}
+
+/// Create a 403 Forbidden error response
+pub fn create_forbidden_response()
+-> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
+    create_error_response(StatusCode::FORBIDDEN, BLOCKED_MESSAGE)
 }
 
 pub fn create_error_response(

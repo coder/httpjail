@@ -302,17 +302,17 @@ mod tests {
         let output = cmd.output().expect("Failed to execute httpjail");
 
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
         eprintln!("HTTPS denied test stderr: {}", stderr);
+        eprintln!("HTTPS denied test stdout: {}", stdout);
 
-        // For transparent TLS interception, denied connections are closed
-        // so we expect connection errors (reset, timeout, etc.)
+        // With transparent TLS interception, we now complete the TLS handshake
+        // and return HTTP 403 Forbidden for denied hosts
         assert!(
-            stderr.contains("Connection reset by peer")
-                || stderr.contains("Connection refused")
-                || stderr.contains("Timeout")
-                || output.status.code() == Some(35), // SSL connect error
-            "HTTPS connection should be blocked/reset for denied host example.com"
+            stdout.contains("403 Forbidden") || stdout.contains("403"),
+            "HTTPS connection should return 403 Forbidden for denied host example.com. Got stdout: {}",
+            stdout
         );
     }
 }

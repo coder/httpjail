@@ -1,4 +1,6 @@
-use crate::proxy::{HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE};
+use crate::proxy::{
+    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response, create_forbidden_response,
+};
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
 use anyhow::Result;
@@ -172,18 +174,9 @@ async fn handle_transparent_tls(
         }
     };
 
-    // Check if this host is allowed
-    let full_url = format!("https://{}", hostname);
-    match rule_engine.evaluate(Method::GET, &full_url) {
-        Action::Allow => {
-            debug!("Transparent TLS allowed to: {}", hostname);
-        }
-        Action::Deny => {
-            warn!("Transparent TLS denied to: {}", hostname);
-            // Just close the connection for denied hosts
-            return Ok(());
-        }
-    }
+    // Note: We don't check rules here - let downstream handle blocking
+    // This allows us to send proper HTTP 403 responses after TLS handshake
+    debug!("Processing transparent TLS for: {}", hostname);
 
     // Get certificate for the host
     let (cert_chain, key) = cert_manager
@@ -349,7 +342,7 @@ async fn handle_connect_tunnel(
             let mut stream = reader.into_inner();
 
             // Send 403 Forbidden response
-            let response = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 28\r\n\r\nConnection blocked by httpjail";
+            let response = create_connect_403_response();
             match timeout(WRITE_TIMEOUT, async {
                 stream.write_all(response).await?;
                 stream.flush().await
@@ -474,10 +467,7 @@ async fn handle_decrypted_https_request(
         }
         Action::Deny => {
             warn!("Request denied: {}", full_url);
-            crate::proxy::create_error_response(
-                StatusCode::FORBIDDEN,
-                "Request blocked by httpjail",
-            )
+            create_forbidden_response()
         }
     }
 }
