@@ -1,3 +1,4 @@
+mod dangerous_verifier;
 mod jail;
 mod proxy;
 mod proxy_tls;

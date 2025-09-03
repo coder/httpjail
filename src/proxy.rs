@@ -1,4 +1,5 @@
 /// Common proxy utilities for HTTP and HTTPS.
+use crate::dangerous_verifier::create_dangerous_client_config;
 use crate::rules::{Action, RuleEngine};
 #[allow(unused_imports)]
 use crate::tls::CertificateManager;
@@ -55,73 +56,38 @@ pub fn prepare_upstream_request(
     Request::from_parts(parts, boxed_request_body)
 }
 
-/// Get or create the shared HTTP/HTTPS client
-pub fn get_client() -> &'static Client<
-    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-    BoxBody<Bytes, HyperError>,
-> {
+/// Create a client config that trusts both webpki roots and the httpjail CA
+/// We use webpki-roots (Mozilla's trusted roots) instead of native roots to ensure
+/// consistent behavior across platforms and avoid potential issues with system cert stores
+fn create_client_config_with_ca(
+    ca_cert_der: rustls::pki_types::CertificateDer<'static>,
+) -> rustls::ClientConfig {
+    use rustls::RootCertStore;
+
+    // Start with webpki roots (Mozilla's trusted roots - same as Firefox)
+    let mut roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    // Add our httpjail CA certificate
+    roots
+        .add(ca_cert_der)
+        .expect("Failed to add httpjail CA to trust store");
+
+    debug!(
+        "Created HTTPS client config with {} trusted roots (including httpjail CA)",
+        roots.len()
+    );
+
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
+/// Initialize the HTTP client with the httpjail CA certificate
+pub fn init_client_with_ca(ca_cert_der: rustls::pki_types::CertificateDer<'static>) {
     HTTPS_CLIENT.get_or_init(|| {
         // Check if we should dangerously disable cert validation (TESTING ONLY!)
         let https = if std::env::var("HTTPJAIL_DANGER_DISABLE_CERT_VALIDATION").is_ok() {
-            warn!("DANGEROUS: Certificate validation DISABLED for testing!");
-
-            // Create a verifier that accepts any certificate
-            #[derive(Debug)]
-            struct DangerousAcceptAnyVerifier;
-
-            impl rustls::client::danger::ServerCertVerifier for DangerousAcceptAnyVerifier {
-                fn verify_server_cert(
-                    &self,
-                    _end_entity: &rustls::pki_types::CertificateDer<'_>,
-                    _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                    _server_name: &rustls::pki_types::ServerName<'_>,
-                    _ocsp_response: &[u8],
-                    _now: rustls::pki_types::UnixTime,
-                ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error>
-                {
-                    Ok(rustls::client::danger::ServerCertVerified::assertion())
-                }
-
-                fn verify_tls12_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &rustls::pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-                {
-                    Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-                }
-
-                fn verify_tls13_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &rustls::pki_types::CertificateDer<'_>,
-                    _dss: &rustls::DigitallySignedStruct,
-                ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-                {
-                    Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-                }
-
-                fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                    vec![
-                        rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                        rustls::SignatureScheme::RSA_PKCS1_SHA512,
-                        rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                        rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                        rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-                        rustls::SignatureScheme::RSA_PSS_SHA256,
-                        rustls::SignatureScheme::RSA_PSS_SHA384,
-                        rustls::SignatureScheme::RSA_PSS_SHA512,
-                        rustls::SignatureScheme::ED25519,
-                    ]
-                }
-            }
-
-            let config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(DangerousAcceptAnyVerifier))
-                .with_no_client_auth();
+            let config = create_dangerous_client_config();
 
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(config)
@@ -131,17 +97,45 @@ pub fn get_client() -> &'static Client<
 
             https
         } else {
-            // Normal path - use native roots
-            let https = HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("Failed to load native roots")
+            // Normal path - use webpki roots + httpjail CA
+            let config = create_client_config_with_ca(ca_cert_der);
+
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(config)
                 .https_or_http()
                 .enable_http1()
                 .build();
 
-            debug!("HTTPS connector initialized with native certificate roots");
+            info!("HTTPS connector initialized with webpki roots and httpjail CA");
             https
         };
+
+        Client::builder(TokioExecutor::new())
+            // Keep minimal pooling but with shorter timeouts
+            .pool_idle_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(1)
+            .http1_title_case_headers(false)
+            .http1_preserve_header_case(true)
+            .build(https)
+    });
+}
+
+/// Get or create the shared HTTP/HTTPS client
+pub fn get_client() -> &'static Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    BoxBody<Bytes, HyperError>,
+> {
+    HTTPS_CLIENT.get_or_init(|| {
+        // Fallback initialization if not already initialized with CA
+        // This should not happen in normal operation
+        warn!("HTTP client accessed before CA initialization, using native roots only");
+
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("Failed to load native roots")
+            .https_or_http()
+            .enable_http1()
+            .build();
 
         Client::builder(TokioExecutor::new())
             // Keep minimal pooling but with shorter timeouts
@@ -184,6 +178,10 @@ pub struct ProxyServer {
 impl ProxyServer {
     pub fn new(http_port: Option<u16>, https_port: Option<u16>, rule_engine: RuleEngine) -> Self {
         let cert_manager = CertificateManager::new().expect("Failed to create certificate manager");
+
+        // Initialize the HTTP client with our CA certificate
+        let ca_cert_der = cert_manager.get_ca_cert_der();
+        init_client_with_ca(ca_cert_der);
 
         ProxyServer {
             http_port,

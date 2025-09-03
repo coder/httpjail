@@ -1,8 +1,8 @@
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
+use camino::Utf8Path;
 use libc;
 use std::fs;
-use camino::Utf8Path;
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 

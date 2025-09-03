@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use lru::LruCache;
 use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::num::NonZeroUsize;
-use camino::Utf8PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
@@ -85,10 +85,7 @@ impl CertificateManager {
                 .self_signed(&key_pair)
                 .context("Failed to recreate CA certificate")?;
 
-            info!(
-                "Loaded cached CA certificate from {}",
-                ca_cert_path
-            );
+            info!("Loaded cached CA certificate from {}", ca_cert_path);
             return Ok((ca_cert, key_pair));
         }
 
@@ -221,12 +218,18 @@ impl CertificateManager {
         self.ca_cert.pem()
     }
 
+    /// Get the CA certificate in DER format (for adding to trust stores)
+    pub fn get_ca_cert_der(&self) -> rustls::pki_types::CertificateDer<'static> {
+        self.ca_cert.der().clone()
+    }
+
     /// Get the path to the CA certificate file
     pub fn get_ca_cert_path() -> Result<Utf8PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not find user config directory")?
             .join("httpjail");
-        let config_dir: Utf8PathBuf = config_dir.try_into()
+        let config_dir: Utf8PathBuf = config_dir
+            .try_into()
             .context("Config directory path is not valid UTF-8")?;
         Ok(config_dir.join("ca-cert.pem"))
     }

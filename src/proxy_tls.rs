@@ -583,8 +583,14 @@ mod tests {
 
     async fn create_test_cert_manager() -> Arc<CertificateManager> {
         let temp_dir = TempDir::new().unwrap();
-        let cert_manager = CertificateManager::with_config_dir(Some(temp_dir.path().to_path_buf().try_into().expect("tempdir library provided non utf8 tmp dir")))
-            .expect("Failed to create test certificate manager");
+        let cert_manager = CertificateManager::with_config_dir(Some(
+            temp_dir
+                .path()
+                .to_path_buf()
+                .try_into()
+                .expect("tempdir library provided non utf8 tmp dir"),
+        ))
+        .expect("Failed to create test certificate manager");
         Arc::new(cert_manager)
     }
 
