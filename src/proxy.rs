@@ -152,12 +152,12 @@ pub fn get_client() -> &'static Client<
 }
 
 /// Try to bind to an available port in the given range (up to 16 attempts)
-async fn bind_to_available_port(start: u16, end: u16) -> Result<TcpListener> {
+async fn bind_to_available_port(start: u16, end: u16, bind_addr: [u8; 4]) -> Result<TcpListener> {
     let mut rng = rand::thread_rng();
 
     for _ in 0..16 {
         let port = rng.gen_range(start..=end);
-        match TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await {
+        match TcpListener::bind(SocketAddr::from((bind_addr, port))).await {
             Ok(listener) => {
                 debug!("Successfully bound to port {}", port);
                 return Ok(listener);
@@ -177,10 +177,16 @@ pub struct ProxyServer {
     https_port: Option<u16>,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    bind_address: [u8; 4],
 }
 
 impl ProxyServer {
-    pub fn new(http_port: Option<u16>, https_port: Option<u16>, rule_engine: RuleEngine) -> Self {
+    pub fn new(
+        http_port: Option<u16>,
+        https_port: Option<u16>,
+        rule_engine: RuleEngine,
+        bind_address: Option<[u8; 4]>,
+    ) -> Self {
         let cert_manager = CertificateManager::new().expect("Failed to create certificate manager");
 
         // Initialize the HTTP client with our CA certificate
@@ -192,16 +198,17 @@ impl ProxyServer {
             https_port,
             rule_engine: Arc::new(rule_engine),
             cert_manager: Arc::new(cert_manager),
+            bind_address: bind_address.unwrap_or([127, 0, 0, 1]),
         }
     }
 
     pub async fn start(&mut self) -> Result<(u16, u16)> {
         // Start HTTP proxy
         let http_listener = if let Some(port) = self.http_port {
-            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?
+            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
         } else {
             // Find available port in 8000-8999 range
-            let listener = bind_to_available_port(8000, 8999).await?;
+            let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
             self.http_port = Some(listener.local_addr()?.port());
             listener
         };
@@ -238,10 +245,10 @@ impl ProxyServer {
 
         // Start HTTPS proxy
         let https_listener = if let Some(port) = self.https_port {
-            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?
+            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
         } else {
             // Find available port in 8000-8999 range
-            let listener = bind_to_available_port(8000, 8999).await?;
+            let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
             self.https_port = Some(listener.local_addr()?.port());
             listener
         };
@@ -450,7 +457,7 @@ mod tests {
         ];
 
         let rule_engine = RuleEngine::new(rules, false, false);
-        let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine);
+        let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine, None);
 
         assert_eq!(proxy.http_port, Some(8080));
         assert_eq!(proxy.https_port, Some(8443));
@@ -461,7 +468,7 @@ mod tests {
         let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
 
         let rule_engine = RuleEngine::new(rules, false, false);
-        let mut proxy = ProxyServer::new(None, None, rule_engine);
+        let mut proxy = ProxyServer::new(None, None, rule_engine, None);
 
         let (http_port, https_port) = proxy.start().await.unwrap();
 

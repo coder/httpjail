@@ -4,6 +4,18 @@ use std::process::{Command, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
+/// Linux namespace network configuration constants
+pub const LINUX_NS_HOST_IP: [u8; 4] = [169, 254, 1, 1];
+pub const LINUX_NS_HOST_CIDR: &str = "169.254.1.1/30";
+pub const LINUX_NS_GUEST_IP: [u8; 4] = [169, 254, 1, 2];
+pub const LINUX_NS_GUEST_CIDR: &str = "169.254.1.2/30";
+pub const LINUX_NS_SUBNET: &str = "169.254.1.0/30";
+
+/// Format an IP address array as a string
+pub fn format_ip(ip: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+}
+
 /// Linux jail implementation using network namespaces
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
@@ -138,15 +150,25 @@ impl LinuxJail {
 
     /// Configure networking inside the namespace
     fn configure_namespace_networking(&self) -> Result<()> {
+        // Format the host IP once
+        let host_ip = format_ip(LINUX_NS_HOST_IP);
+
         // Commands to run inside the namespace
         let commands = vec![
             // Bring up loopback
             vec!["ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", "169.254.1.2/30", "dev", &self.veth_ns],
+            vec![
+                "ip",
+                "addr",
+                "add",
+                LINUX_NS_GUEST_CIDR,
+                "dev",
+                &self.veth_ns,
+            ],
             vec!["ip", "link", "set", &self.veth_ns, "up"],
             // Add default route pointing to host
-            vec!["ip", "route", "add", "default", "via", "169.254.1.1"],
+            vec!["ip", "route", "add", "default", "via", &host_ip],
         ];
 
         for cmd_args in commands {
@@ -179,29 +201,22 @@ impl LinuxJail {
     fn configure_host_networking(&self) -> Result<()> {
         // Configure host side of veth
         let commands = vec![
-            vec![
-                "ip",
-                "addr",
-                "add",
-                "169.254.1.1/30",
-                "dev",
-                &self.veth_host,
-            ],
-            vec!["ip", "link", "set", &self.veth_host, "up"],
+            vec!["addr", "add", LINUX_NS_HOST_CIDR, "dev", &self.veth_host],
+            vec!["link", "set", &self.veth_host, "up"],
         ];
 
         for cmd_args in commands {
             let output = Command::new("ip")
                 .args(&cmd_args)
                 .output()
-                .context(format!("Failed to execute: {:?}", cmd_args))?;
+                .context(format!("Failed to execute: ip {:?}", cmd_args))?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 // Ignore "File exists" errors for IP addresses (might be from previous run)
                 if !stderr.contains("File exists") {
                     anyhow::bail!(
-                        "Failed to configure host networking ({}): {}",
+                        "Failed to configure host networking (ip {}): {}",
                         cmd_args.join(" "),
                         stderr
                     );
@@ -324,7 +339,7 @@ impl LinuxJail {
                 "-A",
                 "POSTROUTING",
                 "-s",
-                "169.254.1.0/30",
+                LINUX_NS_SUBNET,
                 "-j",
                 "MASQUERADE",
             ])
@@ -376,7 +391,7 @@ impl LinuxJail {
                 "-D",
                 "POSTROUTING",
                 "-s",
-                "169.254.1.0/30",
+                LINUX_NS_SUBNET,
                 "-j",
                 "MASQUERADE",
             ])
@@ -482,19 +497,35 @@ impl Jail for LinuxJail {
         // Also ensure the proxy addresses are accessible
         cmd.env(
             "http_proxy",
-            format!("http://169.254.1.1:{}", self.config.http_proxy_port),
+            format!(
+                "http://{}:{}",
+                format_ip(LINUX_NS_HOST_IP),
+                self.config.http_proxy_port
+            ),
         );
         cmd.env(
             "https_proxy",
-            format!("http://169.254.1.1:{}", self.config.https_proxy_port),
+            format!(
+                "http://{}:{}",
+                format_ip(LINUX_NS_HOST_IP),
+                self.config.https_proxy_port
+            ),
         );
         cmd.env(
             "HTTP_PROXY",
-            format!("http://169.254.1.1:{}", self.config.http_proxy_port),
+            format!(
+                "http://{}:{}",
+                format_ip(LINUX_NS_HOST_IP),
+                self.config.http_proxy_port
+            ),
         );
         cmd.env(
             "HTTPS_PROXY",
-            format!("http://169.254.1.1:{}", self.config.https_proxy_port),
+            format!(
+                "http://{}:{}",
+                format_ip(LINUX_NS_HOST_IP),
+                self.config.https_proxy_port
+            ),
         );
 
         let status = cmd

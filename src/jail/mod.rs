@@ -51,7 +51,7 @@ impl Default for JailConfig {
 mod macos;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub mod linux;
 
 mod weak;
 

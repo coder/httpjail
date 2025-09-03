@@ -210,8 +210,25 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse::<u16>().ok());
 
+    // Determine bind address based on platform and mode
+    let bind_address = if args.weak {
+        // In weak mode, bind to localhost only
+        None
+    } else {
+        // For jailed mode on Linux, bind to all interfaces
+        // The namespace isolation provides the security boundary
+        #[cfg(target_os = "linux")]
+        {
+            Some([0, 0, 0, 0])
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    };
+
     // Start the proxy server
-    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine.clone());
+    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine.clone(), bind_address);
     let (actual_http_port, actual_https_port) = proxy.start().await?;
 
     info!(
