@@ -95,13 +95,11 @@ pub fn init_client_with_ca(ca_cert_der: rustls::pki_types::CertificateDer<'stati
         let https = if std::env::var("HTTPJAIL_DANGER_DISABLE_CERT_VALIDATION").is_ok() {
             let config = create_dangerous_client_config();
 
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
+            hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(config)
                 .https_or_http()
                 .enable_http1()
-                .build();
-
-            https
+                .build()
         } else {
             // Normal path - use webpki roots + httpjail CA
             let config = create_client_config_with_ca(ca_cert_der);

@@ -84,16 +84,16 @@ unsafe fn child_process(
 
     // If we have a target UID, drop privileges to that user
     // Do this AFTER setgid to preserve the effective GID
-    if let Some(uid) = target_uid {
-        if unsafe { libc::setuid(uid) } != 0 {
-            debug!(
-                "setuid({}) failed: {}",
-                uid,
-                std::io::Error::last_os_error()
-            );
-            unsafe {
-                libc::_exit(1);
-            }
+    if let Some(uid) = target_uid
+        && unsafe { libc::setuid(uid) } != 0
+    {
+        debug!(
+            "setuid({}) failed: {}",
+            uid,
+            std::io::Error::last_os_error()
+        );
+        unsafe {
+            libc::_exit(1);
         }
     }
 

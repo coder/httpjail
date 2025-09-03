@@ -1,7 +1,6 @@
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use camino::Utf8Path;
-use libc;
 use std::fs;
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
@@ -101,10 +100,10 @@ impl MacOSJail {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("interface:") {
-                if let Some(interface) = line.split_whitespace().nth(1) {
-                    return Ok(interface.to_string());
-                }
+            if line.contains("interface:")
+                && let Some(interface) = line.split_whitespace().nth(1)
+            {
+                return Ok(interface.to_string());
             }
         }
 
