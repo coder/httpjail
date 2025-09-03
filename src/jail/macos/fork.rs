@@ -134,7 +134,7 @@ mod tests {
             // Use current GID to avoid permission issues
             let current_gid = libc::getgid();
             let result = fork_exec_with_gid(
-                &vec!["echo".to_string(), "test".to_string()],
+                &["echo".to_string(), "test".to_string()],
                 current_gid,
                 None, // No UID change
                 &[],

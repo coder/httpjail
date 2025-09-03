@@ -119,8 +119,12 @@ jobs:
       - name: Run jail integration tests
         run: cargo test --test jail_integration --verbose
 
-    # Note: Linux jail tests that require root are not run in CI
-    # as they need iptables/nftables configuration which is complex in containers
+      - name: Run Linux jail integration tests (with sudo)
+        run: |
+          # Ensure ip netns support is available
+          sudo ip netns list || true
+          # Run the Linux-specific jail tests with root privileges
+          sudo -E cargo test --test linux_integration --verbose
 
   clippy:
     name: Clippy

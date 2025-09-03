@@ -1,3 +1,5 @@
+#![allow(dead_code)] // These are utility functions used across different test modules
+
 use std::process::Command;
 
 /// Build httpjail binary and return the path

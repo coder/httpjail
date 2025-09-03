@@ -1,0 +1,415 @@
+#![allow(dead_code)] // These functions are used from platform-specific test modules
+
+/// Common integration tests for both macOS and Linux jail implementations
+/// This module contains the shared test logic that both platforms use
+use assert_cmd::Command;
+use predicates::prelude::*;
+
+/// Platform-specific trait for jail testing
+pub trait JailTestPlatform {
+    /// Check if we have necessary privileges (root/sudo)
+    fn require_privileges();
+
+    /// Platform name for logging
+    fn platform_name() -> &'static str;
+
+    /// Whether the platform supports full HTTPS interception
+    fn supports_https_interception() -> bool {
+        true
+    }
+}
+
+/// Helper to create httpjail command with standard test settings
+pub fn httpjail_cmd() -> Command {
+    let mut cmd = Command::cargo_bin("httpjail").unwrap();
+    // Add timeout for all tests
+    cmd.arg("--timeout").arg("10");
+    // No need to specify ports - they'll be auto-assigned
+    cmd
+}
+
+/// Test that jail allows matching requests
+pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: httpbin\\.org")
+        .arg("--")
+        .arg("curl")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://httpbin.org/get");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
+    }
+    assert_eq!(stdout.trim(), "200", "Request should be allowed");
+    assert!(output.status.success());
+}
+
+/// Test that jail denies non-matching requests
+pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: httpbin\\.org")
+        .arg("--")
+        .arg("curl")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://example.com");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should get 403 Forbidden from our proxy
+    assert_eq!(stdout.trim(), "403", "Request should be denied");
+    // curl itself should succeed (it got a response)
+    assert!(output.status.success());
+}
+
+/// Test method-specific rules (GET vs POST)
+pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Test 1: Allow GET to httpbin
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow-get: httpbin\\.org")
+        .arg("--")
+        .arg("curl")
+        .arg("-X")
+        .arg("GET")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://httpbin.org/get");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
+    }
+    assert_eq!(stdout.trim(), "200", "GET request should be allowed");
+
+    // Test 2: Deny POST to same URL
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow-get: httpbin\\.org")
+        .arg("--")
+        .arg("curl")
+        .arg("-X")
+        .arg("POST")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://httpbin.org/post");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "403", "POST request should be denied");
+}
+
+/// Test log-only mode
+pub fn test_jail_log_only_mode<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--log-only")
+        .arg("--")
+        .arg("curl")
+        .arg("-s")
+        .arg("--connect-timeout")
+        .arg("5")
+        .arg("--max-time")
+        .arg("8")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://example.com");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
+    }
+    eprintln!("[{}] stdout: {}", P::platform_name(), stdout);
+
+    // In log-only mode, all requests should be allowed
+    // Due to proxy issues, we might get partial responses or timeouts
+    // Just verify that the request wasn't explicitly blocked (403)
+    assert!(
+        !stdout.contains("403") && !stderr.contains("403") && !stdout.contains("Request blocked"),
+        "Request should not be blocked in log-only mode. Got stdout: '{}', stderr: '{}', exit code: {:?}",
+        stdout.trim(),
+        stderr.trim(),
+        output.status.code()
+    );
+}
+
+/// Test dry-run mode
+pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--dry-run")
+        .arg("-r")
+        .arg("deny: .*") // Deny everything
+        .arg("--")
+        .arg("curl")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://httpbin.org/get");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
+    }
+    // In dry-run mode, even deny rules should not block
+    assert_eq!(
+        stdout.trim(),
+        "200",
+        "Request should be allowed in dry-run mode"
+    );
+    assert!(output.status.success());
+}
+
+/// Test that jail requires a command
+pub fn test_jail_requires_command<P: JailTestPlatform>() {
+    // This test doesn't require root
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r").arg("allow: .*");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "required arguments were not provided",
+    ));
+}
+
+/// Test exit code propagation
+pub fn test_jail_exit_code_propagation<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Test that httpjail propagates the exit code of the child process
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: .*")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("exit 42");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "Exit code should be propagated"
+    );
+}
+
+/// Test HTTPS blocking
+pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Test that HTTPS requests to denied domains are blocked
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: httpbin\\.org")
+        .arg("-r")
+        .arg("deny: example\\.com")
+        .arg("--")
+        .arg("curl")
+        .arg("-v")
+        .arg("--connect-timeout")
+        .arg("2")
+        .arg("-I") // HEAD request only
+        .arg("https://example.com"); // HTTPS URL that should be denied
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    eprintln!(
+        "[{}] HTTPS denied test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+    eprintln!(
+        "[{}] HTTPS denied test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    if P::supports_https_interception() {
+        // With transparent TLS interception, we now complete the TLS handshake
+        // and return HTTP 403 Forbidden for denied hosts
+        assert!(
+            stdout.contains("403 Forbidden") || stdout.contains("403"),
+            "HTTPS connection should return 403 Forbidden for denied host example.com. Got stdout: {}",
+            stdout
+        );
+    } else {
+        // Without TLS interception, connection should fail
+        assert!(
+            !output.status.success(),
+            "HTTPS connection to denied host should fail"
+        );
+    }
+}
+
+/// Test HTTPS allowing
+pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Test allowing HTTPS to httpbin.org
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: httpbin\\.org")
+        .arg("--")
+        .arg("curl")
+        .arg("-k")
+        .arg("--max-time")
+        .arg("5")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("https://httpbin.org/get");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    eprintln!(
+        "[{}] HTTPS allow test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+    eprintln!(
+        "[{}] HTTPS allow test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    // Should not be blocked
+    assert!(
+        !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
+        "Request should not be blocked when allowed"
+    );
+}
+
+/// Test HTTPS CONNECT allowed (if supported)
+#[allow(dead_code)]
+pub fn test_jail_https_connect_allowed<P: JailTestPlatform>() {
+    if !P::supports_https_interception() {
+        eprintln!(
+            "[{}] Skipping HTTPS CONNECT test - not supported on this platform",
+            P::platform_name()
+        );
+        return;
+    }
+
+    P::require_privileges();
+
+    // Test that CONNECT requests to allowed domains succeed
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: example\\.com")
+        .arg("--")
+        .arg("curl")
+        .arg("-v")
+        .arg("--connect-timeout")
+        .arg("2")
+        .arg("-I") // HEAD request only
+        .arg("https://example.com"); // HTTPS URL
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    eprintln!(
+        "[{}] HTTPS CONNECT test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // Should see successful CONNECT response even if TLS fails after
+    assert!(
+        stderr.contains("< HTTP/1.1 200"),
+        "CONNECT should be allowed for example.com"
+    );
+}
+
+/// Test HTTPS CONNECT denied
+pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Test that HTTPS requests to denied domains are blocked
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: httpbin\\.org")
+        .arg("-r")
+        .arg("deny: example\\.com")
+        .arg("--")
+        .arg("curl")
+        .arg("-v")
+        .arg("--connect-timeout")
+        .arg("2")
+        .arg("-I") // HEAD request only
+        .arg("https://example.com"); // HTTPS URL that should be denied
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    eprintln!(
+        "[{}] HTTPS denied test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+    eprintln!(
+        "[{}] HTTPS denied test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    // With transparent TLS interception, we now complete the TLS handshake
+    // and return HTTP 403 Forbidden for denied hosts
+    assert!(
+        stdout.contains("403 Forbidden") || stdout.contains("403"),
+        "HTTPS connection should return 403 Forbidden for denied host example.com. Got stdout: {}",
+        stdout
+    );
+}
