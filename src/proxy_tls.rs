@@ -89,16 +89,14 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
     // TLS record header is 5 bytes, ClientHello can be quite large
     let mut buf = vec![0u8; 2048];
 
-    let n = match timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(e)) => {
-            debug!("Failed to peek ClientHello: {}", e);
-            return Ok(None);
-        }
-        Err(_) => {
-            debug!("Timeout reading ClientHello");
-            return Ok(None);
-        }
+    let Ok(peek_result) = timeout(CLIENT_HELLO_TIMEOUT, stream.peek(&mut buf)).await else {
+        debug!("Timeout reading ClientHello");
+        return Ok(None);
+    };
+
+    let Ok(n) = peek_result else {
+        debug!("Failed to peek ClientHello: {}", peek_result.unwrap_err());
+        return Ok(None);
     };
 
     if n < 5 {
@@ -106,41 +104,50 @@ async fn extract_sni_from_stream(stream: &mut TcpStream) -> Result<Option<String
         return Ok(None);
     }
 
+    let maybe_record = parse_tls_plaintext(&buf[..n]);
+    let Ok((_, record)) = maybe_record else {
+        debug!(
+            "Failed to parse TLS record: {:?}",
+            maybe_record.unwrap_err()
+        );
+        return Ok(None);
+    };
+
     // Parse the TLS plaintext record
-    match parse_tls_plaintext(&buf[..n]) {
-        Ok((_, record)) => {
-            // Check if this is a handshake message
-            if let Some(TlsMessage::Handshake(tls_parser::TlsMessageHandshake::ClientHello(
-                client_hello,
-            ))) = record.msg.first()
-            {
-                // Look for the SNI extension in the raw extensions
-                if let Some(ext_data) = client_hello.ext {
-                    // Parse the extensions
-                    if let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) {
-                        for ext in exts.1 {
-                            if let tls_parser::TlsExtension::SNI(sni_list) = ext {
-                                // Get the first hostname from the SNI list
-                                for sni in sni_list.iter() {
-                                    if let (tls_parser::SNIType::HostName, data) = sni
-                                        && let Ok(hostname) = std::str::from_utf8(data)
-                                    {
-                                        debug!("Extracted SNI hostname: {}", hostname);
-                                        return Ok(Some(hostname.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                debug!("ClientHello has no SNI extension");
+
+    // Check if this is a handshake message
+    let Some(TlsMessage::Handshake(tls_parser::TlsMessageHandshake::ClientHello(client_hello))) =
+        record.msg.first()
+    else {
+        return Ok(None);
+    };
+
+    // Look for the SNI extension in the raw extensions
+    let Some(ext_data) = client_hello.ext else {
+        debug!("ClientHello has no SNI extension");
+        return Ok(None);
+    };
+    // Parse the extensions
+    let Ok(exts) = tls_parser::parse_tls_extensions(ext_data) else {
+        return Ok(None);
+    };
+    for ext in exts.1 {
+        if let tls_parser::TlsExtension::SNI(sni_list) = ext {
+            // Get the first hostname from the SNI list
+            for sni in sni_list.iter() {
+                let (tls_parser::SNIType::HostName, data) = sni else {
+                    continue;
+                };
+
+                let Ok(hostname) = std::str::from_utf8(data) else {
+                    continue;
+                };
+
+                debug!("Extracted SNI hostname: {}", hostname);
+                return Ok(Some(hostname.to_string()));
             }
         }
-        Err(e) => {
-            debug!("Failed to parse TLS record: {:?}", e);
-        }
     }
-
     Ok(None)
 }
 
