@@ -44,7 +44,7 @@ impl LinuxJail {
     fn check_root() -> Result<()> {
         // Check UID directly using libc
         #[cfg(target_os = "linux")]
-        let uid = unsafe { libc::getuid() };
+        let uid = unsafe { ::libc::getuid() };
         #[cfg(not(target_os = "linux"))]
         let uid = 1000; // Non-root UID for non-Linux platforms
 
@@ -411,7 +411,7 @@ impl LinuxJail {
                         if let Ok(pid) = parts[1].parse::<u32>() {
                             // Check if process still exists
                             #[cfg(target_os = "linux")]
-                            let exists = unsafe { libc::kill(pid as i32, 0) == 0 };
+                            let exists = unsafe { ::libc::kill(pid as i32, 0) == 0 };
                             #[cfg(not(target_os = "linux"))]
                             let exists = false; // Assume process doesn't exist on non-Linux
 
