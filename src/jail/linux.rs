@@ -1,3 +1,7 @@
+// libc is needed for getuid() and kill() system calls on Linux
+#[cfg(target_os = "linux")]
+extern crate libc;
+
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::process::{Command, ExitStatus};
