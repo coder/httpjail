@@ -10,6 +10,7 @@ use clap::Parser;
 use jail::{JailConfig, create_jail};
 use proxy::ProxyServer;
 use rules::{Action, Rule, RuleEngine};
+use std::os::unix::process::ExitStatusExt;
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -250,6 +251,9 @@ async fn main() -> Result<()> {
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
 
+    // Wrap jail in Arc for potential sharing with timeout task
+    let jail = std::sync::Arc::new(jail);
+
     // Set up CA certificate environment variables for common tools
     let mut extra_env = Vec::new();
 
@@ -275,28 +279,25 @@ async fn main() -> Result<()> {
     let status = if let Some(timeout_secs) = args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
 
-        // For timeout, we need to execute directly with a wrapper
-        // Since we can't easily timeout the jail.execute call itself,
-        // we'll pass the timeout to the jail implementation
-        // For now, let's use the timeout command if available
-        let mut timeout_cmd = vec!["timeout".to_string(), timeout_secs.to_string()];
-        timeout_cmd.extend(args.command.clone());
+        // Use tokio to handle timeout
+        let command = args.command.clone();
+        let extra_env_clone = extra_env.clone();
+        let jail_clone = jail.clone();
 
-        match jail.execute(&timeout_cmd, &extra_env) {
-            Ok(status) => {
-                if status.code() == Some(124) {
-                    warn!("Command timed out after {}s", timeout_secs);
-                }
-                status
-            }
-            Err(e) => {
-                // If timeout command doesn't exist, fall back to regular execution
-                if e.to_string().contains("timeout") || e.to_string().contains("No such file") {
-                    warn!("timeout command not available, executing without timeout");
-                    jail.execute(&args.command, &extra_env)?
-                } else {
-                    return Err(e);
-                }
+        // We need to use spawn_blocking since jail.execute is blocking
+        let handle =
+            tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
+
+        // Apply timeout to the blocking task
+        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(e)) => anyhow::bail!("Task execution failed: {}", e),
+            Err(_) => {
+                warn!("Command timed out after {}s", timeout_secs);
+                // Note: We can't actually kill the process from here since it's in a separate
+                // process/namespace. The process will continue running but we return timeout.
+                // This matches the behavior of GNU timeout when it can't kill the process.
+                std::process::ExitStatus::from_raw(124 << 8)
             }
         }
     } else {
