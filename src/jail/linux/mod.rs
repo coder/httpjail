@@ -634,19 +634,87 @@ impl Jail for LinuxJail {
             self.namespace_name, command
         );
 
+        // Check if we're running as root and should drop privileges
+        let current_uid = unsafe { libc::getuid() };
+        let target_user = if current_uid == 0 {
+            // Running as root - check for SUDO_USER to drop privileges to original user
+            std::env::var("SUDO_USER").ok()
+        } else {
+            // Not root - no privilege dropping needed
+            None
+        };
+
+        if let Some(ref user) = target_user {
+            debug!(
+                "Will drop to user '{}' (from SUDO_USER) after entering namespace",
+                user
+            );
+        }
+
         // Build command: ip netns exec <namespace> <command>
+        // If we need to drop privileges, we wrap with su
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name]);
 
-        // Add the actual command
-        cmd.arg(&command[0]);
-        for arg in &command[1..] {
-            cmd.arg(arg);
+        if let Some(user) = target_user {
+            // Use su to drop privileges to the original user
+            // We need to pass environment variables explicitly since su might not preserve them all
+            cmd.arg("su");
+            cmd.arg("-s"); // Specify shell explicitly
+            cmd.arg("/bin/sh"); // Use sh for compatibility
+            cmd.arg("-p"); // Preserve environment
+            cmd.arg(&user); // Username from SUDO_USER
+            cmd.arg("-c"); // Execute command
+
+            // Build shell command with explicit environment exports
+            let mut shell_command = String::new();
+
+            // Export environment variables explicitly in the shell command
+            for (key, value) in extra_env {
+                // Escape the value for shell safety
+                let escaped_value = value.replace('\'', "'\\''");
+                shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
+            }
+
+            // Add the actual command
+            shell_command.push_str(
+                &command
+                    .iter()
+                    .map(|arg| {
+                        // Simple escaping: wrap in single quotes and escape existing single quotes
+                        if arg.contains('\'') {
+                            format!("\"{}\"", arg.replace('"', "\\\""))
+                        } else {
+                            format!("'{}'", arg)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+
+            cmd.arg(shell_command);
+        } else {
+            // No privilege dropping needed, execute directly
+            cmd.arg(&command[0]);
+            for arg in &command[1..] {
+                cmd.arg(arg);
+            }
         }
 
         // Set environment variables
         for (key, value) in extra_env {
             cmd.env(key, value);
+        }
+
+        // Preserve SUDO environment variables for consistency with macOS
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            cmd.env("SUDO_USER", sudo_user);
+        }
+        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+            cmd.env("SUDO_UID", sudo_uid);
+        }
+        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
+            cmd.env("SUDO_GID", sudo_gid);
         }
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
