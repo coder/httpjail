@@ -178,6 +178,10 @@ impl CertificateManager {
 
         // Generate new certificate
         debug!("Generating certificate for {}", hostname);
+        info!(
+            "Certificate generation: hostname={}, key_type=ECDSA-P256",
+            hostname
+        );
 
         let mut params = CertificateParams::new(vec![hostname.to_string()])
             .context("Failed to create certificate params")?;
@@ -194,6 +198,17 @@ impl CertificateManager {
         ];
 
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+
+        // Set serial number explicitly to avoid potential issues with OpenSSL 3.0.x
+        params.serial_number = Some(rcgen::SerialNumber::from(vec![1, 2, 3, 4]));
+
+        // Set validity period - 1 year from now
+        use chrono::{Datelike, Utc};
+        let now = Utc::now();
+        let not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
+        let not_after = rcgen::date_time_ymd(now.year() + 1, now.month() as u8, now.day() as u8);
+        params.not_before = not_before;
+        params.not_after = not_after;
 
         // Sign certificate with CA using the shared key pair
         let cert = params.signed_by(&self.server_key_pair, &self.ca_cert, &self.ca_key_pair)?;
