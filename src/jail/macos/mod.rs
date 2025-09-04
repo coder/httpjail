@@ -157,14 +157,29 @@ pass on lo0 all
 
     /// Load PF rules into an anchor
     fn load_pf_rules(&self, rules: &str) -> Result<()> {
-        // Write rules to temp file
+        // Write rules to temp file for debugging
         fs::write(&self.pf_rules_path, rules).context("Failed to write PF rules file")?;
 
-        // Load rules into anchor
-        info!("Loading PF rules from {}", self.pf_rules_path);
-        let output = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
-            .output()
+        // Load rules into anchor using stdin to avoid -f flag issues in CI
+        info!("Loading PF rules into anchor {}", PF_ANCHOR_NAME);
+        let mut child = Command::new("pfctl")
+            .args(["-a", PF_ANCHOR_NAME, "-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("Failed to spawn pfctl")?;
+
+        // Write rules to stdin
+        use std::io::Write;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(rules.as_bytes())
+                .context("Failed to write rules to pfctl")?;
+        }
+
+        let output = child
+            .wait_with_output()
             .context("Failed to load PF rules")?;
 
         if !output.status.success() {

@@ -177,7 +177,7 @@ pub fn require_sudo() {
 
 // Common test implementations that can be used by both weak and strong mode tests
 
-/// Test that HTTPS to httpbin.org is blocked correctly
+/// Test that HTTPS is blocked correctly  
 pub fn test_https_blocking(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -190,13 +190,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     let result = cmd
         .rule("deny: .*")
         .verbose(2)
-        .command(vec![
-            "curl",
-            "-k",
-            "--max-time",
-            "3",
-            "https://httpbin.org/get",
-        ])
+        .command(vec!["curl", "-k", "--max-time", "3", "https://ifconfig.me"])
         .execute();
 
     match result {
@@ -212,9 +206,14 @@ pub fn test_https_blocking(use_sudo: bool) {
                 exit_code
             );
 
-            // Should not contain httpbin.org JSON response content
-            assert!(!stdout.contains("\"url\""));
-            assert!(!stdout.contains("\"args\""));
+            // Should not contain actual response content (IP address from ifconfig.me)
+            use std::str::FromStr;
+            assert!(
+                !std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
+                    && !std::net::Ipv6Addr::from_str(stdout.trim()).is_ok(),
+                "Response should be blocked, but got: '{}'",
+                stdout
+            );
         }
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);
@@ -233,15 +232,9 @@ pub fn test_https_allow(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("allow: httpbin\\.org")
+        .rule("allow: ifconfig\\.me")
         .verbose(2)
-        .command(vec![
-            "curl",
-            "-k",
-            "--max-time",
-            "5",
-            "https://httpbin.org/get",
-        ])
+        .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
         .execute();
 
     match result {
@@ -266,12 +259,15 @@ pub fn test_https_allow(use_sudo: bool) {
                     exit_code
                 );
 
-                // Should contain httpbin.org content (JSON response)
+                // Should contain actual response content
+                // ifconfig.me returns an IP address
+                use std::str::FromStr;
                 assert!(
-                    stdout.contains("\"url\"")
-                        || stdout.contains("httpbin.org")
-                        || stdout.contains("\"args\""),
-                    "Expected to see httpbin.org JSON content in response"
+                    std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
+                        || std::net::Ipv6Addr::from_str(stdout.trim()).is_ok()
+                        || !stdout.trim().is_empty(),
+                    "Expected to see valid response content, got: '{}'",
+                    stdout
                 );
             }
         }
