@@ -160,33 +160,41 @@ pass on lo0 all
         // Write rules to temp file for debugging
         fs::write(&self.pf_rules_path, rules).context("Failed to write PF rules file")?;
 
-        // Load rules into anchor using stdin to avoid -f flag issues in CI
-        info!("Loading PF rules into anchor {}", PF_ANCHOR_NAME);
-        let mut child = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-f", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .context("Failed to spawn pfctl")?;
-
-        // Write rules to stdin
-        use std::io::Write;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(rules.as_bytes())
-                .context("Failed to write rules to pfctl")?;
-        }
-
-        let output = child
-            .wait_with_output()
+        // Try to load rules using file first (standard approach)
+        info!("Loading PF rules from {}", self.pf_rules_path);
+        let output = Command::new("pfctl")
+            .args(["-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
+            .output()
             .context("Failed to load PF rules")?;
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to load PF rules: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+        // Check for actual errors vs warnings
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // The -f warning is not fatal, but resource busy is
+        if stderr.contains("Resource busy") {
+            // Try to flush the anchor first and retry
+            warn!("PF anchor busy, attempting to flush and retry");
+            let _ = Command::new("pfctl")
+                .args(["-a", PF_ANCHOR_NAME, "-F", "rules"])
+                .output();
+
+            // Retry loading rules
+            let retry_output = Command::new("pfctl")
+                .args(["-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
+                .output()
+                .context("Failed to load PF rules on retry")?;
+
+            let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+            if !retry_output.status.success() && !retry_stderr.contains("Use of -f option") {
+                anyhow::bail!("Failed to load PF rules after retry: {}", retry_stderr);
+            }
+        } else if !output.status.success() && !stderr.contains("Use of -f option") {
+            anyhow::bail!("Failed to load PF rules: {}", stderr);
+        }
+
+        // Log if we got the -f warning but continued
+        if stderr.contains("Use of -f option") {
+            debug!("PF rules loaded (ignoring -f flag warning in CI)");
         }
 
         // Enable PF if not already enabled

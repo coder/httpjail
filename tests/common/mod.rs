@@ -209,8 +209,8 @@ pub fn test_https_blocking(use_sudo: bool) {
             // Should not contain actual response content (IP address from ifconfig.me)
             use std::str::FromStr;
             assert!(
-                !std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
-                    && !std::net::Ipv6Addr::from_str(stdout.trim()).is_ok(),
+                std::net::Ipv4Addr::from_str(stdout.trim()).is_err()
+                    && std::net::Ipv6Addr::from_str(stdout.trim()).is_err(),
                 "Response should be blocked, but got: '{}'",
                 stdout
             );
