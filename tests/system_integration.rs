@@ -102,12 +102,32 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    cmd.arg("-v")
+        .arg("-v") // Add verbose logging
+        .arg("-r")
+        .arg("allow: ifconfig\\.me")
+        .arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Always print debug info for this failing test
+    eprintln!(
+        "[{}] test_jail_denies_non_matching_requests:",
+        P::platform_name()
+    );
+    eprintln!("  Exit code: {:?}", output.status.code());
+    eprintln!("  Stdout: {}", stdout);
+    if !stderr.is_empty() {
+        eprintln!(
+            "  Stderr (first 2000 chars): {}",
+            &stderr.chars().take(2000).collect::<String>()
+        );
+    }
+
     // Should get 403 Forbidden from our proxy
     assert_eq!(stdout.trim(), "403", "Request should be denied");
     // curl itself should succeed (it got a response)
@@ -252,7 +272,9 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
 
     // Test that HTTPS requests to denied domains are blocked
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
+    cmd.arg("-v")
+        .arg("-v") // Add verbose logging
+        .arg("-r")
         .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
@@ -265,9 +287,14 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     eprintln!(
-        "[{}] HTTPS denied test stderr: {}",
+        "[{}] test_native_jail_blocks_https exit code: {:?}",
         P::platform_name(),
-        stderr
+        output.status.code()
+    );
+    eprintln!(
+        "[{}] HTTPS denied test stderr (first 3000 chars): {}",
+        P::platform_name(),
+        &stderr.chars().take(3000).collect::<String>()
     );
     eprintln!(
         "[{}] HTTPS denied test stdout: {}",
@@ -409,7 +436,9 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
 
     // Test that HTTPS requests to denied domains are blocked
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
+    cmd.arg("-v")
+        .arg("-v") // Add verbose logging
+        .arg("-r")
         .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
@@ -422,9 +451,14 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     eprintln!(
-        "[{}] HTTPS denied test stderr: {}",
+        "[{}] HTTPS denied test exit code: {:?}",
         P::platform_name(),
-        stderr
+        output.status.code()
+    );
+    eprintln!(
+        "[{}] HTTPS denied test stderr (first 3000 chars): {}",
+        P::platform_name(),
+        &stderr.chars().take(3000).collect::<String>()
     );
     eprintln!(
         "[{}] HTTPS denied test stdout: {}",
