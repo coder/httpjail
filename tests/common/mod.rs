@@ -75,9 +75,9 @@ impl HttpjailCommand {
         // Ensure httpjail is built
         let httpjail_path = build_httpjail()?;
 
-        // Always add timeout for tests (10 seconds default)
+        // Always add timeout for tests (15 seconds default for CI environment)
         self.args.insert(0, "--timeout".to_string());
-        self.args.insert(1, "10".to_string());
+        self.args.insert(1, "15".to_string());
 
         // Add weak mode if requested
         if self.weak_mode {

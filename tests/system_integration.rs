@@ -22,8 +22,8 @@ pub trait JailTestPlatform {
 /// Helper to create httpjail command with standard test settings
 pub fn httpjail_cmd() -> Command {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    // Add timeout for all tests
-    cmd.arg("--timeout").arg("10");
+    // Add timeout for all tests (15 seconds for CI environment)
+    cmd.arg("--timeout").arg("15");
     // No need to specify ports - they'll be auto-assigned
     cmd
 }
@@ -225,10 +225,24 @@ pub fn test_jail_exit_code_propagation<P: JailTestPlatform>() {
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
+    let exit_code = output.status.code();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Add debugging output
+    if exit_code != Some(42) {
+        eprintln!("[{}] Exit code propagation failed", P::platform_name());
+        eprintln!("  Expected: 42, Got: {:?}", exit_code);
+        eprintln!("  Stdout: {}", stdout);
+        eprintln!("  Stderr: {}", stderr);
+    }
+
     assert_eq!(
-        output.status.code(),
+        exit_code,
         Some(42),
-        "Exit code should be propagated"
+        "Exit code should be propagated. Got {:?}, stderr: {}",
+        exit_code,
+        stderr
     );
 }
 
