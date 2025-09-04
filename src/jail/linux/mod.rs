@@ -656,16 +656,9 @@ impl Jail for LinuxJail {
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name]);
 
-        if let Some(user) = target_user {
-            // Use su to drop privileges to the original user
-            // We need to pass environment variables explicitly since su might not preserve them all
-            cmd.arg("su");
-            cmd.arg("-s"); // Specify shell explicitly
-            cmd.arg("/bin/sh"); // Use sh for compatibility
-            cmd.arg("-p"); // Preserve environment
-            cmd.arg(&user); // Username from SUDO_USER
-            cmd.arg("-c"); // Execute command
-
+        // When we have environment variables to pass OR need to drop privileges,
+        // use a shell wrapper to ensure proper environment handling
+        if target_user.is_some() || !extra_env.is_empty() {
             // Build shell command with explicit environment exports
             let mut shell_command = String::new();
 
@@ -676,7 +669,7 @@ impl Jail for LinuxJail {
                 shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
             }
 
-            // Add the actual command
+            // Add the actual command with proper escaping
             shell_command.push_str(
                 &command
                     .iter()
@@ -692,9 +685,23 @@ impl Jail for LinuxJail {
                     .join(" "),
             );
 
-            cmd.arg(shell_command);
+            if let Some(user) = target_user {
+                // Use su to drop privileges to the original user
+                cmd.arg("su");
+                cmd.arg("-s"); // Specify shell explicitly
+                cmd.arg("/bin/sh"); // Use sh for compatibility
+                cmd.arg("-p"); // Preserve environment
+                cmd.arg(&user); // Username from SUDO_USER
+                cmd.arg("-c"); // Execute command
+                cmd.arg(shell_command);
+            } else {
+                // No privilege dropping but need shell for env vars
+                cmd.arg("sh");
+                cmd.arg("-c");
+                cmd.arg(shell_command);
+            }
         } else {
-            // No privilege dropping needed, execute directly
+            // No privilege dropping and no env vars, execute directly
             cmd.arg(&command[0]);
             for arg in &command[1..] {
                 cmd.arg(arg);

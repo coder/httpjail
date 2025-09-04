@@ -2,76 +2,74 @@
 #[macro_export]
 macro_rules! platform_tests {
     ($platform:ty) => {
-        use serial_test::serial;
-
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_allows_matching_requests() {
             system_integration::test_jail_allows_matching_requests::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_denies_non_matching_requests() {
             system_integration::test_jail_denies_non_matching_requests::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_method_specific_rules() {
             system_integration::test_jail_method_specific_rules::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_log_only_mode() {
             system_integration::test_jail_log_only_mode::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_dry_run_mode() {
             system_integration::test_jail_dry_run_mode::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_requires_command() {
             system_integration::test_jail_requires_command::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_exit_code_propagation() {
             system_integration::test_jail_exit_code_propagation::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_native_jail_allows_https() {
             system_integration::test_native_jail_allows_https::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_native_jail_blocks_https() {
             system_integration::test_native_jail_blocks_https::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_https_connect_denied() {
             system_integration::test_jail_https_connect_denied::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_https_connect_allowed() {
             system_integration::test_jail_https_connect_allowed::<$platform>();
         }
 
         #[test]
-        #[serial]
+        #[::serial_test::serial]
         fn test_jail_privilege_dropping() {
             system_integration::test_jail_privilege_dropping::<$platform>();
         }

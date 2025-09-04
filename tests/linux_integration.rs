@@ -7,7 +7,7 @@ mod platform_test_macro;
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
-    use crate::system_integration::JailTestPlatform;
+    use crate::system_integration::{JailTestPlatform, httpjail_cmd};
 
     /// Linux-specific platform implementation
     struct LinuxPlatform;
@@ -58,7 +58,7 @@ mod tests {
             .count();
 
         // Run httpjail
-        let mut cmd = common::httpjail_cmd();
+        let mut cmd = httpjail_cmd();
         cmd.arg("-r")
             .arg("allow: .*")
             .arg("--")
@@ -91,12 +91,15 @@ mod tests {
     #[serial]
     fn test_concurrent_namespace_isolation() {
         LinuxPlatform::require_privileges();
-        use std::process::Command;
         use std::thread;
         use std::time::Duration;
 
-        // Start first httpjail instance that sleeps
-        let mut child1 = common::httpjail_cmd()
+        // Start first httpjail instance that sleeps (using std Command for spawn)
+        let httpjail_path = std::env::current_dir()
+            .unwrap()
+            .join("target/debug/httpjail");
+
+        let mut child1 = std::process::Command::new(&httpjail_path)
             .arg("-r")
             .arg("allow: .*")
             .arg("--")
@@ -110,7 +113,7 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
 
         // Start second httpjail instance
-        let output2 = common::httpjail_cmd()
+        let output2 = std::process::Command::new(&httpjail_path)
             .arg("-r")
             .arg("allow: .*")
             .arg("--")
