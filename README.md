@@ -18,6 +18,7 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 - [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
 - [ ] Expand test cases to include WebSockets
 - [ ] Add Linux support with parity with macOS
+- [ ] Add robust firewall cleanup mechanism for Linux and macOS
 
 ## Quick Start
 

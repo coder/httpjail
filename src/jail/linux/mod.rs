@@ -1,5 +1,8 @@
+mod iptables;
+
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
+use iptables::IPTablesRule;
 use std::process::{Command, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
@@ -16,6 +19,42 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 }
 
 /// Linux jail implementation using network namespaces
+///
+/// ## Architecture Overview
+///
+/// This jail creates an isolated network namespace where all traffic is transparently
+/// redirected through our HTTP/HTTPS proxy. Unlike setting HTTP_PROXY environment variables,
+/// this approach captures ALL network traffic, even from applications that don't respect
+/// proxy settings.
+///
+/// ```
+/// [Application in Namespace] ---> [iptables DNAT] ---> [Proxy on Host:8040/8043]
+///            |                                               |
+///     (169.254.1.2)                                   (169.254.1.1)
+///            |                                               |
+///       [veth_ns] <------- veth pair --------> [veth_host on Host]
+///            |                                               |
+///      [Namespace]                                        [Host]
+/// ```
+///
+/// ## Key Design Decisions
+///
+/// 1. **Network Namespace**: Complete isolation, no interference with host networking
+/// 2. **veth Pair**: Virtual ethernet cable connecting namespace to host
+/// 3. **Private IP Range**: 169.254.1.0/30 (link-local, won't conflict with real networks)
+/// 4. **iptables DNAT**: Transparent redirection without environment variables
+/// 5. **DNS Override**: Handle systemd-resolved incompatibility with namespaces
+///
+/// ## Cleanup Guarantees
+///
+/// Resources are cleaned up in priority order:
+/// 1. **Namespace deletion**: Automatically cleans up veth pair and namespace iptables rules
+/// 2. **Host iptables rules**: Tagged with comments for identification and cleanup
+/// 3. **Config directory**: /etc/netns/<namespace>/ removed if it exists
+///
+/// The namespace deletion is the critical cleanup - even if host iptables cleanup fails,
+/// the jail is effectively destroyed once the namespace is gone.
+///
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
     config: JailConfig,
@@ -23,6 +62,8 @@ pub struct LinuxJail {
     veth_host: String,
     veth_ns: String,
     namespace_created: bool,
+    /// Host iptables rules that will be automatically cleaned up on drop
+    host_iptables_rules: Vec<IPTablesRule>,
 }
 
 impl LinuxJail {
@@ -36,6 +77,7 @@ impl LinuxJail {
             veth_host: format!("veth_h_{}", unique_id),
             veth_ns: format!("veth_n_{}", unique_id),
             namespace_created: false,
+            host_iptables_rules: Vec::new(),
         })
     }
 
@@ -241,13 +283,37 @@ impl LinuxJail {
     }
 
     /// Add iptables rules inside the namespace for traffic redirection
+    ///
+    /// We use DNAT (Destination NAT) instead of REDIRECT for a critical reason:
+    /// - REDIRECT changes the destination to 127.0.0.1 (localhost) within the namespace
+    /// - Our proxy runs on the HOST, not inside the namespace
+    /// - DNAT allows us to redirect to the host's IP address (169.254.1.1) where the proxy is actually listening
+    /// - This is why we must use DNAT --to-destination 169.254.1.1:8040 instead of REDIRECT --to-port 8040
     fn setup_namespace_iptables(&self) -> Result<()> {
         // Convert port numbers to strings to extend their lifetime
         let http_port_str = self.config.http_proxy_port.to_string();
         let https_port_str = self.config.https_proxy_port.to_string();
 
+        // Format destination addresses for DNAT
+        // The proxy is listening on the host side of the veth pair (169.254.1.1)
+        // We need to redirect traffic to this specific IP:port combination
+        let http_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), http_port_str);
+        let https_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), https_port_str);
+
         let rules = vec![
-            // Redirect HTTP traffic to proxy
+            // Skip DNS traffic (port 53) - don't redirect it
+            // DNS queries need to reach actual DNS servers (8.8.8.8 or system DNS)
+            // If we redirect DNS to our HTTP proxy, resolution will fail
+            // RETURN means "stop processing this chain and accept the packet as-is"
+            vec![
+                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j",
+                "RETURN",
+            ],
+            vec![
+                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j",
+                "RETURN",
+            ],
+            // Redirect HTTP traffic to proxy on host
             vec![
                 "iptables",
                 "-t",
@@ -259,11 +325,11 @@ impl LinuxJail {
                 "--dport",
                 "80",
                 "-j",
-                "REDIRECT",
-                "--to-port",
-                &http_port_str,
+                "DNAT",
+                "--to-destination",
+                &http_dest,
             ],
-            // Redirect HTTPS traffic to proxy
+            // Redirect HTTPS traffic to proxy on host
             vec![
                 "iptables",
                 "-t",
@@ -275,22 +341,11 @@ impl LinuxJail {
                 "--dport",
                 "443",
                 "-j",
-                "REDIRECT",
-                "--to-port",
-                &https_port_str,
+                "DNAT",
+                "--to-destination",
+                &https_dest,
             ],
-            // Allow local traffic (proxy connections)
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-d",
-                "127.0.0.0/8",
-                "-j",
-                "RETURN",
-            ],
+            // Allow local network traffic
             vec![
                 "iptables",
                 "-t",
@@ -329,28 +384,161 @@ impl LinuxJail {
     }
 
     /// Setup NAT on the host for namespace connectivity
-    fn setup_host_nat(&self) -> Result<()> {
-        // Add MASQUERADE rule for namespace traffic
-        let output = Command::new("iptables")
-            .args([
-                "-t",
-                "nat",
-                "-A",
-                "POSTROUTING",
+    fn setup_host_nat(&mut self) -> Result<()> {
+        // Add MASQUERADE rule for namespace traffic with a comment for identification
+        // The comment allows us to find and remove this specific rule during cleanup
+        let comment = format!("httpjail-{}", self.namespace_name);
+
+        // Create MASQUERADE rule
+        let masq_rule = IPTablesRule::new(
+            Some("nat"),
+            "POSTROUTING",
+            vec![
                 "-s",
                 LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
                 "-j",
                 "MASQUERADE",
-            ])
-            .output()
-            .context("Failed to add MASQUERADE rule")?;
+            ],
+        )
+        .context("Failed to add MASQUERADE rule")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Ignore if rule already exists
-            if !stderr.contains("File exists") {
-                warn!("Failed to add MASQUERADE rule: {}", stderr);
-            }
+        self.host_iptables_rules.push(masq_rule);
+
+        // Add explicit ACCEPT rules for namespace traffic in FORWARD chain
+        //
+        // The FORWARD chain controls packets being routed THROUGH this host (not TO/FROM it).
+        // Since we're routing packets between the namespace and the internet, they go through FORWARD.
+        //
+        // Without these rules:
+        // - Default FORWARD policy might be DROP/REJECT
+        // - Other firewall rules might block our namespace subnet
+        // - Docker/Kubernetes/other container tools might have restrictive FORWARD rules
+        //
+        // We use -I (insert) at position 1 to ensure our rules take precedence.
+        // We add comments to make these rules identifiable for cleanup.
+
+        // Forward rule for source traffic
+        let forward_src_rule = IPTablesRule::new(
+            None, // filter table is default
+            "FORWARD",
+            vec![
+                "-s",
+                LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ],
+        )
+        .context("Failed to add FORWARD source rule")?;
+
+        self.host_iptables_rules.push(forward_src_rule);
+
+        // Forward rule for destination traffic
+        let forward_dst_rule = IPTablesRule::new(
+            None, // filter table is default
+            "FORWARD",
+            vec![
+                "-d",
+                LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ],
+        )
+        .context("Failed to add FORWARD destination rule")?;
+
+        self.host_iptables_rules.push(forward_dst_rule);
+
+        Ok(())
+    }
+
+    /// Fix DNS if systemd-resolved is in use
+    ///
+    /// ## The systemd-resolved Problem
+    ///
+    /// Modern Linux systems often use systemd-resolved as a local DNS stub resolver.
+    /// This service listens on 127.0.0.53:53 and /etc/resolv.conf points to it.
+    ///
+    /// When we create a network namespace:
+    /// 1. The namespace gets a COPY of /etc/resolv.conf pointing to 127.0.0.53
+    /// 2. But 127.0.0.53 in the namespace is NOT the host's systemd-resolved
+    /// 3. Each namespace has its own isolated loopback interface
+    /// 4. Result: DNS queries fail because there's no DNS server at 127.0.0.53 in the namespace
+    ///
+    /// ## Why We Can't Route Loopback Traffic to the Host
+    ///
+    /// You might think: "Just route 127.0.0.0/8 from the namespace to the host!"
+    /// This doesn't work due to Linux kernel security:
+    ///
+    /// 1. **Martian Packet Protection**: The kernel considers packets with 127.x.x.x
+    ///    addresses coming from non-loopback interfaces as "martian" (impossible/spoofed)
+    /// 2. **Source Address Validation**: Even with rp_filter=0, the kernel won't accept
+    ///    127.x.x.x packets from external interfaces
+    /// 3. **Built-in Security**: This is hardcoded in the kernel's IP stack for security -
+    ///    loopback addresses should NEVER appear on the network
+    ///
+    /// Even if we tried:
+    /// - `ip route add 127.0.0.53/32 via 169.254.1.1` - packets get dropped
+    /// - `iptables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
+    /// - Disabling rp_filter - doesn't help with loopback addresses
+    ///
+    /// ## Our Solution
+    ///
+    /// Instead of fighting the kernel's security measures, we:
+    /// 1. Detect if /etc/resolv.conf points to systemd-resolved (127.0.0.53)
+    /// 2. Replace it with public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
+    /// 3. These DNS queries go out through our veth pair and work normally
+    ///
+    /// **IMPORTANT**: `ip netns exec` automatically bind-mounts files from
+    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace. We create
+    /// /etc/netns/<namespace-name>/resolv.conf with our custom DNS servers,
+    /// which will override /etc/resolv.conf ONLY for processes running in the namespace.
+    /// The host's /etc/resolv.conf remains completely untouched.
+    ///
+    /// This is simpler, more reliable, and doesn't compromise security.
+    fn fix_systemd_resolved_dns(&self) -> Result<()> {
+        // Check if resolv.conf points to systemd-resolved
+        let output = Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                &self.namespace_name,
+                "grep",
+                "127.0.0.53",
+                "/etc/resolv.conf",
+            ])
+            .output()?;
+
+        if output.status.success() {
+            // systemd-resolved is in use, create namespace-specific resolv.conf
+            debug!("Detected systemd-resolved, creating namespace-specific resolv.conf");
+
+            // Create /etc/netns/<namespace>/ directory if it doesn't exist
+            let netns_etc = format!("/etc/netns/{}", self.namespace_name);
+            std::fs::create_dir_all(&netns_etc).context("Failed to create /etc/netns directory")?;
+
+            // Write custom resolv.conf that will be bind-mounted into the namespace
+            let resolv_conf_path = format!("{}/resolv.conf", netns_etc);
+            std::fs::write(
+                &resolv_conf_path,
+                "# Custom DNS for httpjail namespace\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n",
+            )
+            .context("Failed to write namespace-specific resolv.conf")?;
+
+            debug!(
+                "Created namespace-specific resolv.conf at {}",
+                resolv_conf_path
+            );
         }
 
         Ok(())
@@ -359,6 +547,16 @@ impl LinuxJail {
     /// Clean up all resources
     fn cleanup_internal(&self) -> Result<()> {
         let mut errors = Vec::new();
+
+        // Clean up namespace-specific config directory
+        let netns_etc = format!("/etc/netns/{}", self.namespace_name);
+        if std::path::Path::new(&netns_etc).exists() {
+            if let Err(e) = std::fs::remove_dir_all(&netns_etc) {
+                errors.push(format!("Failed to remove {}: {}", netns_etc, e));
+            } else {
+                debug!("Removed namespace config directory: {}", netns_etc);
+            }
+        }
 
         // Remove namespace (this also removes veth pair)
         if self.namespace_created {
@@ -382,19 +580,8 @@ impl LinuxJail {
             .args(["link", "del", &self.veth_host])
             .output();
 
-        // Remove MASQUERADE rule
-        let _ = Command::new("iptables")
-            .args([
-                "-t",
-                "nat",
-                "-D",
-                "POSTROUTING",
-                "-s",
-                LINUX_NS_SUBNET,
-                "-j",
-                "MASQUERADE",
-            ])
-            .output();
+        // Note: Host iptables rules are automatically cleaned up by the Drop
+        // implementation of IPTablesRule when self.host_iptables_rules is dropped
 
         if !errors.is_empty() {
             warn!("Cleanup completed with errors: {:?}", errors);
@@ -402,46 +589,12 @@ impl LinuxJail {
 
         Ok(())
     }
-
-    /// Clean up orphaned namespaces from previous runs
-    pub fn cleanup_orphaned_namespaces() {
-        let output = match Command::new("ip").args(["netns", "list"]).output() {
-            Ok(output) => output,
-            Err(e) => {
-                debug!("Failed to list namespaces: {}", e);
-                return;
-            }
-        };
-
-        if !output.status.success() {
-            return;
-        }
-
-        let namespaces = String::from_utf8_lossy(&output.stdout);
-        for line in namespaces.lines() {
-            // Look for httpjail_* pattern
-            if let Some(ns_name) = line.split_whitespace().next()
-                && ns_name.starts_with("httpjail_")
-            {
-                // Since we no longer encode PID in the name, we can't check if process exists
-                // Instead, we'll rely on proper cleanup in Drop trait and explicit cleanup
-                // This function now mainly serves to clean up any leftover namespaces from
-                // crashed or killed processes
-                debug!("Found httpjail namespace: {}", ns_name);
-                // We could implement a more sophisticated cleanup strategy here if needed
-                // For now, we'll let the normal cleanup handle it
-            }
-        }
-    }
 }
 
 impl Jail for LinuxJail {
     fn setup(&mut self, _proxy_port: u16) -> Result<()> {
         // Check for root access
         Self::check_root()?;
-
-        // Clean up any orphaned namespaces
-        Self::cleanup_orphaned_namespaces();
 
         // Create network namespace
         self.create_namespace()?;
@@ -460,6 +613,9 @@ impl Jail for LinuxJail {
 
         // Add iptables rules inside namespace
         self.setup_namespace_iptables()?;
+
+        // Fix DNS if using systemd-resolved
+        self.fix_systemd_resolved_dns()?;
 
         info!(
             "Linux jail setup complete using namespace {} with HTTP proxy on port {} and HTTPS proxy on port {}",
@@ -493,39 +649,9 @@ impl Jail for LinuxJail {
             cmd.env(key, value);
         }
 
-        // Also ensure the proxy addresses are accessible
-        cmd.env(
-            "http_proxy",
-            format!(
-                "http://{}:{}",
-                format_ip(LINUX_NS_HOST_IP),
-                self.config.http_proxy_port
-            ),
-        );
-        cmd.env(
-            "https_proxy",
-            format!(
-                "http://{}:{}",
-                format_ip(LINUX_NS_HOST_IP),
-                self.config.https_proxy_port
-            ),
-        );
-        cmd.env(
-            "HTTP_PROXY",
-            format!(
-                "http://{}:{}",
-                format_ip(LINUX_NS_HOST_IP),
-                self.config.http_proxy_port
-            ),
-        );
-        cmd.env(
-            "HTTPS_PROXY",
-            format!(
-                "http://{}:{}",
-                format_ip(LINUX_NS_HOST_IP),
-                self.config.https_proxy_port
-            ),
-        );
+        // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
+        // The jail uses iptables rules to transparently redirect traffic to the proxy,
+        // making it work with applications that don't respect proxy environment variables.
 
         let status = cmd
             .status()
@@ -559,6 +685,7 @@ impl Clone for LinuxJail {
             veth_host: self.veth_host.clone(),
             veth_ns: self.veth_ns.clone(),
             namespace_created: self.namespace_created,
+            host_iptables_rules: Vec::new(), // Don't clone the rules, new instance should manage its own
         }
     }
 }

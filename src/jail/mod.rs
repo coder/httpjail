@@ -5,7 +5,21 @@ pub trait Jail: Send + Sync {
     /// Setup jail for a specific session
     fn setup(&mut self, proxy_port: u16) -> Result<()>;
 
-    /// Execute a command within the jail with additional environment variables
+    /// Execute a command within the jail with additional environment variables.
+    ///
+    /// # Important
+    ///
+    /// System-native jail implementations (macOS/Linux) do NOT set HTTP_PROXY/HTTPS_PROXY
+    /// environment variables. Instead, they use platform-specific mechanisms to transparently
+    /// redirect traffic:
+    /// - macOS: Uses PF (Packet Filter) rules to redirect traffic from the httpjail group
+    /// - Linux: Uses iptables rules in a network namespace to redirect traffic
+    ///
+    /// The WeakJail implementation does set HTTP_PROXY/HTTPS_PROXY environment variables
+    /// since it relies on applications respecting these variables.
+    ///
+    /// This approach ensures that system-native jails capture all network traffic,
+    /// even from applications that don't respect proxy environment variables.
     fn execute(
         &self,
         command: &[String],
