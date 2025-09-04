@@ -2,9 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -91,7 +89,7 @@ jobs:
   test-weak:
     name: Weak Mode Integration Tests (Linux)
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
