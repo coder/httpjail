@@ -113,21 +113,9 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Always print debug info for this failing test
-    eprintln!(
-        "[{}] test_jail_denies_non_matching_requests:",
-        P::platform_name()
-    );
-    eprintln!("  Exit code: {:?}", output.status.code());
-    eprintln!("  Stdout: {}", stdout);
     if !stderr.is_empty() {
-        eprintln!(
-            "  Stderr (first 2000 chars): {}",
-            &stderr.chars().take(2000).collect::<String>()
-        );
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-
     // Should get 403 Forbidden from our proxy
     assert_eq!(stdout.trim(), "403", "Request should be denied");
     // curl itself should succeed (it got a response)
@@ -287,14 +275,9 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     eprintln!(
-        "[{}] test_native_jail_blocks_https exit code: {:?}",
+        "[{}] HTTPS denied test stderr: {}",
         P::platform_name(),
-        output.status.code()
-    );
-    eprintln!(
-        "[{}] HTTPS denied test stderr (first 3000 chars): {}",
-        P::platform_name(),
-        &stderr.chars().take(3000).collect::<String>()
+        stderr
     );
     eprintln!(
         "[{}] HTTPS denied test stdout: {}",
@@ -451,14 +434,9 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     eprintln!(
-        "[{}] HTTPS denied test exit code: {:?}",
+        "[{}] HTTPS denied test stderr: {}",
         P::platform_name(),
-        output.status.code()
-    );
-    eprintln!(
-        "[{}] HTTPS denied test stderr (first 3000 chars): {}",
-        P::platform_name(),
-        &stderr.chars().take(3000).collect::<String>()
+        stderr
     );
     eprintln!(
         "[{}] HTTPS denied test stdout: {}",
