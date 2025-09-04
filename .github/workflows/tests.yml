@@ -72,6 +72,14 @@ jobs:
       - name: Run jail integration tests
         run: cargo test --test jail_integration --verbose
 
+      - name: Debug TLS environment
+        run: |
+          echo "=== Debugging TLS/Certificate Environment ==="
+          chmod +x scripts/debug_tls_env.sh
+          ./scripts/debug_tls_env.sh
+          sudo ./scripts/debug_tls_env.sh
+          echo "=== End TLS Debug ==="
+
       - name: Run Linux jail integration tests (with sudo)
         run: |
           # Ensure ip netns support is available
