@@ -5,6 +5,7 @@ use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
@@ -236,10 +237,45 @@ impl CertificateManager {
 
     /// Generate environment variables for common tools to use the CA certificate
     pub fn get_ca_env_vars() -> Result<Vec<(String, String)>> {
-        let ca_path = Self::get_ca_cert_path()?;
+        // Try multiple possible locations for the CA certificate
+        // This handles cases where the effective user changes (e.g., sudo in CI)
+        let mut ca_path = Self::get_ca_cert_path()?;
 
         if !ca_path.exists() {
-            anyhow::bail!("CA certificate not found at {:?}", ca_path);
+            // If not found in current user's config, check common locations
+            let possible_paths = [
+                // Check SUDO_USER's config directory
+                std::env::var("SUDO_USER").ok().and_then(|sudo_user| {
+                    dirs::home_dir().map(|home| {
+                        home.parent()
+                            .unwrap_or(&home)
+                            .join(sudo_user)
+                            .join(".config/httpjail/ca-cert.pem")
+                    })
+                }),
+                // Check /home/runner for CI
+                Some(PathBuf::from("/home/runner/.config/httpjail/ca-cert.pem")),
+                // Check root's config
+                Some(PathBuf::from("/root/.config/httpjail/ca-cert.pem")),
+            ];
+
+            for path_option in &possible_paths {
+                if let Some(path) = path_option {
+                    if path.exists() {
+                        ca_path = Utf8PathBuf::try_from(path.clone())
+                            .context("CA cert path is not valid UTF-8")?;
+                        debug!("Found CA certificate at alternate location: {}", ca_path);
+                        break;
+                    }
+                }
+            }
+
+            if !ca_path.exists() {
+                anyhow::bail!(
+                    "CA certificate not found. Searched: {:?} and common locations",
+                    ca_path
+                );
+            }
         }
 
         let ca_path_str = ca_path.to_string();

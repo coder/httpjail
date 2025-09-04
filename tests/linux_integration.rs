@@ -105,7 +105,7 @@ mod tests {
             .arg("--")
             .arg("sh")
             .arg("-c")
-            .arg("echo 'Instance 1'; sleep 2; echo 'Instance 1 done'")
+            .arg("echo Instance1 && sleep 2 && echo Instance1Done")
             .spawn()
             .expect("Failed to start first httpjail");
 
@@ -118,7 +118,7 @@ mod tests {
             .arg("allow: .*")
             .arg("--")
             .arg("echo")
-            .arg("Instance 2")
+            .arg("Instance2")
             .output()
             .expect("Failed to execute second httpjail");
 
@@ -141,7 +141,15 @@ mod tests {
         // Verify both ran
         let stdout1 = String::from_utf8_lossy(&output1.stdout);
         let stdout2 = String::from_utf8_lossy(&output2.stdout);
-        assert!(stdout1.contains("Instance 1"), "First instance didn't run");
-        assert!(stdout2.contains("Instance 2"), "Second instance didn't run");
+        assert!(
+            stdout1.contains("Instance1"),
+            "First instance didn't run: {}",
+            stdout1
+        );
+        assert!(
+            stdout2.contains("Instance2"),
+            "Second instance didn't run: {}",
+            stdout2
+        );
     }
 }
