@@ -31,17 +31,17 @@ jobs:
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo nextest run --bins --verbose
+        run: cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
-        run: cargo nextest run --test smoke_test --verbose
+        run: cargo nextest run --profile ci --test smoke_test --verbose
 
       - name: Run macOS integration tests (with sudo)
         run: |
           # The tests require root privileges for PF rules on macOS
           # GitHub Actions provides passwordless sudo on macOS runners
           # Use -E to preserve environment and full path to cargo and nextest
-          sudo -E $(which cargo) nextest run --test macos_integration --verbose
+          sudo -E $(which cargo) nextest run --profile ci --test macos_integration --verbose
 
   test-linux:
     name: Linux Tests
@@ -68,10 +68,10 @@ jobs:
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo nextest run --bins --verbose
+        run: cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
-        run: cargo nextest run --test smoke_test --verbose
+        run: cargo nextest run --profile ci --test smoke_test --verbose
 
       - name: Debug TLS environment
         run: |
@@ -87,7 +87,7 @@ jobs:
           sudo ip netns list || true
           # Run the Linux-specific jail tests with root privileges
           # Use full path to cargo and nextest since sudo doesn't preserve PATH
-          sudo -E $(which cargo) nextest run --test linux_integration --verbose
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
@@ -111,7 +111,7 @@ jobs:
         run: cargo build --verbose
 
       - name: Run weak mode integration tests
-        run: cargo nextest run --test weak_integration --verbose
+        run: cargo nextest run --profile ci --test weak_integration --verbose
 
   clippy:
     name: Clippy (${{ matrix.os }})
