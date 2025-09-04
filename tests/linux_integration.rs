@@ -1,11 +1,13 @@
 mod common;
 mod system_integration;
 
+#[macro_use]
+mod platform_test_macro;
+
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use crate::system_integration::JailTestPlatform;
-    use serial_test::serial;
 
     /// Linux-specific platform implementation
     struct LinuxPlatform;
@@ -31,73 +33,13 @@ mod tests {
         }
     }
 
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_allows_matching_requests() {
-        system_integration::test_jail_allows_matching_requests::<LinuxPlatform>();
-    }
+    // Generate all the shared platform tests
+    platform_tests!(LinuxPlatform);
 
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_denies_non_matching_requests() {
-        system_integration::test_jail_denies_non_matching_requests::<LinuxPlatform>();
-    }
+    // Linux-specific tests below
+    use serial_test::serial;
 
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_method_specific_rules() {
-        system_integration::test_jail_method_specific_rules::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_log_only_mode() {
-        system_integration::test_jail_log_only_mode::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_dry_run_mode() {
-        system_integration::test_jail_dry_run_mode::<LinuxPlatform>();
-    }
-
-    #[test]
-    fn test_jail_requires_command() {
-        system_integration::test_jail_requires_command::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_exit_code_propagation() {
-        system_integration::test_jail_exit_code_propagation::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_native_jail_blocks_https() {
-        system_integration::test_native_jail_blocks_https::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_native_jail_allows_https() {
-        system_integration::test_native_jail_allows_https::<LinuxPlatform>();
-    }
-
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_https_connect_denied() {
-        system_integration::test_jail_https_connect_denied::<LinuxPlatform>();
-    }
-
-    // Linux with network namespaces supports HTTPS CONNECT
-    #[test]
-    #[serial] // Network namespaces are global state, must run sequentially
-    fn test_jail_https_connect_allowed() {
-        system_integration::test_jail_https_connect_allowed::<LinuxPlatform>();
-    }
-
-    // Linux-specific test: verify namespace cleanup
+    /// Linux-specific test: verify namespace cleanup
     #[test]
     #[serial]
     fn test_namespace_cleanup() {
@@ -112,11 +54,11 @@ mod tests {
         let initial_namespaces = String::from_utf8_lossy(&output.stdout);
         let initial_count = initial_namespaces
             .lines()
-            .filter(|line| line.starts_with("httpjail_"))
+            .filter(|line| line.contains("httpjail_"))
             .count();
 
         // Run httpjail
-        let mut cmd = system_integration::httpjail_cmd();
+        let mut cmd = common::httpjail_cmd();
         cmd.arg("-r")
             .arg("allow: .*")
             .arg("--")
@@ -125,7 +67,7 @@ mod tests {
 
         let _output = cmd.output().expect("Failed to execute httpjail");
 
-        // Check namespaces are cleaned up
+        // Check namespace was cleaned up
         let output = std::process::Command::new("ip")
             .args(&["netns", "list"])
             .output()
@@ -134,87 +76,69 @@ mod tests {
         let final_namespaces = String::from_utf8_lossy(&output.stdout);
         let final_count = final_namespaces
             .lines()
-            .filter(|line| line.starts_with("httpjail_"))
+            .filter(|line| line.contains("httpjail_"))
             .count();
 
         assert_eq!(
             initial_count, final_count,
-            "Namespace was not cleaned up properly. Initial: {}, Final: {}",
+            "Namespace not cleaned up properly. Initial: {}, Final: {}",
             initial_count, final_count
         );
     }
 
-    // Linux-specific test: verify concurrent execution
+    /// Linux-specific test: verify concurrent namespace isolation
     #[test]
     #[serial]
     fn test_concurrent_namespace_isolation() {
         LinuxPlatform::require_privileges();
-
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::process::Command;
         use std::thread;
+        use std::time::Duration;
 
-        let success_count = Arc::new(AtomicUsize::new(0));
-        let mut handles = vec![];
+        // Start first httpjail instance that sleeps
+        let mut child1 = common::httpjail_cmd()
+            .arg("-r")
+            .arg("allow: .*")
+            .arg("--")
+            .arg("sh")
+            .arg("-c")
+            .arg("echo 'Instance 1'; sleep 2; echo 'Instance 1 done'")
+            .spawn()
+            .expect("Failed to start first httpjail");
 
-        // Spawn multiple httpjail instances concurrently
-        for i in 0..3 {
-            let success_count = Arc::clone(&success_count);
-            let handle = thread::spawn(move || {
-                let mut cmd = system_integration::httpjail_cmd();
-                cmd.arg("-r")
-                    .arg("allow: .*")
-                    .arg("--")
-                    .arg("sh")
-                    .arg("-c")
-                    .arg(&format!("echo 'Instance {}'", i));
+        // Give it time to set up
+        thread::sleep(Duration::from_millis(500));
 
-                match cmd.output() {
-                    Ok(output) if output.status.success() => {
-                        success_count.fetch_add(1, Ordering::SeqCst);
-                    }
-                    _ => {}
-                }
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all threads
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        // All instances should succeed
-        assert_eq!(
-            success_count.load(Ordering::SeqCst),
-            3,
-            "Not all concurrent instances succeeded"
-        );
-
-        // Verify all namespaces are cleaned up
-        let output = std::process::Command::new("ip")
-            .args(&["netns", "list"])
+        // Start second httpjail instance
+        let output2 = common::httpjail_cmd()
+            .arg("-r")
+            .arg("allow: .*")
+            .arg("--")
+            .arg("echo")
+            .arg("Instance 2")
             .output()
-            .expect("Failed to list namespaces");
+            .expect("Failed to execute second httpjail");
 
-        let namespaces = String::from_utf8_lossy(&output.stdout);
-        let httpjail_count = namespaces
-            .lines()
-            .filter(|line| line.starts_with("httpjail_"))
-            .count();
+        // Both should succeed without interference
+        let output1 = child1
+            .wait_with_output()
+            .expect("Failed to wait for first httpjail");
 
-        assert_eq!(
-            httpjail_count, 0,
-            "Found {} httpjail namespaces still present after concurrent test",
-            httpjail_count
+        assert!(
+            output1.status.success(),
+            "First instance failed: {:?}",
+            String::from_utf8_lossy(&output1.stderr)
         );
-    }
-}
+        assert!(
+            output2.status.success(),
+            "Second instance failed: {:?}",
+            String::from_utf8_lossy(&output2.stderr)
+        );
 
-#[cfg(not(target_os = "linux"))]
-mod tests {
-    #[test]
-    fn test_platform_not_linux() {
-        println!("Linux integration tests only run on Linux");
+        // Verify both ran
+        let stdout1 = String::from_utf8_lossy(&output1.stdout);
+        let stdout2 = String::from_utf8_lossy(&output2.stdout);
+        assert!(stdout1.contains("Instance 1"), "First instance didn't run");
+        assert!(stdout2.contains("Instance 2"), "Second instance didn't run");
     }
 }

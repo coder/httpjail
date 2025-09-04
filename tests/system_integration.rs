@@ -371,6 +371,73 @@ pub fn test_jail_https_connect_allowed<P: JailTestPlatform>() {
     );
 }
 
+/// Test privilege dropping - whoami should report original user, not root
+pub fn test_jail_privilege_dropping<P: JailTestPlatform>() {
+    // This test requires sudo to be meaningful
+    P::require_privileges();
+
+    // Get the expected username from SUDO_USER env var
+    // If not running under sudo, this test will compare current user with current user
+    let expected_user = std::env::var("SUDO_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    eprintln!(
+        "[{}] Testing privilege dropping - expecting user: {}",
+        P::platform_name(),
+        expected_user
+    );
+
+    // Run whoami through httpjail
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: .*") // Allow all for this test
+        .arg("--")
+        .arg("whoami");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !stderr.is_empty() {
+        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
+    }
+
+    let actual_user = stdout.trim();
+    eprintln!(
+        "[{}] whoami returned: '{}'",
+        P::platform_name(),
+        actual_user
+    );
+
+    // The user should be the original user, not root
+    assert_eq!(
+        actual_user, expected_user,
+        "whoami should return the original user ({}), not root. Got: {}",
+        expected_user, actual_user
+    );
+
+    // Also verify that id command shows correct user
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: .*")
+        .arg("--")
+        .arg("id")
+        .arg("-un"); // Get username from id
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let id_user = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    eprintln!("[{}] id -un returned: '{}'", P::platform_name(), id_user);
+
+    assert_eq!(
+        id_user, expected_user,
+        "id -un should return the original user ({}), not root. Got: {}",
+        expected_user, id_user
+    );
+}
+
 /// Test HTTPS CONNECT denied
 pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     P::require_privileges();
