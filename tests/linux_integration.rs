@@ -47,7 +47,7 @@ mod tests {
 
         // Get initial namespace count
         let output = std::process::Command::new("ip")
-            .args(&["netns", "list"])
+            .args(["netns", "list"])
             .output()
             .expect("Failed to list namespaces");
 
@@ -69,7 +69,7 @@ mod tests {
 
         // Check namespace was cleaned up
         let output = std::process::Command::new("ip")
-            .args(&["netns", "list"])
+            .args(["netns", "list"])
             .output()
             .expect("Failed to list namespaces");
 

@@ -28,21 +28,63 @@ pub fn httpjail_cmd() -> Command {
     cmd
 }
 
-/// Test that jail allows matching requests
-pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
-    P::require_privileges();
-
-    let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--")
-        .arg("curl")
+/// Helper to add curl HTTP status check arguments
+fn curl_http_status_args(cmd: &mut Command, url: &str) {
+    cmd.arg("curl")
         .arg("-s")
         .arg("-o")
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("http://ifconfig.me");
+        .arg(url);
+}
+
+/// Helper to add curl HTTP status check with specific method
+fn curl_http_method_status_args(cmd: &mut Command, method: &str, url: &str) {
+    cmd.arg("curl")
+        .arg("-X")
+        .arg(method)
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg(url);
+}
+
+/// Helper to add curl HTTPS HEAD request with verbose output
+fn curl_https_head_args(cmd: &mut Command, url: &str) {
+    cmd.arg("curl")
+        .arg("-v")
+        .arg("--trace-ascii")
+        .arg("/dev/stderr")
+        .arg("--connect-timeout")
+        .arg("10")
+        .arg("-I")
+        .arg(url);
+}
+
+/// Helper for curl HTTPS status check with -k flag
+fn curl_https_status_args(cmd: &mut Command, url: &str) {
+    cmd.arg("curl")
+        .arg("-k")
+        .arg("--max-time")
+        .arg("5")
+        .arg("-s")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg(url);
+}
+
+/// Test that jail allows matching requests
+pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -60,16 +102,8 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--")
-        .arg("curl")
-        .arg("-s")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("http://example.com");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -86,18 +120,8 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--")
-        .arg("curl")
-        .arg("-X")
-        .arg("GET")
-        .arg("-s")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("http://ifconfig.me");
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
+    curl_http_method_status_args(&mut cmd, "GET", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -110,18 +134,8 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--")
-        .arg("curl")
-        .arg("-X")
-        .arg("POST")
-        .arg("-s")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("http://ifconfig.me");
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
+    curl_http_method_status_args(&mut cmd, "POST", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -134,19 +148,8 @@ pub fn test_jail_log_only_mode<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("--log-only")
-        .arg("--")
-        .arg("curl")
-        .arg("-s")
-        .arg("--connect-timeout")
-        .arg("5")
-        .arg("--max-time")
-        .arg("8")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("http://example.com");
+    cmd.arg("--log-only").arg("--");
+    curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -177,14 +180,8 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
     cmd.arg("--dry-run")
         .arg("-r")
         .arg("deny: .*") // Deny everything
-        .arg("--")
-        .arg("curl")
-        .arg("-s")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("http://ifconfig.me");
+        .arg("--");
+    curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -245,15 +242,8 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
         .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
-        .arg("--")
-        .arg("curl")
-        .arg("-v")
-        .arg("--trace-ascii")
-        .arg("/dev/stderr") // Send trace to stderr for debugging
-        .arg("--connect-timeout")
-        .arg("2")
-        .arg("-I") // HEAD request only
-        .arg("https://example.com"); // HTTPS URL that should be denied
+        .arg("--");
+    curl_https_head_args(&mut cmd, "https://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -294,19 +284,8 @@ pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
 
     // Test allowing HTTPS to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--")
-        .arg("curl")
-        .arg("-k")
-        .arg("--max-time")
-        .arg("5")
-        .arg("-s")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg("https://ifconfig.me");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    curl_https_status_args(&mut cmd, "https://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -420,15 +399,8 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
         .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
-        .arg("--")
-        .arg("curl")
-        .arg("-v")
-        .arg("--trace-ascii")
-        .arg("/dev/stderr") // Send trace to stderr for debugging
-        .arg("--connect-timeout")
-        .arg("2")
-        .arg("-I") // HEAD request only
-        .arg("https://example.com"); // HTTPS URL that should be denied
+        .arg("--");
+    curl_https_head_args(&mut cmd, "https://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 

@@ -7,7 +7,6 @@ mod platform_test_macro;
 #[cfg(target_os = "macos")]
 mod tests {
     use super::*;
-    use crate::system_integration::JailTestPlatform;
 
     /// macOS-specific platform implementation
     struct MacOSPlatform;

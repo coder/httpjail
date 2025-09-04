@@ -39,7 +39,7 @@ fn test_weak_mode_blocks_http_correctly() {
             );
 
             // Should not contain actual response (IP address)
-            assert!(!std::net::Ipv4Addr::from_str(&stdout.trim()).is_ok());
+            assert!(std::net::Ipv4Addr::from_str(stdout.trim()).is_err());
         }
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);
