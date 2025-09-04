@@ -19,6 +19,7 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 - [ ] Expand test cases to include WebSockets
 - [ ] Add Linux support with parity with macOS
 - [ ] Add robust firewall cleanup mechanism for Linux and macOS
+- [ ] Support/test concurrent jailing across macOS and Linux
 
 ## Quick Start
 

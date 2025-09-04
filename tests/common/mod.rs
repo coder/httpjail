@@ -1,6 +1,7 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
 use std::process::Command;
+use std::str::FromStr;
 
 /// Build httpjail binary and return the path
 pub fn build_httpjail() -> Result<String, String> {

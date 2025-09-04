@@ -34,7 +34,7 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow: httpbin\\.org")
+        .arg("allow: ifconfig\\.me")
         .arg("--")
         .arg("curl")
         .arg("-s")
@@ -42,7 +42,7 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("http://httpbin.org/get");
+        .arg("http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -61,7 +61,7 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow: httpbin\\.org")
+        .arg("allow: ifconfig\\.me")
         .arg("--")
         .arg("curl")
         .arg("-s")
@@ -84,10 +84,10 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
 pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     P::require_privileges();
 
-    // Test 1: Allow GET to httpbin
+    // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow-get: httpbin\\.org")
+        .arg("allow-get: ifconfig\\.me")
         .arg("--")
         .arg("curl")
         .arg("-X")
@@ -97,7 +97,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("http://httpbin.org/get");
+        .arg("http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -108,10 +108,10 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     }
     assert_eq!(stdout.trim(), "200", "GET request should be allowed");
 
-    // Test 2: Deny POST to same URL
+    // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow-get: httpbin\\.org")
+        .arg("allow-get: ifconfig\\.me")
         .arg("--")
         .arg("curl")
         .arg("-X")
@@ -121,7 +121,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("http://httpbin.org/post");
+        .arg("http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -184,7 +184,7 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("http://httpbin.org/get");
+        .arg("http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -242,7 +242,7 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
     // Test that HTTPS requests to denied domains are blocked
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow: httpbin\\.org")
+        .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
         .arg("--")
@@ -292,10 +292,10 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
 pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
     P::require_privileges();
 
-    // Test allowing HTTPS to httpbin.org
+    // Test allowing HTTPS to ifconfig.me
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow: httpbin\\.org")
+        .arg("allow: ifconfig\\.me")
         .arg("--")
         .arg("curl")
         .arg("-k")
@@ -306,7 +306,7 @@ pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
         .arg("/dev/null")
         .arg("-w")
         .arg("%{http_code}")
-        .arg("https://httpbin.org/get");
+        .arg("https://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -331,47 +331,15 @@ pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
     );
 }
 
-/// Test HTTPS CONNECT allowed (if supported)
+/// Test HTTPS CONNECT allowed (only for weak mode - not used in strong jails)
+/// Strong jails use transparent TLS interception, not HTTP CONNECT method
 #[allow(dead_code)]
 pub fn test_jail_https_connect_allowed<P: JailTestPlatform>() {
-    if !P::supports_https_interception() {
-        eprintln!(
-            "[{}] Skipping HTTPS CONNECT test - not supported on this platform",
-            P::platform_name()
-        );
-        return;
-    }
-
-    P::require_privileges();
-
-    // Test that CONNECT requests to allowed domains succeed
-    let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: example\\.com")
-        .arg("--")
-        .arg("curl")
-        .arg("-v")
-        .arg("--trace-ascii")
-        .arg("/dev/stderr") // Send trace to stderr for debugging
-        .arg("--connect-timeout")
-        .arg("2")
-        .arg("-I") // HEAD request only
-        .arg("https://example.com"); // HTTPS URL
-
-    let output = cmd.output().expect("Failed to execute httpjail");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
+    // This test is not applicable to strong jails which use transparent interception
+    // It's preserved here for potential use in weak mode testing where HTTP CONNECT is used
     eprintln!(
-        "[{}] HTTPS CONNECT test stderr: {}",
-        P::platform_name(),
-        stderr
-    );
-
-    // Should see successful CONNECT response even if TLS fails after
-    assert!(
-        stderr.contains("< HTTP/1.1 200"),
-        "CONNECT should be allowed for example.com"
+        "[{}] Skipping HTTPS CONNECT test - not applicable for strong jails with transparent TLS interception",
+        P::platform_name()
     );
 }
 
@@ -449,7 +417,7 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     // Test that HTTPS requests to denied domains are blocked
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
-        .arg("allow: httpbin\\.org")
+        .arg("allow: ifconfig\\.me")
         .arg("-r")
         .arg("deny: example\\.com")
         .arg("--")

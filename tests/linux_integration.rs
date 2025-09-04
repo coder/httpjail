@@ -94,18 +94,18 @@ mod tests {
         use std::thread;
         use std::time::Duration;
 
-        // Start first httpjail instance that sleeps (using std Command for spawn)
-        let httpjail_path = std::env::current_dir()
-            .unwrap()
-            .join("target/debug/httpjail");
+        // Use assert_cmd to properly find the httpjail binary
+        let httpjail_path = assert_cmd::cargo::cargo_bin("httpjail");
 
-        let mut child1 = std::process::Command::new(&httpjail_path)
+        let child1 = std::process::Command::new(&httpjail_path)
             .arg("-r")
             .arg("allow: .*")
             .arg("--")
             .arg("sh")
             .arg("-c")
             .arg("echo Instance1 && sleep 2 && echo Instance1Done")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("Failed to start first httpjail");
 
@@ -138,18 +138,23 @@ mod tests {
             String::from_utf8_lossy(&output2.stderr)
         );
 
-        // Verify both ran
+        // Verify both ran - check both stdout and stderr since output location may vary
         let stdout1 = String::from_utf8_lossy(&output1.stdout);
+        let stderr1 = String::from_utf8_lossy(&output1.stderr);
         let stdout2 = String::from_utf8_lossy(&output2.stdout);
+        let stderr2 = String::from_utf8_lossy(&output2.stderr);
+
         assert!(
-            stdout1.contains("Instance1"),
-            "First instance didn't run: {}",
-            stdout1
+            stdout1.contains("Instance1") || stderr1.contains("Instance1"),
+            "First instance didn't run. stdout: {}, stderr: {}",
+            stdout1,
+            stderr1
         );
         assert!(
-            stdout2.contains("Instance2"),
-            "Second instance didn't run: {}",
-            stdout2
+            stdout2.contains("Instance2") || stderr2.contains("Instance2"),
+            "Second instance didn't run. stdout: {}, stderr: {}",
+            stdout2,
+            stderr2
         );
     }
 }

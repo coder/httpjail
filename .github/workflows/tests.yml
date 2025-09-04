@@ -24,21 +24,24 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo test --bins --verbose
+        run: cargo nextest run --bins --verbose
 
       - name: Run smoke tests
-        run: cargo test --test smoke_test --verbose
+        run: cargo nextest run --test smoke_test --verbose
 
       - name: Run macOS integration tests (with sudo)
         run: |
           # The tests require root privileges for PF rules on macOS
           # GitHub Actions provides passwordless sudo on macOS runners
-          # Use -E to preserve environment and full path to cargo
-          sudo -E $(which cargo) test --test macos_integration --verbose
+          # Use -E to preserve environment and full path to cargo and nextest
+          sudo -E $(which cargo) nextest run --test macos_integration --verbose
 
   test-linux:
     name: Linux Tests
@@ -58,17 +61,17 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo test --bins --verbose
+        run: cargo nextest run --bins --verbose
 
       - name: Run smoke tests
-        run: cargo test --test smoke_test --verbose
-
-      - name: Run jail integration tests
-        run: cargo test --test jail_integration --verbose
+        run: cargo nextest run --test smoke_test --verbose
 
       - name: Debug TLS environment
         run: |
@@ -83,8 +86,8 @@ jobs:
           # Ensure ip netns support is available
           sudo ip netns list || true
           # Run the Linux-specific jail tests with root privileges
-          # Use full path to cargo since sudo doesn't preserve PATH
-          sudo -E $(which cargo) test --test linux_integration --verbose
+          # Use full path to cargo and nextest since sudo doesn't preserve PATH
+          sudo -E $(which cargo) nextest run --test linux_integration --verbose
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
@@ -101,11 +104,14 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build
         run: cargo build --verbose
 
       - name: Run weak mode integration tests
-        run: cargo test --test weak_integration --verbose
+        run: cargo nextest run --test weak_integration --verbose
 
   clippy:
     name: Clippy

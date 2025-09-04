@@ -1,6 +1,7 @@
 mod common;
 
 use common::{HttpjailCommand, test_https_allow, test_https_blocking};
+use std::str::FromStr;
 
 #[test]
 fn test_weak_mode_blocks_https_correctly() {
@@ -16,12 +17,12 @@ fn test_weak_mode_allows_https_with_allow_rule() {
 
 #[test]
 fn test_weak_mode_blocks_http_correctly() {
-    // Test that HTTP to httpbin.org is blocked in weak mode
+    // Test that HTTP to ifconfig.me is blocked in weak mode
     let result = HttpjailCommand::new()
         .weak()
         .rule("deny: .*")
         .verbose(2)
-        .command(vec!["curl", "--max-time", "3", "http://httpbin.org/get"])
+        .command(vec!["curl", "--max-time", "3", "http://ifconfig.me"])
         .execute();
 
     match result {
@@ -37,9 +38,8 @@ fn test_weak_mode_blocks_http_correctly() {
                 "Expected request to be blocked, but got normal response"
             );
 
-            // Should not contain httpbin.org content
-            assert!(!stdout.contains("\"url\""));
-            assert!(!stdout.contains("\"args\""));
+            // Should not contain actual response (IP address)
+            assert!(!std::net::Ipv4Addr::from_str(&stdout.trim()).is_ok());
         }
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);

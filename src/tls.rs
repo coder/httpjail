@@ -7,7 +7,7 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 const CERT_CACHE_SIZE: usize = 1024;
 
@@ -224,11 +224,6 @@ impl CertificateManager {
             cert_der.len()
         );
 
-        // Validate the certificate can be parsed (this might catch ASN.1 issues early)
-        if let Err(e) = rustls::pki_types::CertificateDer::try_from(cert_der.as_ref()) {
-            warn!("Generated certificate has encoding issues: {}", e);
-        }
-
         // Also include CA cert in chain
         let ca_cert_der = self.ca_cert.der().clone();
         // ca_cert_der is already the correct type
@@ -289,14 +284,12 @@ impl CertificateManager {
                 Some(PathBuf::from("/root/.config/httpjail/ca-cert.pem")),
             ];
 
-            for path_option in &possible_paths {
-                if let Some(path) = path_option {
-                    if path.exists() {
-                        ca_path = Utf8PathBuf::try_from(path.clone())
-                            .context("CA cert path is not valid UTF-8")?;
-                        debug!("Found CA certificate at alternate location: {}", ca_path);
-                        break;
-                    }
+            for path in possible_paths.iter().flatten() {
+                if path.exists() {
+                    ca_path = Utf8PathBuf::try_from(path.clone())
+                        .context("CA cert path is not valid UTF-8")?;
+                    debug!("Found CA certificate at alternate location: {}", ca_path);
+                    break;
                 }
             }
 
