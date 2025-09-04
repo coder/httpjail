@@ -248,6 +248,8 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
         .arg("--")
         .arg("curl")
         .arg("-v")
+        .arg("--trace-ascii")
+        .arg("/dev/stderr") // Send trace to stderr for debugging
         .arg("--connect-timeout")
         .arg("2")
         .arg("-I") // HEAD request only
@@ -349,6 +351,8 @@ pub fn test_jail_https_connect_allowed<P: JailTestPlatform>() {
         .arg("--")
         .arg("curl")
         .arg("-v")
+        .arg("--trace-ascii")
+        .arg("/dev/stderr") // Send trace to stderr for debugging
         .arg("--connect-timeout")
         .arg("2")
         .arg("-I") // HEAD request only
@@ -451,6 +455,8 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
         .arg("--")
         .arg("curl")
         .arg("-v")
+        .arg("--trace-ascii")
+        .arg("/dev/stderr") // Send trace to stderr for debugging
         .arg("--connect-timeout")
         .arg("2")
         .arg("-I") // HEAD request only
