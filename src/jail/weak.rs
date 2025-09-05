@@ -26,6 +26,7 @@ impl Jail for WeakJail {
             "HTTPS proxy will be set to: http://127.0.0.1:{}",
             self.config.https_proxy_port
         );
+
         Ok(())
     }
 
@@ -76,7 +77,19 @@ impl Jail for WeakJail {
     }
 
     fn cleanup(&self) -> Result<()> {
-        debug!("Weak jail cleanup (no-op)");
+        debug!("Weak jail cleanup");
+        Ok(())
+    }
+
+    fn jail_id(&self) -> &str {
+        &self.config.jail_id
+    }
+
+    fn cleanup_orphaned(_jail_id: &str) -> Result<()>
+    where
+        Self: Sized,
+    {
+        // Weak jail doesn't create any system resources, so nothing to clean
         Ok(())
     }
 }

@@ -68,32 +68,19 @@ pub struct LinuxJail {
 
 impl LinuxJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        // Generate unique names for concurrent safety
-        let unique_id = Self::generate_unique_id();
+        // Use jail_id from config instead of generating our own
+        let namespace_name = format!("httpjail_{}", config.jail_id);
+        let veth_host = format!("veth_h_{}", config.jail_id);
+        let veth_ns = format!("veth_n_{}", config.jail_id);
 
         Ok(Self {
             config,
-            namespace_name: format!("httpjail_{}", unique_id),
-            veth_host: format!("veth_h_{}", unique_id),
-            veth_ns: format!("veth_n_{}", unique_id),
+            namespace_name,
+            veth_host,
+            veth_ns,
             namespace_created: false,
             host_iptables_rules: Vec::new(),
         })
-    }
-
-    /// Generate a unique ID for namespace and interface names
-    fn generate_unique_id() -> String {
-        // Use microseconds for timestamp to keep the ID shorter
-        // Linux interface names are limited to 15 characters (IFNAMSIZ - 1)
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros();
-
-        // Take last 7 digits of timestamp for uniqueness while keeping it short
-        // This gives us ~10 seconds of unique values which is plenty for concurrent runs
-        // With "veth_n_" prefix (7 chars) + 7 digits = 14 chars (under 15 char limit)
-        format!("{:07}", timestamp % 10_000_000)
     }
 
     /// Check if running as root
@@ -134,10 +121,15 @@ impl LinuxJail {
                     "Namespace {} already exists, regenerating name",
                     self.namespace_name
                 );
-                let unique_id = Self::generate_unique_id();
-                self.namespace_name = format!("httpjail_{}", unique_id);
-                self.veth_host = format!("veth_h_{}", unique_id);
-                self.veth_ns = format!("veth_n_{}", unique_id);
+                // Regenerate with new timestamp
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros();
+                let new_id = format!("{:07}", timestamp % 10_000_000);
+                self.namespace_name = format!("httpjail_{}", new_id);
+                self.veth_host = format!("veth_h_{}", new_id);
+                self.veth_ns = format!("veth_n_{}", new_id);
                 continue;
             }
 
@@ -738,6 +730,90 @@ impl Jail for LinuxJail {
     fn cleanup(&self) -> Result<()> {
         info!("Cleaning up Linux jail namespace {}", self.namespace_name);
         self.cleanup_internal()
+    }
+
+    fn jail_id(&self) -> &str {
+        &self.config.jail_id
+    }
+
+    fn cleanup_orphaned(jail_id: &str) -> Result<()>
+    where
+        Self: Sized,
+    {
+        info!("Cleaning up orphaned Linux jail: {}", jail_id);
+
+        let namespace_name = format!("httpjail_{}", jail_id);
+        let veth_host = format!("veth_h_{}", jail_id);
+
+        // Clean up namespace-specific config directory
+        let netns_etc = format!("/etc/netns/{}", namespace_name);
+        if std::path::Path::new(&netns_etc).exists() {
+            let _ = std::fs::remove_dir_all(&netns_etc);
+        }
+
+        // Remove namespace (this also removes veth pair)
+        let _ = Command::new("ip")
+            .args(["netns", "del", &namespace_name])
+            .output();
+
+        // Try to remove host veth (in case namespace deletion failed)
+        let _ = Command::new("ip")
+            .args(["link", "del", &veth_host])
+            .output();
+
+        // Clean up iptables rules with matching comment
+        let comment = format!("httpjail-{}", namespace_name);
+
+        // Remove MASQUERADE rule
+        let _ = Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-s",
+                super::LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "MASQUERADE",
+            ])
+            .output();
+
+        // Remove FORWARD rules
+        let _ = Command::new("iptables")
+            .args([
+                "-D",
+                "FORWARD",
+                "-s",
+                super::LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ])
+            .output();
+
+        let _ = Command::new("iptables")
+            .args([
+                "-D",
+                "FORWARD",
+                "-d",
+                super::LINUX_NS_SUBNET,
+                "-m",
+                "comment",
+                "--comment",
+                &comment,
+                "-j",
+                "ACCEPT",
+            ])
+            .output();
+
+        Ok(())
     }
 }
 

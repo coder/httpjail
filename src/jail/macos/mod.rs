@@ -7,23 +7,26 @@ use tracing::{debug, info, warn};
 
 mod fork;
 
-const PF_ANCHOR_NAME: &str = "httpjail";
-const GROUP_NAME: &str = "httpjail";
-
 pub struct MacOSJail {
     config: JailConfig,
     group_gid: Option<u32>,
     pf_rules_path: String,
+    group_name: String,
+    pf_anchor_name: String,
 }
 
 impl MacOSJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        let pf_rules_path = format!("/tmp/{}.pf", config.jail_name);
+        let group_name = format!("httpjail_{}", config.jail_id);
+        let pf_anchor_name = format!("httpjail_{}", config.jail_id);
+        let pf_rules_path = format!("/tmp/httpjail_{}.pf", config.jail_id);
 
         Ok(Self {
             config,
             group_gid: None,
             pf_rules_path,
+            group_name,
+            pf_anchor_name,
         })
     }
 
@@ -34,7 +37,7 @@ impl MacOSJail {
             .args([
                 ".",
                 "-read",
-                &format!("/Groups/{}", GROUP_NAME),
+                &format!("/Groups/{}", self.group_name),
                 "PrimaryGroupID",
             ])
             .output()
@@ -47,16 +50,16 @@ impl MacOSJail {
                 && let Some(gid_str) = line.split_whitespace().last()
             {
                 let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-                info!("Using existing group {} with GID {}", GROUP_NAME, gid);
+                info!("Using existing group {} with GID {}", self.group_name, gid);
                 self.group_gid = Some(gid);
                 return Ok(gid);
             }
         }
 
         // Create group if it doesn't exist
-        info!("Creating group {}", GROUP_NAME);
+        info!("Creating group {}", self.group_name);
         let output = Command::new("dseditgroup")
-            .args(["-o", "create", GROUP_NAME])
+            .args(["-o", "create", &self.group_name])
             .output()
             .context("Failed to create group")?;
 
@@ -72,7 +75,7 @@ impl MacOSJail {
             .args([
                 ".",
                 "-read",
-                &format!("/Groups/{}", GROUP_NAME),
+                &format!("/Groups/{}", self.group_name),
                 "PrimaryGroupID",
             ])
             .output()
@@ -83,12 +86,12 @@ impl MacOSJail {
             && let Some(gid_str) = line.split_whitespace().last()
         {
             let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-            info!("Created group {} with GID {}", GROUP_NAME, gid);
+            info!("Created group {} with GID {}", self.group_name, gid);
             self.group_gid = Some(gid);
             return Ok(gid);
         }
 
-        anyhow::bail!("Failed to get GID for group {}", GROUP_NAME)
+        anyhow::bail!("Failed to get GID for group {}", self.group_name)
     }
 
     /// Get the default network interface
@@ -124,7 +127,7 @@ impl MacOSJail {
         // NOTE: On macOS, we need to use route-to to send httpjail group traffic to lo0,
         // then use rdr on lo0 to redirect to proxy ports
         let rules = format!(
-            r#"# httpjail PF rules for GID {} on interface {}
+            r#"# httpjail PF rules for GID {} on interface {} (jail: {})
 # First, redirect traffic arriving on lo0 to our proxy ports
 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port {}
 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port {}
@@ -142,6 +145,7 @@ pass on lo0 all
 "#,
             gid,
             interface,
+            self.config.jail_id,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
             gid,
@@ -161,9 +165,12 @@ pass on lo0 all
         fs::write(&self.pf_rules_path, rules).context("Failed to write PF rules file")?;
 
         // Try to load rules using file first (standard approach)
-        info!("Loading PF rules from {}", self.pf_rules_path);
+        info!(
+            "Loading PF rules from {} into anchor {}",
+            self.pf_rules_path, self.pf_anchor_name
+        );
         let output = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
+            .args(["-a", &self.pf_anchor_name, "-f", &self.pf_rules_path])
             .output()
             .context("Failed to load PF rules")?;
 
@@ -175,12 +182,12 @@ pass on lo0 all
             // Try to flush the anchor first and retry
             warn!("PF anchor busy, attempting to flush and retry");
             let _ = Command::new("pfctl")
-                .args(["-a", PF_ANCHOR_NAME, "-F", "rules"])
+                .args(["-a", &self.pf_anchor_name, "-F", "rules"])
                 .output();
 
             // Retry loading rules
             let retry_output = Command::new("pfctl")
-                .args(["-a", PF_ANCHOR_NAME, "-f", &self.pf_rules_path])
+                .args(["-a", &self.pf_anchor_name, "-f", &self.pf_rules_path])
                 .output()
                 .context("Failed to load PF rules on retry")?;
 
@@ -228,11 +235,11 @@ rdr-anchor "{}"
 anchor "com.apple/*"
 anchor "{}"
 "#,
-            PF_ANCHOR_NAME, PF_ANCHOR_NAME
+            self.pf_anchor_name, self.pf_anchor_name
         );
 
         // Write and load the main ruleset
-        let main_rules_path = format!("/tmp/{}_main.pf", self.config.jail_name);
+        let main_rules_path = format!("/tmp/httpjail_{}_main.pf", self.config.jail_id);
         fs::write(&main_rules_path, main_rules).context("Failed to write main PF rules")?;
 
         debug!("Loading main PF ruleset with anchor reference");
@@ -252,9 +259,9 @@ anchor "{}"
         let _ = fs::remove_file(&main_rules_path);
 
         // Verify that rules were loaded correctly
-        info!("Verifying PF rules in anchor {}", PF_ANCHOR_NAME);
+        info!("Verifying PF rules in anchor {}", self.pf_anchor_name);
         let output = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-s", "rules"])
+            .args(["-a", &self.pf_anchor_name, "-s", "rules"])
             .output()
             .context("Failed to verify PF rules")?;
 
@@ -263,7 +270,7 @@ anchor "{}"
             if rules_output.is_empty() {
                 warn!(
                     "No rules found in anchor {}! Rules may not be active.",
-                    PF_ANCHOR_NAME
+                    self.pf_anchor_name
                 );
             } else {
                 debug!("Loaded PF rules:\n{}", rules_output);
@@ -284,11 +291,11 @@ anchor "{}"
 
     /// Remove PF rules from anchor
     fn unload_pf_rules(&self) -> Result<()> {
-        info!("Removing PF rules from anchor {}", PF_ANCHOR_NAME);
+        info!("Removing PF rules from anchor {}", self.pf_anchor_name);
 
         // Flush the anchor
         let output = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-F", "all"])
+            .args(["-a", &self.pf_anchor_name, "-F", "all"])
             .output()
             .context("Failed to flush PF anchor")?;
 
@@ -332,7 +339,7 @@ impl Jail for MacOSJail {
         // Clean up any existing anchor/rules from previous runs
         info!("Cleaning up any existing PF rules from previous runs");
         let _ = Command::new("pfctl")
-            .args(["-a", PF_ANCHOR_NAME, "-F", "all"])
+            .args(["-a", &self.pf_anchor_name, "-F", "all"])
             .output(); // Ignore errors - anchor might not exist
 
         // Ensure group exists and get GID
@@ -361,7 +368,7 @@ impl Jail for MacOSJail {
 
         debug!(
             "Executing command with jail group {} (GID {}): {:?}",
-            GROUP_NAME, gid, command
+            self.group_name, gid, command
         );
 
         // If running as root, check if we should drop to original user
@@ -390,7 +397,7 @@ impl Jail for MacOSJail {
     fn cleanup(&self) -> Result<()> {
         // Print verbose PF rules before cleanup for debugging
         let output = Command::new("pfctl")
-            .args(["-vvv", "-sr", "-a", PF_ANCHOR_NAME])
+            .args(["-vvv", "-sr", "-a", &self.pf_anchor_name])
             .output()
             .context("Failed to get verbose PF rules")?;
 
@@ -400,7 +407,37 @@ impl Jail for MacOSJail {
         }
 
         self.unload_pf_rules()?;
+
         info!("Jail cleanup complete");
+        Ok(())
+    }
+
+    fn jail_id(&self) -> &str {
+        &self.config.jail_id
+    }
+
+    fn cleanup_orphaned(jail_id: &str) -> Result<()>
+    where
+        Self: Sized,
+    {
+        info!("Cleaning up orphaned macOS jail: {}", jail_id);
+
+        // Remove PF anchor
+        let anchor_name = format!("httpjail_{}", jail_id);
+        let _ = Command::new("pfctl")
+            .args(["-a", &anchor_name, "-F", "all"])
+            .output();
+
+        // Delete group if it exists
+        let group_name = format!("httpjail_{}", jail_id);
+        let _ = Command::new("dseditgroup")
+            .args(["-o", "delete", &group_name])
+            .output();
+
+        // Remove PF rules file
+        let pf_rules_path = format!("/tmp/httpjail_{}.pf", jail_id);
+        let _ = fs::remove_file(pf_rules_path);
+
         Ok(())
     }
 }
@@ -411,6 +448,8 @@ impl Clone for MacOSJail {
             config: self.config.clone(),
             group_gid: self.group_gid,
             pf_rules_path: self.pf_rules_path.clone(),
+            group_name: self.group_name.clone(),
+            pf_anchor_name: self.pf_anchor_name.clone(),
         }
     }
 }

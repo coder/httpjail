@@ -238,12 +238,10 @@ async fn main() -> Result<()> {
     );
 
     // Create jail configuration with actual bound ports
-    let jail_config = JailConfig {
-        http_proxy_port: actual_http_port,
-        https_proxy_port: actual_https_port,
-        tls_intercept: !args.no_tls_intercept,
-        jail_name: "httpjail".to_string(),
-    };
+    let mut jail_config = JailConfig::new();
+    jail_config.http_proxy_port = actual_http_port;
+    jail_config.https_proxy_port = actual_https_port;
+    jail_config.tls_intercept = !args.no_tls_intercept;
 
     // Create and setup jail
     let mut jail = create_jail(jail_config.clone(), args.weak)?;

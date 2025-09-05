@@ -452,3 +452,87 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
         stdout
     );
 }
+
+/// Test concurrent jail isolation with different rules
+pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
+    P::require_privileges();
+    use std::thread;
+    use std::time::Duration;
+
+    // Find the httpjail binary
+    let httpjail_path = assert_cmd::cargo::cargo_bin("httpjail");
+
+    // Start first httpjail instance - allows only ifconfig.me
+    let child1 = std::process::Command::new(&httpjail_path)
+        .arg("-r")
+        .arg("allow: ifconfig\\.me")
+        .arg("-r")
+        .arg("deny: .*")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("curl -s --max-time 5 http://ifconfig.me && echo ' - Instance1 Success'")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to start first httpjail");
+
+    // Give it time to set up
+    thread::sleep(Duration::from_millis(500));
+
+    // Start second httpjail instance - allows only ifconfig.io
+    let output2 = std::process::Command::new(&httpjail_path)
+        .arg("-r")
+        .arg("allow: ifconfig\\.io")
+        .arg("-r")
+        .arg("deny: .*")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("curl -s --max-time 5 http://ifconfig.io && echo ' - Instance2 Success'")
+        .output()
+        .expect("Failed to execute second httpjail");
+
+    // Wait for first instance to complete
+    let output1 = child1
+        .wait_with_output()
+        .expect("Failed to wait for first httpjail");
+
+    // Both should succeed
+    assert!(
+        output1.status.success(),
+        "[{}] First concurrent instance (ifconfig.me) failed: stdout: {}, stderr: {}",
+        P::platform_name(),
+        String::from_utf8_lossy(&output1.stdout),
+        String::from_utf8_lossy(&output1.stderr)
+    );
+    assert!(
+        output2.status.success(),
+        "[{}] Second concurrent instance (ifconfig.io) failed: stdout: {}, stderr: {}",
+        P::platform_name(),
+        String::from_utf8_lossy(&output2.stdout),
+        String::from_utf8_lossy(&output2.stderr)
+    );
+
+    // Verify both completed successfully
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let stderr1 = String::from_utf8_lossy(&output1.stderr);
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+
+    // Check that each instance got a response (IP address) from their allowed domain
+    assert!(
+        stdout1.contains("Instance1 Success") || stdout1.contains("."),
+        "[{}] First instance didn't get response from ifconfig.me. stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout1,
+        stderr1
+    );
+    assert!(
+        stdout2.contains("Instance2 Success") || stdout2.contains("."),
+        "[{}] Second instance didn't get response from ifconfig.io. stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout2,
+        stderr2
+    );
+}

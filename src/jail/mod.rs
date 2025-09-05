@@ -1,4 +1,11 @@
 use anyhow::Result;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub mod managed;
+
+// Counter to ensure unique jail IDs even when created rapidly
+static JAIL_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Trait for platform-specific jail implementations
 pub trait Jail: Send + Sync {
@@ -28,6 +35,15 @@ pub trait Jail: Send + Sync {
 
     /// Cleanup jail resources
     fn cleanup(&self) -> Result<()>;
+
+    /// Get the unique jail ID for this instance
+    fn jail_id(&self) -> &str;
+
+    /// Cleanup orphaned resources for a given jail_id (static dispatch)
+    /// This is called when detecting stale canaries from other processes
+    fn cleanup_orphaned(jail_id: &str) -> Result<()>
+    where
+        Self: Sized;
 }
 
 /// Configuration for jail setup
@@ -43,21 +59,45 @@ pub struct JailConfig {
     #[allow(dead_code)]
     pub tls_intercept: bool,
 
-    /// Name/identifier for this jail instance
-    #[allow(dead_code)]
-    pub jail_name: String,
+    /// Unique identifier for this jail instance
+    pub jail_id: String,
+
+    /// Whether to enable heartbeat monitoring
+    pub enable_heartbeat: bool,
+
+    /// Interval in seconds between heartbeat touches
+    pub heartbeat_interval_secs: u64,
+
+    /// Timeout in seconds before considering a jail orphaned
+    pub orphan_timeout_secs: u64,
+}
+
+impl JailConfig {
+    /// Create a new configuration with a unique jail_id
+    pub fn new() -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+
+        // Add counter to ensure uniqueness even when created rapidly
+        let counter = JAIL_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+        Self {
+            http_proxy_port: 8040,
+            https_proxy_port: 8043,
+            tls_intercept: true,
+            jail_id: format!("{:06}_{:03}", (timestamp % 1_000_000), counter % 1000),
+            enable_heartbeat: true,
+            heartbeat_interval_secs: 1,
+            orphan_timeout_secs: 10,
+        }
+    }
 }
 
 impl Default for JailConfig {
     fn default() -> Self {
-        Self {
-            // Use ports 8040 and 8043 - clearly HTTP-related
-            // Similar to common proxy ports (8080, 8443) but less likely to conflict
-            http_proxy_port: 8040,
-            https_proxy_port: 8043,
-            tls_intercept: true,
-            jail_name: "httpjail".to_string(),
-        }
+        Self::new()
     }
 }
 
@@ -69,25 +109,36 @@ pub mod linux;
 
 mod weak;
 
-/// Create a platform-specific jail implementation
+/// Create a platform-specific jail implementation wrapped with lifecycle management
 pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
+    use self::managed::ManagedJail;
+
     // Use weak jail if requested (works on all platforms)
     if weak_mode {
         use self::weak::WeakJail;
-        return Ok(Box::new(WeakJail::new(config)?));
+        return Ok(Box::new(ManagedJail::new(
+            WeakJail::new(config.clone())?,
+            &config,
+        )?));
     }
 
     // Otherwise use platform-specific implementation
     #[cfg(target_os = "macos")]
     {
         use self::macos::MacOSJail;
-        Ok(Box::new(MacOSJail::new(config)?))
+        Ok(Box::new(ManagedJail::new(
+            MacOSJail::new(config.clone())?,
+            &config,
+        )?))
     }
 
     #[cfg(target_os = "linux")]
     {
         use self::linux::LinuxJail;
-        Ok(Box::new(LinuxJail::new(config)?))
+        Ok(Box::new(ManagedJail::new(
+            LinuxJail::new(config.clone())?,
+            &config,
+        )?))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

@@ -73,5 +73,10 @@ macro_rules! platform_tests {
         fn test_jail_privilege_dropping() {
             system_integration::test_jail_privilege_dropping::<$platform>();
         }
+
+        #[test]
+        fn test_concurrent_jail_isolation() {
+            system_integration::test_concurrent_jail_isolation::<$platform>();
+        }
     };
 }
