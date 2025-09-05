@@ -79,11 +79,6 @@ jobs:
           chmod +x scripts/debug_tls_env.sh
           ./scripts/debug_tls_env.sh
           sudo ./scripts/debug_tls_env.sh
-          echo ""
-          echo "=== Testing Certificate Generation ==="
-          chmod +x scripts/debug_cert_generation.sh
-          ./scripts/debug_cert_generation.sh || true
-          echo "=== End Debug ==="
 
       - name: Run Linux jail integration tests (with sudo)
         run: |

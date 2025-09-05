@@ -8,6 +8,7 @@ pub mod managed;
 static JAIL_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Trait for platform-specific jail implementations
+#[allow(dead_code)]
 pub trait Jail: Send + Sync {
     /// Setup jail for a specific session
     fn setup(&mut self, proxy_port: u16) -> Result<()>;

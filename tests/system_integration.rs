@@ -464,6 +464,8 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
 
     // Start first httpjail instance - allows only ifconfig.me
     let child1 = std::process::Command::new(&httpjail_path)
+        .arg("-v")
+        .arg("-v") // Add verbose logging to fix timing issues
         .arg("-r")
         .arg("allow: ifconfig\\.me")
         .arg("-r")
@@ -482,6 +484,8 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
 
     // Start second httpjail instance - allows only ifconfig.io
     let output2 = std::process::Command::new(&httpjail_path)
+        .arg("-v")
+        .arg("-v") // Add verbose logging to fix timing issues
         .arg("-r")
         .arg("allow: ifconfig\\.io")
         .arg("-r")

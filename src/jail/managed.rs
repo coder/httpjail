@@ -219,21 +219,6 @@ impl<J: Jail> ManagedJail<J> {
 
         Ok(Self { jail, lifecycle })
     }
-
-    /// Get a reference to the inner jail
-    pub fn inner(&self) -> &J {
-        &self.jail
-    }
-
-    /// Get a mutable reference to the inner jail
-    pub fn inner_mut(&mut self) -> &mut J {
-        &mut self.jail
-    }
-
-    /// Consume the managed jail and return the inner jail
-    pub fn into_inner(self) -> J {
-        self.jail
-    }
 }
 
 impl<J: Jail> Jail for ManagedJail<J> {

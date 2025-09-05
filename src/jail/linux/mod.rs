@@ -68,10 +68,12 @@ pub struct LinuxJail {
 
 impl LinuxJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        // Use jail_id from config instead of generating our own
+        // Use jail_id from config for naming
+        // Note: Linux network interface names are limited to 15 characters
         let namespace_name = format!("httpjail_{}", config.jail_id);
-        let veth_host = format!("veth_h_{}", config.jail_id);
-        let veth_ns = format!("veth_n_{}", config.jail_id);
+        // Shorten to fit within 15 char limit: "vh_" + jail_id (max 10 chars)
+        let veth_host = format!("vh_{}", config.jail_id);
+        let veth_ns = format!("vn_{}", config.jail_id);
 
         Ok(Self {
             config,
