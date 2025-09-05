@@ -61,10 +61,10 @@ impl<T: SystemResource> ManagedResource<T> {
 
 impl<T: SystemResource> Drop for ManagedResource<T> {
     fn drop(&mut self) {
-        if let Some(mut resource) = self.resource.take() {
-            if let Err(e) = resource.cleanup() {
-                error!("Failed to cleanup resource on drop: {}", e);
-            }
+        if let Some(mut resource) = self.resource.take()
+            && let Err(e) = resource.cleanup()
+        {
+            error!("Failed to cleanup resource on drop: {}", e);
         }
     }
 }

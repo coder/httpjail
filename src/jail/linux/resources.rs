@@ -1,7 +1,7 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -10,6 +10,7 @@ pub struct NetworkNamespace {
 }
 
 impl NetworkNamespace {
+    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -76,15 +77,18 @@ impl SystemResource for NetworkNamespace {
 /// Virtual ethernet pair resource
 pub struct VethPair {
     host_name: String,
+    #[allow(dead_code)]
     ns_name: String,
     created: bool,
 }
 
 impl VethPair {
+    #[allow(dead_code)]
     pub fn host_name(&self) -> &str {
         &self.host_name
     }
 
+    #[allow(dead_code)]
     pub fn ns_name(&self) -> &str {
         &self.ns_name
     }
@@ -194,11 +198,13 @@ impl SystemResource for NamespaceConfig {
 
 /// Collection of iptables rules for a jail
 pub struct IPTablesRules {
+    #[allow(dead_code)]
     jail_id: String,
     rules: Vec<super::iptables::IPTablesRule>,
 }
 
 impl IPTablesRules {
+    #[allow(dead_code)]
     pub fn new(jail_id: String) -> Self {
         Self {
             jail_id,
@@ -206,10 +212,12 @@ impl IPTablesRules {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_rule(&mut self, rule: super::iptables::IPTablesRule) {
         self.rules.push(rule);
     }
 
+    #[allow(dead_code)]
     pub fn comment(&self) -> String {
         format!("httpjail-httpjail_{}", self.jail_id)
     }
