@@ -2,10 +2,11 @@ mod iptables;
 mod resources;
 
 use super::{Jail, JailConfig};
+use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use iptables::IPTablesRule;
+use resources::{IPTablesRules, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Linux namespace network configuration constants
 pub const LINUX_NS_HOST_IP: [u8; 4] = [169, 254, 1, 1];
@@ -58,30 +59,20 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
     config: JailConfig,
-    namespace_name: String,
-    veth_host: String,
-    veth_ns: String,
-    namespace_created: bool,
-    /// Host iptables rules that will be automatically cleaned up on drop
-    host_iptables_rules: Vec<IPTablesRule>,
+    namespace: Option<ManagedResource<NetworkNamespace>>,
+    veth_pair: Option<ManagedResource<VethPair>>,
+    namespace_config: Option<ManagedResource<NamespaceConfig>>,
+    iptables_rules: Option<ManagedResource<IPTablesRules>>,
 }
 
 impl LinuxJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        // Use jail_id from config for naming
-        // Note: Linux network interface names are limited to 15 characters
-        let namespace_name = format!("httpjail_{}", config.jail_id);
-        // Shorten to fit within 15 char limit: "vh_" + jail_id (max 10 chars)
-        let veth_host = format!("vh_{}", config.jail_id);
-        let veth_ns = format!("vn_{}", config.jail_id);
-
         Ok(Self {
             config,
-            namespace_name,
-            veth_host,
-            veth_ns,
-            namespace_created: false,
-            host_iptables_rules: Vec::new(),
+            namespace: None,
+            veth_pair: None,
+            namespace_config: None,
+            iptables_rules: None,
         })
     }
 
@@ -101,56 +92,50 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Create the network namespace
-    fn create_namespace(&mut self) -> Result<()> {
-        // Create namespace (unique jail_id ensures no collisions)
-        let output = Command::new("ip")
-            .args(["netns", "add", &self.namespace_name])
-            .output()
-            .context("Failed to execute ip netns add")?;
-
-        if output.status.success() {
-            info!("Created network namespace: {}", self.namespace_name);
-            self.namespace_created = true;
-            Ok(())
-        } else {
-            anyhow::bail!(
-                "Failed to create namespace {}: {}",
-                self.namespace_name,
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
+    /// Get the namespace name from the config
+    fn namespace_name(&self) -> String {
+        format!("httpjail_{}", self.config.jail_id)
     }
 
-    /// Set up veth pair for namespace connectivity
-    fn setup_veth_pair(&self) -> Result<()> {
+    /// Get the veth host interface name
+    fn veth_host(&self) -> String {
+        format!("vh_{}", self.config.jail_id)
+    }
+
+    /// Get the veth namespace interface name
+    fn veth_ns(&self) -> String {
+        format!("vn_{}", self.config.jail_id)
+    }
+
+    /// Create the network namespace using ManagedResource
+    fn create_namespace(&mut self) -> Result<()> {
+        self.namespace = Some(ManagedResource::<NetworkNamespace>::create(
+            &self.config.jail_id,
+        )?);
+        info!("Created network namespace: {}", self.namespace_name());
+        Ok(())
+    }
+
+    /// Set up veth pair for namespace connectivity using ManagedResource
+    fn setup_veth_pair(&mut self) -> Result<()> {
         // Create veth pair
-        let output = Command::new("ip")
-            .args([
-                "link",
-                "add",
-                &self.veth_host,
-                "type",
-                "veth",
-                "peer",
-                "name",
-                &self.veth_ns,
-            ])
-            .output()
-            .context("Failed to create veth pair")?;
+        self.veth_pair = Some(ManagedResource::<VethPair>::create(&self.config.jail_id)?);
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create veth pair: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        debug!("Created veth pair: {} <-> {}", self.veth_host, self.veth_ns);
+        debug!(
+            "Created veth pair: {} <-> {}",
+            self.veth_host(),
+            self.veth_ns()
+        );
 
         // Move veth_ns end into the namespace
         let output = Command::new("ip")
-            .args(["link", "set", &self.veth_ns, "netns", &self.namespace_name])
+            .args([
+                "link",
+                "set",
+                &self.veth_ns(),
+                "netns",
+                &self.namespace_name(),
+            ])
             .output()
             .context("Failed to move veth to namespace")?;
 
@@ -166,6 +151,9 @@ impl LinuxJail {
 
     /// Configure networking inside the namespace
     fn configure_namespace_networking(&self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+        let veth_ns = self.veth_ns();
+
         // Format the host IP once
         let host_ip = format_ip(LINUX_NS_HOST_IP);
 
@@ -174,27 +162,20 @@ impl LinuxJail {
             // Bring up loopback
             vec!["ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            vec![
-                "ip",
-                "addr",
-                "add",
-                LINUX_NS_GUEST_CIDR,
-                "dev",
-                &self.veth_ns,
-            ],
-            vec!["ip", "link", "set", &self.veth_ns, "up"],
+            vec!["ip", "addr", "add", LINUX_NS_GUEST_CIDR, "dev", &veth_ns],
+            vec!["ip", "link", "set", &veth_ns, "up"],
             // Add default route pointing to host
             vec!["ip", "route", "add", "default", "via", &host_ip],
         ];
 
         for cmd_args in commands {
             let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &self.namespace_name]);
+            cmd.args(["netns", "exec", &namespace_name]);
             cmd.args(&cmd_args);
 
             let output = cmd.output().context(format!(
                 "Failed to execute: ip netns exec {} {:?}",
-                self.namespace_name, cmd_args
+                namespace_name, cmd_args
             ))?;
 
             if !output.status.success() {
@@ -206,19 +187,18 @@ impl LinuxJail {
             }
         }
 
-        debug!(
-            "Configured networking inside namespace {}",
-            self.namespace_name
-        );
+        debug!("Configured networking inside namespace {}", namespace_name);
         Ok(())
     }
 
     /// Configure host side of veth pair
     fn configure_host_networking(&self) -> Result<()> {
+        let veth_host = self.veth_host();
+
         // Configure host side of veth
         let commands = vec![
-            vec!["addr", "add", LINUX_NS_HOST_CIDR, "dev", &self.veth_host],
-            vec!["link", "set", &self.veth_host, "up"],
+            vec!["addr", "add", LINUX_NS_HOST_CIDR, "dev", &veth_host],
+            vec!["link", "set", &veth_host, "up"],
         ];
 
         for cmd_args in commands {
@@ -253,7 +233,7 @@ impl LinuxJail {
             );
         }
 
-        debug!("Configured host side networking for {}", self.veth_host);
+        debug!("Configured host side networking for {}", veth_host);
         Ok(())
     }
 
@@ -265,6 +245,8 @@ impl LinuxJail {
     /// - DNAT allows us to redirect to the host's IP address (169.254.1.1) where the proxy is actually listening
     /// - This is why we must use DNAT --to-destination 169.254.1.1:8040 instead of REDIRECT --to-port 8040
     fn setup_namespace_iptables(&self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+
         // Convert port numbers to strings to extend their lifetime
         let http_port_str = self.config.http_proxy_port.to_string();
         let https_port_str = self.config.https_proxy_port.to_string();
@@ -336,7 +318,7 @@ impl LinuxJail {
 
         for rule_args in rules {
             let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &self.namespace_name]);
+            cmd.args(["netns", "exec", &namespace_name]);
             cmd.args(&rule_args);
 
             let output = cmd
@@ -353,87 +335,96 @@ impl LinuxJail {
 
         info!(
             "Set up iptables rules in namespace {} for HTTP:{} HTTPS:{}",
-            self.namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
+            namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
         );
         Ok(())
     }
 
     /// Setup NAT on the host for namespace connectivity
     fn setup_host_nat(&mut self) -> Result<()> {
+        use iptables::IPTablesRule;
+
+        // Create IPTablesRules resource
+        let mut iptables = ManagedResource::<IPTablesRules>::create(&self.config.jail_id)?;
+
         // Add MASQUERADE rule for namespace traffic with a comment for identification
         // The comment allows us to find and remove this specific rule during cleanup
-        let comment = format!("httpjail-{}", self.namespace_name);
+        let comment = format!("httpjail-{}", self.namespace_name());
 
-        // Create MASQUERADE rule
-        let masq_rule = IPTablesRule::new(
-            Some("nat"),
-            "POSTROUTING",
-            vec![
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "MASQUERADE",
-            ],
-        )
-        .context("Failed to add MASQUERADE rule")?;
+        // Create and add rules to the resource
+        if let Some(rules) = iptables.inner_mut() {
+            // Create MASQUERADE rule
+            let masq_rule = IPTablesRule::new(
+                Some("nat"),
+                "POSTROUTING",
+                vec![
+                    "-s",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "MASQUERADE",
+                ],
+            )
+            .context("Failed to add MASQUERADE rule")?;
 
-        self.host_iptables_rules.push(masq_rule);
+            rules.add_rule(masq_rule);
 
-        // Add explicit ACCEPT rules for namespace traffic in FORWARD chain
-        //
-        // The FORWARD chain controls packets being routed THROUGH this host (not TO/FROM it).
-        // Since we're routing packets between the namespace and the internet, they go through FORWARD.
-        //
-        // Without these rules:
-        // - Default FORWARD policy might be DROP/REJECT
-        // - Other firewall rules might block our namespace subnet
-        // - Docker/Kubernetes/other container tools might have restrictive FORWARD rules
-        //
-        // We use -I (insert) at position 1 to ensure our rules take precedence.
-        // We add comments to make these rules identifiable for cleanup.
+            // Add explicit ACCEPT rules for namespace traffic in FORWARD chain
+            //
+            // The FORWARD chain controls packets being routed THROUGH this host (not TO/FROM it).
+            // Since we're routing packets between the namespace and the internet, they go through FORWARD.
+            //
+            // Without these rules:
+            // - Default FORWARD policy might be DROP/REJECT
+            // - Other firewall rules might block our namespace subnet
+            // - Docker/Kubernetes/other container tools might have restrictive FORWARD rules
+            //
+            // We use -I (insert) at position 1 to ensure our rules take precedence.
+            // We add comments to make these rules identifiable for cleanup.
 
-        // Forward rule for source traffic
-        let forward_src_rule = IPTablesRule::new(
-            None, // filter table is default
-            "FORWARD",
-            vec![
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-        )
-        .context("Failed to add FORWARD source rule")?;
+            // Forward rule for source traffic
+            let forward_src_rule = IPTablesRule::new(
+                None, // filter table is default
+                "FORWARD",
+                vec![
+                    "-s",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            )
+            .context("Failed to add FORWARD source rule")?;
 
-        self.host_iptables_rules.push(forward_src_rule);
+            rules.add_rule(forward_src_rule);
 
-        // Forward rule for destination traffic
-        let forward_dst_rule = IPTablesRule::new(
-            None, // filter table is default
-            "FORWARD",
-            vec![
-                "-d",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-        )
-        .context("Failed to add FORWARD destination rule")?;
+            // Forward rule for destination traffic
+            let forward_dst_rule = IPTablesRule::new(
+                None, // filter table is default
+                "FORWARD",
+                vec![
+                    "-d",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            )
+            .context("Failed to add FORWARD destination rule")?;
 
-        self.host_iptables_rules.push(forward_dst_rule);
+            rules.add_rule(forward_dst_rule);
+        }
 
+        self.iptables_rules = Some(iptables);
         Ok(())
     }
 
@@ -481,13 +472,15 @@ impl LinuxJail {
     /// The host's /etc/resolv.conf remains completely untouched.
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
-    fn fix_systemd_resolved_dns(&self) -> Result<()> {
+    fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+
         // Check if resolv.conf points to systemd-resolved
         let output = Command::new("ip")
             .args([
                 "netns",
                 "exec",
-                &self.namespace_name,
+                &namespace_name,
                 "grep",
                 "127.0.0.53",
                 "/etc/resolv.conf",
@@ -498,12 +491,13 @@ impl LinuxJail {
             // systemd-resolved is in use, create namespace-specific resolv.conf
             debug!("Detected systemd-resolved, creating namespace-specific resolv.conf");
 
-            // Create /etc/netns/<namespace>/ directory if it doesn't exist
-            let netns_etc = format!("/etc/netns/{}", self.namespace_name);
-            std::fs::create_dir_all(&netns_etc).context("Failed to create /etc/netns directory")?;
+            // Create namespace config resource
+            self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
+                &self.config.jail_id,
+            )?);
 
             // Write custom resolv.conf that will be bind-mounted into the namespace
-            let resolv_conf_path = format!("{}/resolv.conf", netns_etc);
+            let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
             std::fs::write(
                 &resolv_conf_path,
                 "# Custom DNS for httpjail namespace\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n",
@@ -514,52 +508,6 @@ impl LinuxJail {
                 "Created namespace-specific resolv.conf at {}",
                 resolv_conf_path
             );
-        }
-
-        Ok(())
-    }
-
-    /// Clean up all resources
-    fn cleanup_internal(&self) -> Result<()> {
-        let mut errors = Vec::new();
-
-        // Clean up namespace-specific config directory
-        let netns_etc = format!("/etc/netns/{}", self.namespace_name);
-        if std::path::Path::new(&netns_etc).exists() {
-            if let Err(e) = std::fs::remove_dir_all(&netns_etc) {
-                errors.push(format!("Failed to remove {}: {}", netns_etc, e));
-            } else {
-                debug!("Removed namespace config directory: {}", netns_etc);
-            }
-        }
-
-        // Remove namespace (this also removes veth pair)
-        if self.namespace_created {
-            let output = Command::new("ip")
-                .args(["netns", "del", &self.namespace_name])
-                .output()
-                .context("Failed to execute ip netns del")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.contains("No such file") {
-                    errors.push(format!("Failed to delete namespace: {}", stderr));
-                }
-            } else {
-                debug!("Deleted network namespace: {}", self.namespace_name);
-            }
-        }
-
-        // Try to remove host veth (in case namespace deletion failed)
-        let _ = Command::new("ip")
-            .args(["link", "del", &self.veth_host])
-            .output();
-
-        // Note: Host iptables rules are automatically cleaned up by the Drop
-        // implementation of IPTablesRule when self.host_iptables_rules is dropped
-
-        if !errors.is_empty() {
-            warn!("Cleanup completed with errors: {:?}", errors);
         }
 
         Ok(())
@@ -594,7 +542,9 @@ impl Jail for LinuxJail {
 
         info!(
             "Linux jail setup complete using namespace {} with HTTP proxy on port {} and HTTPS proxy on port {}",
-            self.namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
+            self.namespace_name(),
+            self.config.http_proxy_port,
+            self.config.https_proxy_port
         );
         Ok(())
     }
@@ -604,115 +554,92 @@ impl Jail for LinuxJail {
             anyhow::bail!("No command specified");
         }
 
-        debug!(
-            "Executing command in namespace {}: {:?}",
-            self.namespace_name, command
-        );
+        let namespace_name = self.namespace_name();
 
-        // Check if we're running as root and should drop privileges
-        let current_uid = unsafe { libc::getuid() };
-        let target_user = if current_uid == 0 {
-            // Running as root - check for SUDO_USER to drop privileges to original user
-            std::env::var("SUDO_USER").ok()
-        } else {
-            // Not root - no privilege dropping needed
-            None
-        };
+        // Get original UID for privilege dropping
+        let original_uid = std::env::var("SUDO_UID")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok());
 
-        if let Some(ref user) = target_user {
-            debug!(
-                "Will drop to user '{}' (from SUDO_USER) after entering namespace",
-                user
-            );
-        }
-
-        // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with su
+        // Build the command - using ip netns exec to run in namespace
         let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name]);
+        cmd.args(["netns", "exec", &namespace_name]);
 
-        // When we have environment variables to pass OR need to drop privileges,
-        // use a shell wrapper to ensure proper environment handling
-        if target_user.is_some() || !extra_env.is_empty() {
-            // Build shell command with explicit environment exports
-            let mut shell_command = String::new();
+        // If we have an original UID, use su to drop privileges
+        if let Some(uid) = original_uid {
+            debug!("Dropping privileges to UID {} (from SUDO_UID)", uid);
+            cmd.arg("su");
+            cmd.arg("-");
 
-            // Export environment variables explicitly in the shell command
-            for (key, value) in extra_env {
-                // Escape the value for shell safety
-                let escaped_value = value.replace('\'', "'\\''");
-                shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
+            // Get username from UID
+            let output = Command::new("id")
+                .args(["-un", &uid.to_string()])
+                .output()
+                .context("Failed to get username from UID")?;
+
+            let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if username.is_empty() {
+                anyhow::bail!("Could not determine username for UID {}", uid);
             }
 
-            // Add the actual command with proper escaping
-            shell_command.push_str(
-                &command
-                    .iter()
-                    .map(|arg| {
-                        // Simple escaping: wrap in single quotes and escape existing single quotes
-                        if arg.contains('\'') {
-                            format!("\"{}\"", arg.replace('"', "\\\""))
-                        } else {
-                            format!("'{}'", arg)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
+            cmd.arg(&username);
+            cmd.arg("-c");
 
-            if let Some(user) = target_user {
-                // Use su to drop privileges to the original user
-                cmd.arg("su");
-                cmd.arg("-s"); // Specify shell explicitly
-                cmd.arg("/bin/sh"); // Use sh for compatibility
-                cmd.arg("-p"); // Preserve environment
-                cmd.arg(&user); // Username from SUDO_USER
-                cmd.arg("-c"); // Execute command
-                cmd.arg(shell_command);
-            } else {
-                // No privilege dropping but need shell for env vars
-                cmd.arg("sh");
-                cmd.arg("-c");
-                cmd.arg(shell_command);
-            }
+            // Join the command and its arguments with proper escaping
+            let escaped_cmd: Vec<String> = command
+                .iter()
+                .map(|arg| {
+                    if arg.contains(char::is_whitespace) || arg.contains('\'') {
+                        format!("'{}'", arg.replace('\'', "'\\''"))
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect();
+            cmd.arg(escaped_cmd.join(" "));
         } else {
-            // No privilege dropping and no env vars, execute directly
-            cmd.arg(&command[0]);
-            for arg in &command[1..] {
-                cmd.arg(arg);
-            }
+            // No privilege dropping needed - run command directly
+            cmd.args(command);
         }
 
-        // Set environment variables
+        // Add any extra environment variables
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
 
-        // Preserve SUDO environment variables for consistency with macOS
-        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-            cmd.env("SUDO_USER", sudo_user);
-        }
-        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
-            cmd.env("SUDO_UID", sudo_uid);
-        }
-        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
-            cmd.env("SUDO_GID", sudo_gid);
-        }
+        debug!(
+            "Executing command in namespace {}: {:?}",
+            namespace_name, command
+        );
 
-        // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
-        // The jail uses iptables rules to transparently redirect traffic to the proxy,
-        // making it work with applications that don't respect proxy environment variables.
-
-        let status = cmd
-            .status()
+        // Execute and get status
+        let output = cmd
+            .output()
             .context("Failed to execute command in namespace")?;
 
-        Ok(status)
+        // We need to check if the command actually ran
+        if !output.status.success() {
+            // Check if it's a namespace execution failure vs command failure
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("Cannot open network namespace")
+                || stderr.contains("No such file or directory")
+            {
+                anyhow::bail!("Network namespace {} not found", namespace_name);
+            }
+        }
+
+        // Print output (mimicking normal command execution)
+        std::io::Write::write_all(&mut std::io::stdout(), &output.stdout)?;
+        std::io::Write::write_all(&mut std::io::stderr(), &output.stderr)?;
+
+        Ok(output.status)
     }
 
     fn cleanup(&self) -> Result<()> {
-        info!("Cleaning up Linux jail namespace {}", self.namespace_name);
-        self.cleanup_internal()
+        // Resources will be cleaned up automatically when dropped
+        // But we can log that cleanup is happening
+        info!("Jail cleanup complete - resources will be cleaned up automatically");
+        Ok(())
     }
 
     fn jail_id(&self) -> &str {
@@ -723,43 +650,29 @@ impl Jail for LinuxJail {
     where
         Self: Sized,
     {
-        use self::resources::{IPTablesRules, NamespaceConfig, NetworkNamespace, VethPair};
-        use crate::sys_resource::ManagedResource;
-
         info!("Cleaning up orphaned Linux jail: {}", jail_id);
 
         // Create managed resources for existing system resources
         // When these go out of scope, they will clean themselves up
         let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
         let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
-        let _namespace_config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
+        let _config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
         let _iptables = ManagedResource::<IPTablesRules>::for_existing(jail_id);
-        // Rules will be cleaned up when _rules goes out of scope
 
         Ok(())
     }
 }
 
-impl Drop for LinuxJail {
-    fn drop(&mut self) {
-        // Best-effort cleanup on drop
-        if self.namespace_created
-            && let Err(e) = self.cleanup_internal()
-        {
-            error!("Failed to cleanup namespace on drop: {}", e);
-        }
-    }
-}
-
 impl Clone for LinuxJail {
     fn clone(&self) -> Self {
+        // Note: We don't clone the ManagedResource fields as they represent
+        // system resources that shouldn't be duplicated
         Self {
             config: self.config.clone(),
-            namespace_name: self.namespace_name.clone(),
-            veth_host: self.veth_host.clone(),
-            veth_ns: self.veth_ns.clone(),
-            namespace_created: self.namespace_created,
-            host_iptables_rules: Vec::new(), // Don't clone the rules, new instance should manage its own
+            namespace: None,
+            veth_pair: None,
+            namespace_config: None,
+            iptables_rules: None,
         }
     }
 }

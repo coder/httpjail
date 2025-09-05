@@ -1,6 +1,6 @@
 use super::{Jail, JailConfig};
+use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use camino::Utf8Path;
 use resources::{MacOSGroup, PfAnchor, PfRulesFile};
 use std::fs;
 use std::process::{Command, ExitStatus};
@@ -11,35 +11,39 @@ mod resources;
 
 pub struct MacOSJail {
     config: JailConfig,
-    group_gid: Option<u32>,
-    pf_rules_path: String,
-    group_name: String,
-    pf_anchor_name: String,
+    group: Option<ManagedResource<MacOSGroup>>,
+    pf_anchor: Option<ManagedResource<PfAnchor>>,
+    pf_rules_file: Option<ManagedResource<PfRulesFile>>,
 }
 
 impl MacOSJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        let group_name = format!("httpjail_{}", config.jail_id);
-        let pf_anchor_name = format!("httpjail_{}", config.jail_id);
-        let pf_rules_path = format!("/tmp/httpjail_{}.pf", config.jail_id);
-
         Ok(Self {
             config,
-            group_gid: None,
-            pf_rules_path,
-            group_name,
-            pf_anchor_name,
+            group: None,
+            pf_anchor: None,
+            pf_rules_file: None,
         })
     }
 
     /// Get or create the httpjail group
     fn ensure_group(&mut self) -> Result<u32> {
-        // Check if group already exists
+        // If we already have a group resource, return its GID
+        if let Some(ref group) = self.group {
+            if let Some(g) = group.inner() {
+                if let Some(gid) = g.gid() {
+                    return Ok(gid);
+                }
+            }
+        }
+
+        // Try to get existing group first
+        let group_name = format!("httpjail_{}", self.config.jail_id);
         let output = Command::new("dscl")
             .args([
                 ".",
                 "-read",
-                &format!("/Groups/{}", self.group_name),
+                &format!("/Groups/{}", group_name),
                 "PrimaryGroupID",
             ])
             .output()
@@ -52,48 +56,24 @@ impl MacOSJail {
                 && let Some(gid_str) = line.split_whitespace().last()
             {
                 let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-                info!("Using existing group {} with GID {}", self.group_name, gid);
-                self.group_gid = Some(gid);
+                info!("Using existing group {} with GID {}", group_name, gid);
+                // Create a ManagedResource for the existing group
+                self.group = Some(ManagedResource::for_existing(&self.config.jail_id));
                 return Ok(gid);
             }
         }
 
-        // Create group if it doesn't exist
-        info!("Creating group {}", self.group_name);
-        let output = Command::new("dseditgroup")
-            .args(["-o", "create", &self.group_name])
-            .output()
-            .context("Failed to create group")?;
+        // Create new group using ManagedResource
+        info!("Creating group {}", group_name);
+        let group = ManagedResource::<MacOSGroup>::create(&self.config.jail_id)?;
+        let gid = group
+            .inner()
+            .and_then(|g| g.gid())
+            .context("Failed to get GID from created group")?;
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create group: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        // Get the newly created group's GID
-        let output = Command::new("dscl")
-            .args([
-                ".",
-                "-read",
-                &format!("/Groups/{}", self.group_name),
-                "PrimaryGroupID",
-            ])
-            .output()
-            .context("Failed to read group GID")?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(line) = stdout.lines().find(|l| l.contains("PrimaryGroupID"))
-            && let Some(gid_str) = line.split_whitespace().last()
-        {
-            let gid = gid_str.parse::<u32>().context("Failed to parse GID")?;
-            info!("Created group {} with GID {}", self.group_name, gid);
-            self.group_gid = Some(gid);
-            return Ok(gid);
-        }
-
-        anyhow::bail!("Failed to get GID for group {}", self.group_name)
+        info!("Created group {} with GID {}", group_name, gid);
+        self.group = Some(group);
+        Ok(gid)
     }
 
     /// Get the default network interface
@@ -162,17 +142,42 @@ pass on lo0 all
     }
 
     /// Load PF rules into an anchor
-    fn load_pf_rules(&self, rules: &str) -> Result<()> {
-        // Write rules to temp file for debugging
-        fs::write(&self.pf_rules_path, rules).context("Failed to write PF rules file")?;
+    fn load_pf_rules(&mut self, rules: &str) -> Result<()> {
+        // Create PF rules file resource if not exists
+        if self.pf_rules_file.is_none() {
+            self.pf_rules_file = Some(ManagedResource::<PfRulesFile>::create(
+                &self.config.jail_id,
+            )?);
+        }
+
+        // Write rules to file
+        let rules_path = self
+            .pf_rules_file
+            .as_ref()
+            .and_then(|f| f.inner())
+            .map(|f| f.path().to_string())
+            .context("Failed to get rules file path")?;
+        fs::write(&rules_path, rules).context("Failed to write PF rules file")?;
+
+        // Create PF anchor resource if not exists
+        if self.pf_anchor.is_none() {
+            self.pf_anchor = Some(ManagedResource::<PfAnchor>::create(&self.config.jail_id)?);
+        }
+
+        let anchor_name = self
+            .pf_anchor
+            .as_ref()
+            .and_then(|a| a.inner())
+            .map(|a| a.name().to_string())
+            .context("Failed to get anchor name")?;
 
         // Try to load rules using file first (standard approach)
         info!(
             "Loading PF rules from {} into anchor {}",
-            self.pf_rules_path, self.pf_anchor_name
+            rules_path, anchor_name
         );
         let output = Command::new("pfctl")
-            .args(["-a", &self.pf_anchor_name, "-f", &self.pf_rules_path])
+            .args(["-a", &anchor_name, "-f", &rules_path])
             .output()
             .context("Failed to load PF rules")?;
 
@@ -184,12 +189,12 @@ pass on lo0 all
             // Try to flush the anchor first and retry
             warn!("PF anchor busy, attempting to flush and retry");
             let _ = Command::new("pfctl")
-                .args(["-a", &self.pf_anchor_name, "-F", "rules"])
+                .args(["-a", &anchor_name, "-F", "rules"])
                 .output();
 
             // Retry loading rules
             let retry_output = Command::new("pfctl")
-                .args(["-a", &self.pf_anchor_name, "-f", &self.pf_rules_path])
+                .args(["-a", &anchor_name, "-f", &rules_path])
                 .output()
                 .context("Failed to load PF rules on retry")?;
 
@@ -237,7 +242,7 @@ rdr-anchor "{}"
 anchor "com.apple/*"
 anchor "{}"
 "#,
-            self.pf_anchor_name, self.pf_anchor_name
+            anchor_name, anchor_name
         );
 
         // Write and load the main ruleset
@@ -261,9 +266,9 @@ anchor "{}"
         let _ = fs::remove_file(&main_rules_path);
 
         // Verify that rules were loaded correctly
-        info!("Verifying PF rules in anchor {}", self.pf_anchor_name);
+        info!("Verifying PF rules in anchor {}", anchor_name);
         let output = Command::new("pfctl")
-            .args(["-a", &self.pf_anchor_name, "-s", "rules"])
+            .args(["-a", &anchor_name, "-s", "rules"])
             .output()
             .context("Failed to verify PF rules")?;
 
@@ -272,7 +277,7 @@ anchor "{}"
             if rules_output.is_empty() {
                 warn!(
                     "No rules found in anchor {}! Rules may not be active.",
-                    self.pf_anchor_name
+                    anchor_name
                 );
             } else {
                 debug!("Loaded PF rules:\n{}", rules_output);
@@ -286,31 +291,6 @@ anchor "{}"
                 "Could not verify PF rules: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-        }
-
-        Ok(())
-    }
-
-    /// Remove PF rules from anchor
-    fn unload_pf_rules(&self) -> Result<()> {
-        info!("Removing PF rules from anchor {}", self.pf_anchor_name);
-
-        // Flush the anchor
-        let output = Command::new("pfctl")
-            .args(["-a", &self.pf_anchor_name, "-F", "all"])
-            .output()
-            .context("Failed to flush PF anchor")?;
-
-        if !output.status.success() {
-            warn!(
-                "Failed to flush PF anchor: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        // Clean up temp file
-        if Utf8Path::new(&self.pf_rules_path).exists() {
-            fs::remove_file(&self.pf_rules_path).context("Failed to remove PF rules file")?;
         }
 
         Ok(())
@@ -340,8 +320,9 @@ impl Jail for MacOSJail {
 
         // Clean up any existing anchor/rules from previous runs
         info!("Cleaning up any existing PF rules from previous runs");
+        let anchor_name = format!("httpjail_{}", self.config.jail_id);
         let _ = Command::new("pfctl")
-            .args(["-a", &self.pf_anchor_name, "-F", "all"])
+            .args(["-a", &anchor_name, "-F", "all"])
             .output(); // Ignore errors - anchor might not exist
 
         // Ensure group exists and get GID
@@ -365,12 +346,16 @@ impl Jail for MacOSJail {
 
         // Get the GID we need to use
         let gid = self
-            .group_gid
+            .group
+            .as_ref()
+            .and_then(|g| g.inner())
+            .and_then(|g| g.gid())
             .context("No group GID set - jail not set up")?;
 
+        let group_name = format!("httpjail_{}", self.config.jail_id);
         debug!(
             "Executing command with jail group {} (GID {}): {:?}",
-            self.group_name, gid, command
+            group_name, gid, command
         );
 
         // If running as root, check if we should drop to original user
@@ -398,19 +383,23 @@ impl Jail for MacOSJail {
 
     fn cleanup(&self) -> Result<()> {
         // Print verbose PF rules before cleanup for debugging
-        let output = Command::new("pfctl")
-            .args(["-vvv", "-sr", "-a", &self.pf_anchor_name])
-            .output()
-            .context("Failed to get verbose PF rules")?;
+        if let Some(ref anchor) = self.pf_anchor {
+            if let Some(a) = anchor.inner() {
+                let output = Command::new("pfctl")
+                    .args(["-vvv", "-sr", "-a", a.name()])
+                    .output()
+                    .context("Failed to get verbose PF rules")?;
 
-        if output.status.success() {
-            let rules_output = String::from_utf8_lossy(&output.stdout);
-            info!("PF rules before cleanup:\n{}", rules_output);
+                if output.status.success() {
+                    let rules_output = String::from_utf8_lossy(&output.stdout);
+                    info!("PF rules before cleanup:\n{}", rules_output);
+                }
+            }
         }
 
-        self.unload_pf_rules()?;
-
-        info!("Jail cleanup complete");
+        // Resources will be cleaned up automatically when dropped
+        // But we can log that cleanup is happening
+        info!("Jail cleanup complete - resources will be cleaned up automatically");
         Ok(())
     }
 
@@ -422,8 +411,6 @@ impl Jail for MacOSJail {
     where
         Self: Sized,
     {
-        use crate::sys_resource::ManagedResource;
-
         info!("Cleaning up orphaned macOS jail: {}", jail_id);
 
         // Create managed resources for existing system resources
@@ -438,12 +425,13 @@ impl Jail for MacOSJail {
 
 impl Clone for MacOSJail {
     fn clone(&self) -> Self {
+        // Note: We don't clone the ManagedResource fields as they represent
+        // system resources that shouldn't be duplicated
         Self {
             config: self.config.clone(),
-            group_gid: self.group_gid,
-            pf_rules_path: self.pf_rules_path.clone(),
-            group_name: self.group_name.clone(),
-            pf_anchor_name: self.pf_anchor_name.clone(),
+            group: None,
+            pf_anchor: None,
+            pf_rules_file: None,
         }
     }
 }

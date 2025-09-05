@@ -1,7 +1,7 @@
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,45 +9,42 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
-/// Manages jail lifecycle including heartbeat and orphan cleanup
-struct JailLifecycleManager {
-    jail_id: String,
+/// A jail with lifecycle management (heartbeat and orphan cleanup)
+pub struct ManagedJail<J: Jail> {
+    jail: J,
+
+    // Lifecycle management fields (inlined from JailLifecycleManager)
     canary_dir: PathBuf,
     canary_path: PathBuf,
     heartbeat_interval: Duration,
     orphan_timeout: Duration,
+    enable_heartbeat: bool,
 
     // Heartbeat control
     stop_heartbeat: Arc<AtomicBool>,
     heartbeat_handle: Option<JoinHandle<()>>,
 }
 
-impl JailLifecycleManager {
-    /// Create a new lifecycle manager for a jail
-    pub fn new(
-        jail_id: String,
-        heartbeat_interval_secs: u64,
-        orphan_timeout_secs: u64,
-    ) -> Result<Self> {
+impl<J: Jail> ManagedJail<J> {
+    /// Create a new managed jail
+    pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
         let canary_dir = PathBuf::from("/tmp/httpjail");
-        let canary_path = canary_dir.join(&jail_id);
+        let canary_path = canary_dir.join(&config.jail_id);
 
         Ok(Self {
-            jail_id,
+            jail,
             canary_dir,
             canary_path,
-            heartbeat_interval: Duration::from_secs(heartbeat_interval_secs),
-            orphan_timeout: Duration::from_secs(orphan_timeout_secs),
+            heartbeat_interval: Duration::from_secs(config.heartbeat_interval_secs),
+            orphan_timeout: Duration::from_secs(config.orphan_timeout_secs),
+            enable_heartbeat: config.enable_heartbeat,
             stop_heartbeat: Arc::new(AtomicBool::new(false)),
             heartbeat_handle: None,
         })
     }
 
     /// Scan and cleanup orphaned jails before setup
-    pub fn cleanup_orphans<F>(&self, cleanup_fn: F) -> Result<()>
-    where
-        F: Fn(&str) -> Result<()>,
-    {
+    fn cleanup_orphans(&self) -> Result<()> {
         // Create directory if it doesn't exist
         if !self.canary_dir.exists() {
             fs::create_dir_all(&self.canary_dir).context("Failed to create canary directory")?;
@@ -64,13 +61,13 @@ impl JailLifecycleManager {
                 continue;
             }
 
-            // Check file age using access time
+            // Check file age using modification time (mtime) for broader fs support
             let metadata = fs::metadata(&path)?;
-            let accessed = metadata
-                .accessed()
-                .context("Failed to get file access time")?;
+            let modified = metadata
+                .modified()
+                .context("Failed to get file modification time")?;
             let age = SystemTime::now()
-                .duration_since(accessed)
+                .duration_since(modified)
                 .unwrap_or(Duration::from_secs(0));
 
             // If file is older than orphan timeout, clean it up
@@ -86,7 +83,7 @@ impl JailLifecycleManager {
                 );
 
                 // Call platform-specific cleanup
-                cleanup_fn(jail_id)
+                J::cleanup_orphaned(jail_id)
                     .context(format!("Failed to cleanup orphaned jail '{}'", jail_id))?;
 
                 // Remove canary file after cleanup attempt.
@@ -102,7 +99,11 @@ impl JailLifecycleManager {
     }
 
     /// Start the heartbeat thread
-    pub fn start_heartbeat(&mut self) -> Result<()> {
+    fn start_heartbeat(&mut self) -> Result<()> {
+        if !self.enable_heartbeat {
+            return Ok(());
+        }
+
         // Create canary file first
         self.create_canary()?;
 
@@ -115,8 +116,8 @@ impl JailLifecycleManager {
             debug!("Starting heartbeat thread for {:?}", canary_path);
 
             while !stop_flag.load(Ordering::Relaxed) {
-                // Touch the canary file
-                if let Err(e) = touch_file(&canary_path) {
+                // Touch the canary file (update mtime only)
+                if let Err(e) = touch_file_mtime(&canary_path) {
                     warn!("Failed to touch canary file: {}", e);
                 }
 
@@ -128,13 +129,20 @@ impl JailLifecycleManager {
         });
 
         self.heartbeat_handle = Some(handle);
-        info!("Started lifecycle heartbeat for jail '{}'", self.jail_id);
+        info!(
+            "Started lifecycle heartbeat for jail '{}'",
+            self.jail.jail_id()
+        );
 
         Ok(())
     }
 
     /// Stop the heartbeat thread
-    pub fn stop_heartbeat(&mut self) -> Result<()> {
+    fn stop_heartbeat(&mut self) -> Result<()> {
+        if !self.enable_heartbeat {
+            return Ok(());
+        }
+
         // Signal thread to stop
         self.stop_heartbeat.store(true, Ordering::Relaxed);
 
@@ -145,12 +153,12 @@ impl JailLifecycleManager {
                 .map_err(|_| anyhow::anyhow!("Failed to join heartbeat thread"))?;
         }
 
-        debug!("Stopped heartbeat for jail '{}'", self.jail_id);
+        debug!("Stopped heartbeat for jail '{}'", self.jail.jail_id());
         Ok(())
     }
 
     /// Create the canary file
-    pub fn create_canary(&self) -> Result<()> {
+    fn create_canary(&self) -> Result<()> {
         // Ensure directory exists
         if !self.canary_dir.exists() {
             fs::create_dir_all(&self.canary_dir).context("Failed to create canary directory")?;
@@ -159,37 +167,34 @@ impl JailLifecycleManager {
         // Create empty canary file
         fs::write(&self.canary_path, b"").context("Failed to create canary file")?;
 
-        debug!("Created canary file for jail '{}'", self.jail_id);
+        debug!("Created canary file for jail '{}'", self.jail.jail_id());
         Ok(())
     }
 
     /// Delete the canary file
-    pub fn delete_canary(&self) -> Result<()> {
+    fn delete_canary(&self) -> Result<()> {
         if self.canary_path.exists() {
             fs::remove_file(&self.canary_path).context("Failed to remove canary file")?;
-            debug!("Deleted canary file for jail '{}'", self.jail_id);
+            debug!("Deleted canary file for jail '{}'", self.jail.jail_id());
         }
         Ok(())
     }
 }
 
-impl Drop for JailLifecycleManager {
-    fn drop(&mut self) {
-        // Best effort cleanup
-        let _ = self.stop_heartbeat();
-        let _ = self.delete_canary();
-    }
-}
-
-/// Touch a file to update its access and modification times
-fn touch_file(path: &Path) -> Result<()> {
+/// Touch a file to update its modification time only (not access time)
+/// This provides broader filesystem support as some filesystems don't track atime
+fn touch_file_mtime(path: &PathBuf) -> Result<()> {
     if path.exists() {
-        // Update access and modification times to now
-        let now = std::time::SystemTime::now();
+        // Get current access time to preserve it
+        let metadata = fs::metadata(path)?;
+        let atime = metadata.accessed().unwrap_or_else(|_| SystemTime::now());
+
+        // Update modification time to now, preserve access time
+        let mtime = SystemTime::now();
         filetime::set_file_times(
             path,
-            filetime::FileTime::from_system_time(now),
-            filetime::FileTime::from_system_time(now),
+            filetime::FileTime::from_system_time(atime),
+            filetime::FileTime::from_system_time(mtime),
         )?;
     } else {
         // Create empty file if it doesn't exist
@@ -198,43 +203,18 @@ fn touch_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A jail with lifecycle management (heartbeat and orphan cleanup)
-pub struct ManagedJail<J: Jail> {
-    jail: J,
-    lifecycle: Option<JailLifecycleManager>,
-}
-
-impl<J: Jail> ManagedJail<J> {
-    /// Create a new managed jail
-    pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
-        let lifecycle = if config.enable_heartbeat {
-            Some(JailLifecycleManager::new(
-                config.jail_id.clone(),
-                config.heartbeat_interval_secs,
-                config.orphan_timeout_secs,
-            )?)
-        } else {
-            None
-        };
-
-        Ok(Self { jail, lifecycle })
-    }
-}
-
 impl<J: Jail> Jail for ManagedJail<J> {
     fn setup(&mut self, proxy_port: u16) -> Result<()> {
         // Cleanup orphans first
-        if let Some(ref lifecycle) = self.lifecycle {
-            lifecycle.cleanup_orphans(|jail_id| J::cleanup_orphaned(jail_id))?;
+        if self.enable_heartbeat {
+            self.cleanup_orphans()?;
         }
 
         // Setup the inner jail
         self.jail.setup(proxy_port)?;
 
         // Start heartbeat after successful setup
-        if let Some(ref mut lifecycle) = self.lifecycle {
-            lifecycle.start_heartbeat()?;
-        }
+        self.start_heartbeat()?;
 
         Ok(())
     }
@@ -249,8 +229,8 @@ impl<J: Jail> Jail for ManagedJail<J> {
         let result = self.jail.cleanup();
 
         // Delete canary last
-        if let Some(ref lifecycle) = self.lifecycle {
-            lifecycle.delete_canary()?;
+        if self.enable_heartbeat {
+            self.delete_canary()?;
         }
 
         result
@@ -265,5 +245,15 @@ impl<J: Jail> Jail for ManagedJail<J> {
         Self: Sized,
     {
         J::cleanup_orphaned(jail_id)
+    }
+}
+
+impl<J: Jail> Drop for ManagedJail<J> {
+    fn drop(&mut self) {
+        // Best effort cleanup
+        let _ = self.stop_heartbeat();
+        if self.enable_heartbeat {
+            let _ = self.delete_canary();
+        }
     }
 }
