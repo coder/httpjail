@@ -75,6 +75,7 @@ macro_rules! platform_tests {
         }
 
         #[test]
+        #[::serial_test::serial]
         fn test_concurrent_jail_isolation() {
             system_integration::test_concurrent_jail_isolation::<$platform>();
         }

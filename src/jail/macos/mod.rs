@@ -1,11 +1,14 @@
 use super::{Jail, JailConfig};
+use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
 use camino::Utf8Path;
+use resources::{MacOSGroup, PfAnchor, PfRulesFile};
 use std::fs;
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
 mod fork;
+mod resources;
 
 pub struct MacOSJail {
     config: JailConfig,
@@ -422,21 +425,10 @@ impl Jail for MacOSJail {
     {
         info!("Cleaning up orphaned macOS jail: {}", jail_id);
 
-        // Remove PF anchor
-        let anchor_name = format!("httpjail_{}", jail_id);
-        let _ = Command::new("pfctl")
-            .args(["-a", &anchor_name, "-F", "all"])
-            .output();
-
-        // Delete group if it exists
-        let group_name = format!("httpjail_{}", jail_id);
-        let _ = Command::new("dseditgroup")
-            .args(["-o", "delete", &group_name])
-            .output();
-
-        // Remove PF rules file
-        let pf_rules_path = format!("/tmp/httpjail_{}.pf", jail_id);
-        let _ = fs::remove_file(pf_rules_path);
+        // Create resource handles for existing resources and let Drop handle cleanup
+        let _anchor = PfAnchor::for_existing(jail_id);
+        let _group = MacOSGroup::for_existing(jail_id);
+        let _rules_file = PfRulesFile::for_existing(jail_id);
 
         Ok(())
     }
