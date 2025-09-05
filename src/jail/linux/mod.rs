@@ -4,7 +4,6 @@ use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use iptables::IPTablesRule;
 use std::process::{Command, ExitStatus};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 /// Linux namespace network configuration constants
@@ -103,42 +102,23 @@ impl LinuxJail {
 
     /// Create the network namespace
     fn create_namespace(&mut self) -> Result<()> {
-        // Try to create namespace with retry logic for concurrent safety
-        for attempt in 0..3 {
-            let output = Command::new("ip")
-                .args(["netns", "add", &self.namespace_name])
-                .output()
-                .context("Failed to execute ip netns add")?;
+        // Create namespace (unique jail_id ensures no collisions)
+        let output = Command::new("ip")
+            .args(["netns", "add", &self.namespace_name])
+            .output()
+            .context("Failed to execute ip netns add")?;
 
-            if output.status.success() {
-                info!("Created network namespace: {}", self.namespace_name);
-                self.namespace_created = true;
-                return Ok(());
-            }
-
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("File exists") && attempt < 2 {
-                // Namespace name collision, regenerate and retry
-                warn!(
-                    "Namespace {} already exists, regenerating name",
-                    self.namespace_name
-                );
-                // Regenerate with new timestamp
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_micros();
-                let new_id = format!("{:07}", timestamp % 10_000_000);
-                self.namespace_name = format!("httpjail_{}", new_id);
-                self.veth_host = format!("veth_h_{}", new_id);
-                self.veth_ns = format!("veth_n_{}", new_id);
-                continue;
-            }
-
-            anyhow::bail!("Failed to create namespace: {}", stderr);
+        if output.status.success() {
+            info!("Created network namespace: {}", self.namespace_name);
+            self.namespace_created = true;
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Failed to create namespace {}: {}",
+                self.namespace_name,
+                String::from_utf8_lossy(&output.stderr)
+            )
         }
-
-        anyhow::bail!("Failed to create namespace after 3 attempts")
     }
 
     /// Set up veth pair for namespace connectivity
