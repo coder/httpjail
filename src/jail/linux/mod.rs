@@ -725,7 +725,8 @@ impl Jail for LinuxJail {
         info!("Cleaning up orphaned Linux jail: {}", jail_id);
 
         let namespace_name = format!("httpjail_{}", jail_id);
-        let veth_host = format!("veth_h_{}", jail_id);
+        let veth_host = format!("vh_{}", jail_id);
+        let comment = format!("httpjail-{}", namespace_name);
 
         // Clean up namespace-specific config directory
         let netns_etc = format!("/etc/netns/{}", namespace_name);
@@ -743,57 +744,56 @@ impl Jail for LinuxJail {
             .args(["link", "del", &veth_host])
             .output();
 
-        // Clean up iptables rules with matching comment
-        let comment = format!("httpjail-{}", namespace_name);
-
-        // Remove MASQUERADE rule
-        let _ = Command::new("iptables")
-            .args([
-                "-t",
-                "nat",
-                "-D",
+        // Create temporary IPTablesRule objects to clean up iptables rules
+        // Their Drop impl will remove the rules
+        let _rules = vec![
+            // MASQUERADE rule
+            IPTablesRule::new_existing(
+                Some("nat"),
                 "POSTROUTING",
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "MASQUERADE",
-            ])
-            .output();
-
-        // Remove FORWARD rules
-        let _ = Command::new("iptables")
-            .args([
-                "-D",
+                vec![
+                    "-s",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "MASQUERADE",
+                ],
+            ),
+            // FORWARD source rule
+            IPTablesRule::new_existing(
+                None,
                 "FORWARD",
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ])
-            .output();
-
-        let _ = Command::new("iptables")
-            .args([
-                "-D",
+                vec![
+                    "-s",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            ),
+            // FORWARD destination rule
+            IPTablesRule::new_existing(
+                None,
                 "FORWARD",
-                "-d",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ])
-            .output();
+                vec![
+                    "-d",
+                    LINUX_NS_SUBNET,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "ACCEPT",
+                ],
+            ),
+        ];
+        // Rules will be cleaned up when _rules goes out of scope
 
         Ok(())
     }

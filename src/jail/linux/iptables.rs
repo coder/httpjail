@@ -16,6 +16,17 @@ pub struct IPTablesRule {
 }
 
 impl IPTablesRule {
+    /// Create a rule object for an existing rule (for cleanup purposes)
+    /// This doesn't add the rule, but will remove it when dropped
+    pub fn new_existing(table: Option<&str>, chain: &str, rule_spec: Vec<&str>) -> Self {
+        Self {
+            table: table.map(|s| s.to_string()),
+            chain: chain.to_string(),
+            rule_spec: rule_spec.iter().map(|s| s.to_string()).collect(),
+            added: true, // Mark as added so it will be removed on drop
+        }
+    }
+
     /// Create and add a new iptables rule
     pub fn new(table: Option<&str>, chain: &str, rule_spec: Vec<&str>) -> Result<Self> {
         let mut args = Vec::new();
