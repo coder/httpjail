@@ -1,11 +1,7 @@
 use anyhow::Result;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use rand::Rng;
 
 pub mod managed;
-
-// Counter to ensure unique jail IDs even when created rapidly
-static JAIL_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Trait for platform-specific jail implementations
 #[allow(dead_code)]
@@ -76,29 +72,81 @@ pub struct JailConfig {
 impl JailConfig {
     /// Create a new configuration with a unique jail_id
     pub fn new() -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros();
-
-        // Add counter to ensure uniqueness even when created rapidly
-        let counter = JAIL_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        // Generate a random 8-character base36 ID (a-z0-9)
+        // This gives us 36^8 = ~2.8 trillion possible IDs (~41 bits of entropy)
+        let jail_id = Self::generate_base36_id(8);
 
         Self {
             http_proxy_port: 8040,
             https_proxy_port: 8043,
             tls_intercept: true,
-            jail_id: format!("{:06}_{:03}", (timestamp % 1_000_000), counter % 1000),
+            jail_id,
             enable_heartbeat: true,
             heartbeat_interval_secs: 1,
             orphan_timeout_secs: 10,
         }
+    }
+
+    /// Generate a random base36 ID of the specified length
+    fn generate_base36_id(length: usize) -> String {
+        const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let mut rng = rand::thread_rng();
+
+        (0..length)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
     }
 }
 
 impl Default for JailConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_base36_jail_id_generation() {
+        // Generate multiple IDs and verify they are valid base36
+        for _ in 0..100 {
+            let config = JailConfig::new();
+            let id = &config.jail_id;
+
+            // Check length
+            assert_eq!(id.len(), 8, "ID should be 8 characters long");
+
+            // Check all characters are base36 (0-9, a-z)
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                "ID should only contain lowercase letters and digits: {}",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_jail_id_uniqueness() {
+        // Generate many IDs and check for collisions
+        use std::collections::HashSet;
+        let mut ids = HashSet::new();
+
+        for _ in 0..1000 {
+            let config = JailConfig::new();
+            let id = config.jail_id.clone();
+
+            // Check that this ID hasn't been seen before
+            assert!(ids.insert(id.clone()), "Duplicate ID generated: {}", id);
+        }
+
+        // We generated 1000 unique IDs
+        assert_eq!(ids.len(), 1000);
     }
 }
 

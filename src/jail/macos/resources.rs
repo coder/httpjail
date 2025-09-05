@@ -1,20 +1,23 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
 use std::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// macOS user group resource
 pub struct MacOSGroup {
     name: String,
+    #[allow(dead_code)]
     gid: Option<u32>,
     created: bool,
 }
 
 impl MacOSGroup {
+    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    #[allow(dead_code)]
     pub fn gid(&self) -> Option<u32> {
         self.gid
     }
@@ -98,16 +101,6 @@ impl SystemResource for MacOSGroup {
     }
 }
 
-impl Drop for MacOSGroup {
-    fn drop(&mut self) {
-        if self.created {
-            if let Err(e) = self.cleanup() {
-                error!("Failed to cleanup macOS group on drop: {}", e);
-            }
-        }
-    }
-}
-
 /// PF anchor resource
 pub struct PfAnchor {
     name: String,
@@ -115,6 +108,7 @@ pub struct PfAnchor {
 }
 
 impl PfAnchor {
+    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -163,14 +157,6 @@ impl SystemResource for PfAnchor {
     }
 }
 
-impl Drop for PfAnchor {
-    fn drop(&mut self) {
-        if self.created {
-            let _ = self.cleanup();
-        }
-    }
-}
-
 /// PF rules file resource
 pub struct PfRulesFile {
     path: String,
@@ -178,10 +164,12 @@ pub struct PfRulesFile {
 }
 
 impl PfRulesFile {
+    #[allow(dead_code)]
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    #[allow(dead_code)]
     pub fn write_rules(&self, content: &str) -> Result<()> {
         std::fs::write(&self.path, content).context("Failed to write PF rules file")
     }
@@ -218,14 +206,6 @@ impl SystemResource for PfRulesFile {
         Self {
             path: format!("/tmp/httpjail_{}.pf", jail_id),
             created: true,
-        }
-    }
-}
-
-impl Drop for PfRulesFile {
-    fn drop(&mut self) {
-        if self.created {
-            let _ = self.cleanup();
         }
     }
 }

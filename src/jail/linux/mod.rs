@@ -1,4 +1,5 @@
 mod iptables;
+mod resources;
 
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
@@ -722,77 +723,17 @@ impl Jail for LinuxJail {
     where
         Self: Sized,
     {
+        use self::resources::{IPTablesRules, NamespaceConfig, NetworkNamespace, VethPair};
+        use crate::sys_resource::ManagedResource;
+
         info!("Cleaning up orphaned Linux jail: {}", jail_id);
 
-        let namespace_name = format!("httpjail_{}", jail_id);
-        let veth_host = format!("vh_{}", jail_id);
-        let comment = format!("httpjail-{}", namespace_name);
-
-        // Clean up namespace-specific config directory
-        let netns_etc = format!("/etc/netns/{}", namespace_name);
-        if std::path::Path::new(&netns_etc).exists() {
-            let _ = std::fs::remove_dir_all(&netns_etc);
-        }
-
-        // Remove namespace (this also removes veth pair)
-        let _ = Command::new("ip")
-            .args(["netns", "del", &namespace_name])
-            .output();
-
-        // Try to remove host veth (in case namespace deletion failed)
-        let _ = Command::new("ip")
-            .args(["link", "del", &veth_host])
-            .output();
-
-        // Create temporary IPTablesRule objects to clean up iptables rules
-        // Their Drop impl will remove the rules
-        let _rules = vec![
-            // MASQUERADE rule
-            IPTablesRule::new_existing(
-                Some("nat"),
-                "POSTROUTING",
-                vec![
-                    "-s",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "MASQUERADE",
-                ],
-            ),
-            // FORWARD source rule
-            IPTablesRule::new_existing(
-                None,
-                "FORWARD",
-                vec![
-                    "-s",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            ),
-            // FORWARD destination rule
-            IPTablesRule::new_existing(
-                None,
-                "FORWARD",
-                vec![
-                    "-d",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            ),
-        ];
+        // Create managed resources for existing system resources
+        // When these go out of scope, they will clean themselves up
+        let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
+        let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
+        let _namespace_config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
+        let _iptables = ManagedResource::<IPTablesRules>::for_existing(jail_id);
         // Rules will be cleaned up when _rules goes out of scope
 
         Ok(())

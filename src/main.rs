@@ -1,15 +1,8 @@
-mod dangerous_verifier;
-mod jail;
-mod proxy;
-mod proxy_tls;
-mod rules;
-mod tls;
-
 use anyhow::Result;
 use clap::Parser;
-use jail::{JailConfig, create_jail};
-use proxy::ProxyServer;
-use rules::{Action, Rule, RuleEngine};
+use httpjail::jail::{JailConfig, create_jail};
+use httpjail::proxy::ProxyServer;
+use httpjail::rules::{Action, Rule, RuleEngine};
 use std::os::unix::process::ExitStatusExt;
 use tracing::{debug, info, warn};
 
@@ -256,7 +249,7 @@ async fn main() -> Result<()> {
     let mut extra_env = Vec::new();
 
     if !args.no_tls_intercept {
-        match tls::CertificateManager::get_ca_env_vars() {
+        match httpjail::tls::CertificateManager::get_ca_env_vars() {
             Ok(ca_env_vars) => {
                 debug!(
                     "Setting {} CA certificate environment variables",

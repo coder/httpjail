@@ -1,7 +1,7 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
 use std::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -69,16 +69,6 @@ impl SystemResource for NetworkNamespace {
         Self {
             name: format!("httpjail_{}", jail_id),
             created: true, // Assume it exists for cleanup
-        }
-    }
-}
-
-impl Drop for NetworkNamespace {
-    fn drop(&mut self) {
-        if self.created {
-            if let Err(e) = self.cleanup() {
-                error!("Failed to cleanup network namespace on drop: {}", e);
-            }
         }
     }
 }
@@ -151,14 +141,6 @@ impl SystemResource for VethPair {
     }
 }
 
-impl Drop for VethPair {
-    fn drop(&mut self) {
-        if self.created {
-            let _ = self.cleanup();
-        }
-    }
-}
-
 /// Namespace configuration directory (/etc/netns/<namespace>)
 pub struct NamespaceConfig {
     path: String,
@@ -206,14 +188,6 @@ impl SystemResource for NamespaceConfig {
         Self {
             path: format!("/etc/netns/{}", namespace_name),
             created: true,
-        }
-    }
-}
-
-impl Drop for NamespaceConfig {
-    fn drop(&mut self) {
-        if self.created {
-            let _ = self.cleanup();
         }
     }
 }
@@ -317,12 +291,5 @@ impl SystemResource for IPTablesRules {
             jail_id: jail_id.to_string(),
             rules,
         }
-    }
-}
-
-impl Drop for IPTablesRules {
-    fn drop(&mut self) {
-        // Individual rules clean themselves up on drop
-        self.rules.clear();
     }
 }

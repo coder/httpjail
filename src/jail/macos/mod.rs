@@ -1,5 +1,4 @@
 use super::{Jail, JailConfig};
-use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
 use camino::Utf8Path;
 use resources::{MacOSGroup, PfAnchor, PfRulesFile};
@@ -423,12 +422,15 @@ impl Jail for MacOSJail {
     where
         Self: Sized,
     {
+        use crate::sys_resource::ManagedResource;
+
         info!("Cleaning up orphaned macOS jail: {}", jail_id);
 
-        // Create resource handles for existing resources and let Drop handle cleanup
-        let _anchor = PfAnchor::for_existing(jail_id);
-        let _group = MacOSGroup::for_existing(jail_id);
-        let _rules_file = PfRulesFile::for_existing(jail_id);
+        // Create managed resources for existing system resources
+        // When these go out of scope, they will clean themselves up
+        let _anchor = ManagedResource::<PfAnchor>::for_existing(jail_id);
+        let _group = ManagedResource::<MacOSGroup>::for_existing(jail_id);
+        let _rules_file = ManagedResource::<PfRulesFile>::for_existing(jail_id);
 
         Ok(())
     }
