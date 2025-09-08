@@ -40,7 +40,7 @@ table ip {} {{
     }}
     
     chain input {{
-        type filter hook input priority filter; policy accept;
+        type filter hook input priority -50; policy accept;
         iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
     }}
 }}
