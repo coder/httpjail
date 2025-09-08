@@ -34,7 +34,7 @@ table ip {} {{
     }}
     
     chain forward {{
-        type filter hook forward priority filter; policy accept;
+        type filter hook forward priority -50; policy accept;
         ip saddr {} accept comment "httpjail_{} out"
         ip daddr {} accept comment "httpjail_{} in"
     }}
