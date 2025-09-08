@@ -453,6 +453,51 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     );
 }
 
+/// Test DNS resolution works inside the jail
+pub fn test_jail_dns_resolution<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Try to resolve google.com using dig or nslookup
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: .*")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(
+            "dig +short google.com || nslookup google.com || host google.com || echo 'DNS_FAILED'",
+        );
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("[{}] DNS test stdout: {}", P::platform_name(), stdout);
+    println!("[{}] DNS test stderr: {}", P::platform_name(), stderr);
+
+    // Check that DNS resolution worked (should get IP addresses)
+    assert!(
+        !stdout.contains("DNS_FAILED"),
+        "[{}] DNS resolution failed inside jail. Output: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    // Should get some IP address response
+    let has_ip = stdout.contains(".")
+        && (stdout.chars().any(|c| c.is_numeric())
+            || stdout.contains("Address")
+            || stdout.contains("answer"));
+
+    assert!(
+        has_ip,
+        "[{}] DNS resolution didn't return IP addresses. Output: {}",
+        P::platform_name(),
+        stdout
+    );
+}
+
 /// Test concurrent jail isolation with different rules
 pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
     P::require_privileges();

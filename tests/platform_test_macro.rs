@@ -79,5 +79,11 @@ macro_rules! platform_tests {
         fn test_concurrent_jail_isolation() {
             system_integration::test_concurrent_jail_isolation::<$platform>();
         }
+
+        #[test]
+        #[::serial_test::serial]
+        fn test_jail_dns_resolution() {
+            system_integration::test_jail_dns_resolution::<$platform>();
+        }
     };
 }
