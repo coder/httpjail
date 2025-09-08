@@ -86,8 +86,8 @@ jobs:
         if: matrix.privilege == 'root'
         run: |
           # Run tests directly as root (GitHub Actions runner is already non-root)
-          # We need to preserve the environment including cargo/rust paths
-          sudo -E bash -c "cd $GITHUB_WORKSPACE && cargo nextest run --profile ci --test linux_integration --verbose"
+          # Use full path to cargo since PATH may not be preserved with sudo
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
       - name: Run Linux jail integration tests (sudo variant)
         if: matrix.privilege == 'sudo'
