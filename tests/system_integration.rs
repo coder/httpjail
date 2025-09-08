@@ -494,8 +494,8 @@ pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
         stderr
     );
 
-    // This test is for diagnostics only, always pass
-    assert!(true, "Diagnostic test");
+    // This test is for diagnostics only, check that we got output
+    assert!(!stdout.is_empty(), "Should have diagnostic output");
 }
 
 /// Test DNS resolution works inside the jail
