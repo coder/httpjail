@@ -34,14 +34,20 @@ table ip {} {{
     }}
     
     chain forward {{
-        type filter hook forward priority -50; policy accept;
+        type filter hook forward priority -100; policy accept;
         ip saddr {} accept comment "httpjail_{} out"
         ip daddr {} accept comment "httpjail_{} in"
     }}
     
     chain input {{
-        type filter hook input priority -50; policy accept;
+        type filter hook input priority -100; policy accept;
         iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
+        iifname "{}" udp dport 53 accept comment "httpjail_{} dns"
+    }}
+    
+    chain output {{
+        type filter hook output priority -100; policy accept;
+        oifname "{}" accept comment "httpjail_{} out"
     }}
 }}
 "#,
@@ -55,6 +61,10 @@ table ip {} {{
             veth_host,
             http_port,
             https_port,
+            jail_id,
+            veth_host,
+            jail_id,
+            veth_host,
             jail_id
         );
 
