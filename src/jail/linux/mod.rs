@@ -28,7 +28,7 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// ```
 /// [Application in Namespace] ---> [nftables DNAT] ---> [Proxy on Host:HTTP/HTTPS]
 ///            |                                               |
-///     (169.254.X.2)                                   (169.254.X.1)
+///     (10.99.X.2)                                      (10.99.X.1)
 ///            |                                               |
 ///       [veth_ns] <------- veth pair --------> [veth_host on Host]
 ///            |                                               |
@@ -39,7 +39,7 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 ///
 /// 1. **Network Namespace**: Complete isolation, no interference with host networking
 /// 2. **veth Pair**: Virtual ethernet cable connecting namespace to host
-/// 3. **Private IP Range**: Unique per-jail /30 within 169.254.0.0/16 (link-local)
+/// 3. **Private IP Range**: Unique per-jail /30 within 10.99.0.0/16 (RFC1918)
 /// 4. **nftables DNAT**: Transparent redirection without environment variables
 /// 5. **DNS Override**: Handle systemd-resolved incompatibility with namespaces
 ///
@@ -60,7 +60,7 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
-    // Per-jail computed networking (unique /30 inside 169.254/16)
+    // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
     guest_cidr: String,
@@ -115,7 +115,7 @@ impl LinuxJail {
         format!("vn_{}", self.config.jail_id)
     }
 
-    /// Compute a stable unique /30 in 169.254.0.0/16 for this jail
+    /// Compute a stable unique /30 in 10.99.0.0/16 for this jail
     /// There are 16384 possible /30 subnets in the /16.
     fn compute_subnet_for_jail(jail_id: &str) -> ([u8; 4], String, String, String) {
         use std::hash::{Hash, Hasher};
@@ -123,10 +123,10 @@ impl LinuxJail {
         jail_id.hash(&mut hasher);
         let h = hasher.finish();
         let idx = (h % 16384) as u32; // 0..16383
-        let base = idx * 4; // network base offset within 169.254/16
+        let base = idx * 4; // network base offset within 10.99/16
         let third = ((base >> 8) & 0xFF) as u8;
         let fourth = (base & 0xFF) as u8;
-        let network = [169u8, 254u8, third, fourth];
+        let network = [10u8, 99u8, third, fourth];
         let host_ip = [
             network[0],
             network[1],
@@ -280,8 +280,8 @@ impl LinuxJail {
     /// We use DNAT (Destination NAT) instead of REDIRECT for a critical reason:
     /// - REDIRECT changes the destination to 127.0.0.1 (localhost) within the namespace
     /// - Our proxy runs on the HOST, not inside the namespace
-    /// - DNAT allows us to redirect to the host's IP address (169.254.1.1) where the proxy is actually listening
-    /// - This is why we must use DNAT to 169.254.1.1:8040 instead of REDIRECT
+    /// - DNAT allows us to redirect to the host's IP address (10.99.X.1) where the proxy is actually listening
+    /// - This is why we must use DNAT to 10.99.X.1:PORT instead of REDIRECT
     fn setup_namespace_nftables(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
         let host_ip = format_ip(self.host_ip);
@@ -353,7 +353,7 @@ impl LinuxJail {
     ///    loopback addresses should NEVER appear on the network
     ///
     /// Even if we tried:
-    /// - `ip route add 127.0.0.53/32 via 169.254.1.1` - packets get dropped
+    /// - `ip route add 127.0.0.53/32 via 10.99.X.1` - packets get dropped
     /// - `nftables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
     /// - Disabling rp_filter - doesn't help with loopback addresses
     ///
