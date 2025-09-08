@@ -45,11 +45,11 @@ jobs:
           cargo nextest run --profile ci --test weak_integration --verbose
 
   test-linux:
-    name: Linux Tests
+    name: Linux Tests (${{ matrix.privilege }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [stable]
+        privilege: [root, sudo]
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: stable
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -81,11 +81,18 @@ jobs:
           ./scripts/debug_tls_env.sh
           sudo ./scripts/debug_tls_env.sh
 
-      - name: Run Linux jail integration tests (with sudo)
+      - name: Run Linux jail integration tests (root variant)
+        if: matrix.privilege == 'root'
+        run: |
+          # Switch to root user and run tests directly
+          sudo su - root -c "cd $GITHUB_WORKSPACE && $(which cargo) nextest run --profile ci --test linux_integration --verbose"
+
+      - name: Run Linux jail integration tests (sudo variant)
+        if: matrix.privilege == 'sudo'
         run: |
           # Ensure ip netns support is available
           sudo ip netns list || true
-          # Run the Linux-specific jail tests with root privileges
+          # Run the Linux-specific jail tests with sudo from regular user
           # Use full path to cargo and nextest since sudo doesn't preserve PATH
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
