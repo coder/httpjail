@@ -453,6 +453,51 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     );
 }
 
+/// Test network connectivity diagnostics
+pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Run diagnostic commands to understand network setup
+    let mut cmd = httpjail_cmd();
+    cmd.arg("-r")
+        .arg("allow: .*")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(
+            "echo '=== Network Diagnostics ==='; \
+             ip addr show 2>&1; \
+             echo '---'; \
+             ip route show 2>&1; \
+             echo '---'; \
+             ping -c 1 -W 1 10.99.0.1 2>&1 || true; \
+             echo '---'; \
+             ping -c 1 -W 1 8.8.8.8 2>&1 || true; \
+             echo '---'; \
+             nc -zv 10.99.0.1 80 2>&1 || true; \
+             echo '=== End Diagnostics ==='",
+        );
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] Network diagnostics stdout:\n{}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] Network diagnostics stderr:\n{}",
+        P::platform_name(),
+        stderr
+    );
+
+    // This test is for diagnostics only, always pass
+    assert!(true, "Diagnostic test");
+}
+
 /// Test DNS resolution works inside the jail
 pub fn test_jail_dns_resolution<P: JailTestPlatform>() {
     P::require_privileges();

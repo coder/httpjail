@@ -4,6 +4,12 @@ macro_rules! platform_tests {
     ($platform:ty) => {
         #[test]
         #[::serial_test::serial]
+        fn test_jail_network_diagnostics() {
+            system_integration::test_jail_network_diagnostics::<$platform>();
+        }
+
+        #[test]
+        #[::serial_test::serial]
         fn test_jail_allows_matching_requests() {
             system_integration::test_jail_allows_matching_requests::<$platform>();
         }
