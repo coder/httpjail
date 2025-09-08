@@ -322,18 +322,18 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Fix DNS if systemd-resolved is in use
+    /// Fix DNS resolution in network namespaces
     ///
-    /// ## The systemd-resolved Problem
+    /// ## The DNS Problem
     ///
-    /// Modern Linux systems often use systemd-resolved as a local DNS stub resolver.
-    /// This service listens on 127.0.0.53:53 and /etc/resolv.conf points to it.
+    /// Network namespaces have isolated network stacks, including their own loopback.
+    /// When we create a namespace, it gets a copy of /etc/resolv.conf from the host.
     ///
-    /// When we create a network namespace:
-    /// 1. The namespace gets a COPY of /etc/resolv.conf pointing to 127.0.0.53
-    /// 2. But 127.0.0.53 in the namespace is NOT the host's systemd-resolved
-    /// 3. Each namespace has its own isolated loopback interface
-    /// 4. Result: DNS queries fail because there's no DNS server at 127.0.0.53 in the namespace
+    /// Common issues:
+    /// 1. **systemd-resolved**: Points to 127.0.0.53 which doesn't exist in the namespace
+    /// 2. **Local DNS**: Any local DNS resolver (127.0.0.1, etc.) won't be accessible
+    /// 3. **Corporate DNS**: Internal DNS servers might not be reachable from the namespace
+    /// 4. **CI environments**: Often have minimal or no DNS configuration
     ///
     /// ## Why We Can't Route Loopback Traffic to the Host
     ///
@@ -355,8 +355,8 @@ impl LinuxJail {
     /// ## Our Solution
     ///
     /// Instead of fighting the kernel's security measures, we:
-    /// 1. Detect if /etc/resolv.conf points to systemd-resolved (127.0.0.53)
-    /// 2. Replace it with public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
+    /// 1. Always create a custom resolv.conf for the namespace
+    /// 2. Use public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
     /// 3. These DNS queries go out through our veth pair and work normally
     ///
     /// **IMPORTANT**: `ip netns exec` automatically bind-mounts files from
@@ -369,42 +369,30 @@ impl LinuxJail {
     fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
         let namespace_name = self.namespace_name();
 
-        // Check if resolv.conf points to systemd-resolved
-        let output = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "grep",
-                "127.0.0.53",
-                "/etc/resolv.conf",
-            ])
-            .output()?;
+        // Always create namespace config resource and custom resolv.conf
+        // This ensures DNS works in all environments, not just systemd-resolved
+        debug!("Creating namespace-specific resolv.conf for DNS resolution");
 
-        if output.status.success() {
-            // systemd-resolved is in use, create namespace-specific resolv.conf
-            debug!("Detected systemd-resolved, creating namespace-specific resolv.conf");
+        // Create namespace config resource
+        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
+            &self.config.jail_id,
+        )?);
 
-            // Create namespace config resource
-            self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
-                &self.config.jail_id,
-            )?);
-
-            // Write custom resolv.conf that will be bind-mounted into the namespace
-            let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-            std::fs::write(
-                &resolv_conf_path,
-                "# Custom DNS for httpjail namespace\n\
+        // Write custom resolv.conf that will be bind-mounted into the namespace
+        // Use Google's public DNS servers which are reliable and always accessible
+        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
+        std::fs::write(
+            &resolv_conf_path,
+            "# Custom DNS for httpjail namespace\n\
 nameserver 8.8.8.8\n\
 nameserver 8.8.4.4\n",
-            )
-            .context("Failed to write namespace-specific resolv.conf")?;
+        )
+        .context("Failed to write namespace-specific resolv.conf")?;
 
-            debug!(
-                "Created namespace-specific resolv.conf at {}",
-                resolv_conf_path
-            );
-        }
+        debug!(
+            "Created namespace-specific resolv.conf at {}",
+            resolv_conf_path
+        );
 
         Ok(())
     }
