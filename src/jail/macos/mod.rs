@@ -29,12 +29,11 @@ impl MacOSJail {
     /// Get or create the httpjail group
     fn ensure_group(&mut self) -> Result<u32> {
         // If we already have a group resource, return its GID
-        if let Some(ref group) = self.group {
-            if let Some(g) = group.inner() {
-                if let Some(gid) = g.gid() {
-                    return Ok(gid);
-                }
-            }
+        if let Some(ref group) = self.group
+            && let Some(g) = group.inner()
+            && let Some(gid) = g.gid()
+        {
+            return Ok(gid);
         }
 
         // Try to get existing group first
@@ -171,7 +170,7 @@ pass on lo0 all
             .map(|a| a.name().to_string())
             .context("Failed to get anchor name")?;
 
-        // Try to load rules using file first (standard approach)
+        // Load rules into our namespaced anchor (under com.apple/httpjail/*)
         info!(
             "Loading PF rules from {} into anchor {}",
             rules_path, anchor_name
@@ -225,45 +224,9 @@ pass on lo0 all
             }
         }
 
-        // IMPORTANT: Make the anchor active by referencing it in the main ruleset
-        // We create a temporary main ruleset that includes our anchor
-        let main_rules = format!(
-            r#"# Temporary main ruleset to include httpjail anchor
-# Include default Apple anchors (in required order)
-# 1. Normalization
-scrub-anchor "com.apple/*"
-# 2. Queueing
-dummynet-anchor "com.apple/*"
-# 3. Translation (NAT/RDR)
-nat-anchor "com.apple/*"
-rdr-anchor "com.apple/*"
-rdr-anchor "{}"
-# 4. Filtering
-anchor "com.apple/*"
-anchor "{}"
-"#,
-            anchor_name, anchor_name
-        );
-
-        // Write and load the main ruleset
-        let main_rules_path = format!("/tmp/httpjail_{}_main.pf", self.config.jail_id);
-        fs::write(&main_rules_path, main_rules).context("Failed to write main PF rules")?;
-
-        debug!("Loading main PF ruleset with anchor reference");
-        let output = Command::new("pfctl")
-            .args(["-f", &main_rules_path])
-            .output()
-            .context("Failed to load main PF rules")?;
-
-        if !output.status.success() {
-            warn!(
-                "Failed to load main PF rules: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        // Clean up temp file
-        let _ = fs::remove_file(&main_rules_path);
+        // We rely on the system default pf.conf which already includes anchors
+        // under "com.apple/*" for rdr and filter stages, so no main rules rewrite
+        // is necessary. Our anchor path com.apple/httpjail/<id> is covered.
 
         // Verify that rules were loaded correctly
         info!("Verifying PF rules in anchor {}", anchor_name);
@@ -383,18 +346,15 @@ impl Jail for MacOSJail {
 
     fn cleanup(&self) -> Result<()> {
         // Print verbose PF rules before cleanup for debugging
-        if let Some(ref anchor) = self.pf_anchor {
-            if let Some(a) = anchor.inner() {
-                let output = Command::new("pfctl")
-                    .args(["-vvv", "-sr", "-a", a.name()])
-                    .output()
-                    .context("Failed to get verbose PF rules")?;
-
-                if output.status.success() {
-                    let rules_output = String::from_utf8_lossy(&output.stdout);
-                    info!("PF rules before cleanup:\n{}", rules_output);
-                }
-            }
+        if let Some(ref anchor) = self.pf_anchor
+            && let Some(a) = anchor.inner()
+            && let Ok(output) = Command::new("pfctl")
+                .args(["-vvv", "-sr", "-a", a.name()])
+                .output()
+            && output.status.success()
+        {
+            let rules_output = String::from_utf8_lossy(&output.stdout);
+            info!("PF rules before cleanup:\n{}", rules_output);
         }
 
         // Resources will be cleaned up automatically when dropped

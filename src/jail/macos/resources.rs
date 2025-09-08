@@ -116,7 +116,9 @@ impl PfAnchor {
 
 impl SystemResource for PfAnchor {
     fn create(jail_id: &str) -> Result<Self> {
-        let name = format!("httpjail_{}", jail_id);
+        // Use an anchor path under com.apple/* so it's included by the default pf rules
+        // and we don't need to rewrite the main ruleset.
+        let name = format!("com.apple/httpjail/{}", jail_id);
 
         // Anchors are created when rules are loaded
         // We just track the name here
@@ -151,7 +153,7 @@ impl SystemResource for PfAnchor {
 
     fn for_existing(jail_id: &str) -> Self {
         Self {
-            name: format!("httpjail_{}", jail_id),
+            name: format!("com.apple/httpjail/{}", jail_id),
             created: true,
         }
     }

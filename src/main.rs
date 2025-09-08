@@ -243,14 +243,16 @@ fn cleanup_orphans() -> Result<()> {
             // Call platform-specific cleanup
             #[cfg(target_os = "linux")]
             {
-                use httpjail::jail::{Jail, linux::LinuxJail};
-                LinuxJail::cleanup_orphaned(jail_id)?;
+                <httpjail::jail::linux::LinuxJail as httpjail::jail::Jail>::cleanup_orphaned(
+                    jail_id,
+                )?;
             }
 
             #[cfg(target_os = "macos")]
             {
-                use httpjail::jail::{Jail, macos::MacOSJail};
-                MacOSJail::cleanup_orphaned(jail_id)?;
+                <httpjail::jail::macos::MacOSJail as httpjail::jail::Jail>::cleanup_orphaned(
+                    jail_id,
+                )?;
             }
 
             // Remove canary file after cleanup

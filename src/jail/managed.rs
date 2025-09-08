@@ -165,6 +165,14 @@ impl<J: Jail> ManagedJail<J> {
         Ok(())
     }
 
+    /// Signal the heartbeat thread to stop without joining
+    /// Use this when we only have `&self` (e.g., during Jail::cleanup)
+    fn signal_stop_heartbeat(&self) {
+        if self.enable_heartbeat {
+            self.stop_heartbeat.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// Create the canary file
     fn create_canary(&self) -> Result<()> {
         // Ensure directory exists
@@ -233,6 +241,9 @@ impl<J: Jail> Jail for ManagedJail<J> {
     }
 
     fn cleanup(&self) -> Result<()> {
+        // Signal the heartbeat to stop so it doesn't recreate the canary
+        self.signal_stop_heartbeat();
+
         // Cleanup the inner jail first
         let result = self.jail.cleanup();
 
