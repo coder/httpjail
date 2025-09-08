@@ -150,8 +150,8 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub mod macos;
+// macOS module removed - using weak jail on macOS due to PF limitations
+// (PF translation rules cannot match on user/group)
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -161,33 +161,34 @@ mod weak;
 /// Create a platform-specific jail implementation wrapped with lifecycle management
 pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
     use self::managed::ManagedJail;
+    use self::weak::WeakJail;
 
-    // Use weak jail if requested (works on all platforms)
-    if weak_mode {
-        use self::weak::WeakJail;
-        return Ok(Box::new(ManagedJail::new(
-            WeakJail::new(config.clone())?,
-            &config,
-        )?));
-    }
-
-    // Otherwise use platform-specific implementation
+    // Use weak jail if requested or on macOS (since PF cannot match groups with translation rules)
     #[cfg(target_os = "macos")]
     {
-        use self::macos::MacOSJail;
+        // Always use weak jail on macOS due to PF limitations
+        // (PF translation rules cannot match on user/group)
+        let _ = weak_mode; // Suppress unused warning on macOS
         Ok(Box::new(ManagedJail::new(
-            MacOSJail::new(config.clone())?,
+            WeakJail::new(config.clone())?,
             &config,
         )?))
     }
 
     #[cfg(target_os = "linux")]
     {
-        use self::linux::LinuxJail;
-        Ok(Box::new(ManagedJail::new(
-            LinuxJail::new(config.clone())?,
-            &config,
-        )?))
+        if weak_mode {
+            Ok(Box::new(ManagedJail::new(
+                WeakJail::new(config.clone())?,
+                &config,
+            )?))
+        } else {
+            use self::linux::LinuxJail;
+            Ok(Box::new(ManagedJail::new(
+                LinuxJail::new(config.clone())?,
+                &config,
+            )?))
+        }
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

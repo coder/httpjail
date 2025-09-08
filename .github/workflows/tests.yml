@@ -38,12 +38,11 @@ jobs:
       - name: Run smoke tests
         run: cargo nextest run --profile ci --test smoke_test --verbose
 
-      - name: Run macOS integration tests (with sudo)
+      - name: Run weak mode integration tests
         run: |
-          # The tests require root privileges for PF rules on macOS
-          # GitHub Actions provides passwordless sudo on macOS runners
-          # Use -E to preserve environment and full path to cargo and nextest
-          sudo -E $(which cargo) nextest run --profile ci --test macos_integration --verbose
+          # On macOS, we only support weak mode due to PF limitations
+          # (PF translation rules cannot match on user/group)
+          cargo nextest run --profile ci --test weak_integration --verbose
 
   test-linux:
     name: Linux Tests

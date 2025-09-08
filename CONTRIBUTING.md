@@ -34,19 +34,18 @@ Run the standard unit tests:
 cargo test
 ```
 
-### Integration Tests (macOS)
+### Integration Tests
 
-The integration tests require sudo access to set up PF rules and groups:
+#### macOS
+
+On macOS, httpjail runs in weak mode (environment variable-based):
 
 ```bash
-# Run all integration tests (requires sudo)
-sudo -E cargo test -- --ignored
-
-# Run a specific integration test suite
-sudo -E cargo test --test jail_integration -- --ignored
+# Run weak mode tests
+cargo test --test weak_integration
 
 # Run with output for debugging
-sudo -E cargo test -- --ignored --nocapture
+cargo test --test weak_integration -- --nocapture
 ```
 
 ### Manual Testing
@@ -71,7 +70,7 @@ sudo ./target/release/httpjail --log-only -- curl http://example.com
 
 - `tests/smoke_test.rs` - Basic CLI tests that don't require network or sudo
 - `tests/jail_integration.rs` - Comprehensive integration tests for jail functionality
-- `tests/macos_integration.rs` - macOS-specific integration tests using assert_cmd
+- `tests/weak_integration.rs` - Weak mode (environment-based) integration tests
 
 ## Code Style
 

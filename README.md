@@ -72,37 +72,29 @@ httpjail creates an isolated network environment for the target process, interce
 │                 httpjail Process                 │
 ├─────────────────────────────────────────────────┤
 │  1. Start HTTP/HTTPS proxy servers              │
-│  2. Configure PF (Packet Filter) rules          │
-│  3. Create httpjail group (GID-based isolation) │
-│  4. Generate/load CA certificate                │
-│  5. Execute target with group membership        │
+│  2. Set HTTP_PROXY/HTTPS_PROXY env vars         │
+│  3. Generate/load CA certificate                │
+│  4. Execute target with proxy environment       │
 └─────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────┐
 │              Target Process                     │
-│  • Running with httpjail GID                    │
-│  • TCP traffic redirected via PF rules          │
-│  • HTTP → port 8xxx, HTTPS → port 8xxx          │
+│  • HTTP_PROXY/HTTPS_PROXY environment vars      │
+│  • Applications must respect proxy settings     │
 │  • CA cert via environment variables            │
 └─────────────────────────────────────────────────┘
 ```
 
-The macOS implementation uses PF (Packet Filter) for transparent TCP redirection:
-
-- Creates a dedicated `httpjail` group for process isolation
-- Uses PF rules to redirect TCP traffic from processes with the httpjail GID
-- HTTP traffic (port 80) → local proxy (port 8xxx)
-- HTTPS traffic (port 443) → local proxy (port 8xxx)
-- Supports both CONNECT tunneling and transparent TLS interception
-- CA certificate distributed via environment variables
+**Note**: Due to macOS PF (Packet Filter) limitations, httpjail uses environment-based proxy configuration on macOS. PF translation rules (such as `rdr` and `route-to`) cannot match on user or group, making transparent traffic interception impossible. As a result, httpjail operates in "weak mode" on macOS, relying on applications to respect the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Most command-line tools and modern applications respect these settings, but some may bypass them.
 
 ## Platform Support
 
-| Feature           | Linux                    | macOS               | Windows       | Weak Mode (All) |
-| ----------------- | ------------------------ | ------------------- | ------------- | --------------- |
-| Traffic isolation | ✅ Namespaces + iptables | ✅ GID + PF (pfctl) | 🚧 Planned    | ✅ Env vars     |
-| TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store | ✅ Env vars     |
-| Sudo required     | ⚠️ Yes                   | ⚠️ Yes              | 🚧            | ✅ No           |
+| Feature           | Linux                    | macOS               | Windows       |
+| ----------------- | ------------------------ | ------------------- | ------------- |
+| Traffic isolation | ✅ Namespaces + iptables | ⚠️ Env vars only    | 🚧 Planned    |
+| TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store |
+| Sudo required     | ⚠️ Yes                   | ✅ No                | 🚧            |
+| Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧    |
 
 ## Installation
 
@@ -118,9 +110,7 @@ The macOS implementation uses PF (Packet Filter) for transparent TCP redirection
 #### macOS
 
 - macOS 10.15+ (Catalina or later)
-- pfctl (included in macOS)
-- sudo access (for PF rules and group creation)
-- coreutils (optional, for gtimeout support)
+- No special permissions required (runs in weak mode)
 
 ### Install from source
 

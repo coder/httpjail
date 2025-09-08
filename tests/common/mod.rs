@@ -42,7 +42,7 @@ impl HttpjailCommand {
         self
     }
 
-    /// Use sudo for execution (macOS strong mode)
+    /// Use sudo for execution (Linux only - macOS uses weak mode)
     pub fn sudo(mut self) -> Self {
         self.use_sudo = true;
         self
@@ -145,35 +145,7 @@ pub fn has_sudo() -> bool {
     std::env::var("USER").unwrap_or_default() == "root" || std::env::var("SUDO_USER").is_ok()
 }
 
-/// Clean up PF rules on macOS
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub fn cleanup_pf_rules() {
-    let _ = Command::new("sudo")
-        .args(["pfctl", "-a", "httpjail", "-F", "all"])
-        .output();
-}
-
-/// Check if running as root (for macOS sudo tests)
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub fn is_root() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
-/// Skip test if not running as root  
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub fn require_sudo() {
-    if !is_root() {
-        eprintln!("\n⚠️  Test requires root privileges.");
-        eprintln!(
-            "   Run with: SUDO_ASKPASS=$(pwd)/askpass_macos.sh sudo cargo test --test macos_integration"
-        );
-        eprintln!("   Or: sudo cargo test --test macos_integration\n");
-        panic!("Test skipped: requires root privileges");
-    }
-}
+// macOS-specific functions removed - macOS now uses weak mode only
 
 // Common test implementations that can be used by both weak and strong mode tests
 

@@ -250,9 +250,9 @@ fn cleanup_orphans() -> Result<()> {
 
             #[cfg(target_os = "macos")]
             {
-                <httpjail::jail::macos::MacOSJail as httpjail::jail::Jail>::cleanup_orphaned(
-                    jail_id,
-                )?;
+                // On macOS, we use WeakJail which doesn't have orphaned resources to clean up
+                // Just log that we're skipping cleanup
+                debug!("Skipping orphan cleanup on macOS (using weak jail)");
             }
 
             // Remove canary file after cleanup
