@@ -51,7 +51,7 @@ httpjail creates an isolated network environment for the target process, interce
 │                 httpjail Process                │
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
-│  2. Setup iptables rules                        │
+│  2. Setup nftables rules                        │
 │  3. Start embedded proxy                        │
 │  4. Inject CA certificate                       │
 │  5. Execute target process in namespace         │
@@ -91,7 +91,7 @@ httpjail creates an isolated network environment for the target process, interce
 
 | Feature           | Linux                    | macOS               | Windows       |
 | ----------------- | ------------------------ | ------------------- | ------------- |
-| Traffic isolation | ✅ Namespaces + iptables | ⚠️ Env vars only    | 🚧 Planned    |
+| Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only    | 🚧 Planned    |
 | TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store |
 | Sudo required     | ⚠️ Yes                   | ✅ No                | 🚧            |
 | Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧    |
@@ -103,7 +103,7 @@ httpjail creates an isolated network environment for the target process, interce
 #### Linux
 
 - Linux kernel 3.8+ (network namespace support)
-- iptables
+- nftables (nft command)
 - libssl-dev (for TLS)
 - sudo access (for namespace creation)
 

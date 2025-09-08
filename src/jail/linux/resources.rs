@@ -196,110 +196,41 @@ impl SystemResource for NamespaceConfig {
     }
 }
 
-/// Collection of iptables rules for a jail
-pub struct IPTablesRules {
+/// NFTable resource wrapper for a jail
+pub struct NFTable {
     #[allow(dead_code)]
     jail_id: String,
-    rules: Vec<super::iptables::IPTablesRule>,
+    table: Option<super::nftables::NFTable>,
 }
 
-impl IPTablesRules {
+impl NFTable {
     #[allow(dead_code)]
-    pub fn new(jail_id: String) -> Self {
-        Self {
-            jail_id,
-            rules: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn add_rule(&mut self, rule: super::iptables::IPTablesRule) {
-        self.rules.push(rule);
-    }
-
-    #[allow(dead_code)]
-    pub fn comment(&self) -> String {
-        format!("httpjail-httpjail_{}", self.jail_id)
+    pub fn set_table(&mut self, table: super::nftables::NFTable) {
+        self.table = Some(table);
     }
 }
 
-impl SystemResource for IPTablesRules {
+impl SystemResource for NFTable {
     fn create(jail_id: &str) -> Result<Self> {
-        // Rules are added separately, not during creation
+        // Table is created separately via set_table
         Ok(Self {
             jail_id: jail_id.to_string(),
-            rules: Vec::new(),
+            table: None,
         })
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        // Rules clean themselves up on drop
-        self.rules.clear();
+        // Table cleans itself up via Drop trait
+        self.table = None;
         Ok(())
     }
 
     fn for_existing(jail_id: &str) -> Self {
-        use super::iptables::IPTablesRule;
-
-        let namespace_name = format!("httpjail_{}", jail_id);
-        let comment = format!("httpjail-{}", namespace_name);
-
-        let mut rules: Vec<IPTablesRule> = Vec::new();
-
-        // Helper to parse iptables -S output lines and create removal rules
-        fn parse_rule_line(_table: Option<&str>, line: &str) -> Option<(String, Vec<String>)> {
-            // Expect lines like: "-A POSTROUTING ..." or "-A FORWARD ..."
-            let mut parts = line.split_whitespace();
-            let dash_a = parts.next()?; // -A
-            if dash_a != "-A" {
-                return None;
-            }
-            let chain = parts.next()?.to_string(); // CHAIN
-            // Collect the remainder as the rule spec
-            let spec: Vec<String> = parts.map(|s| s.to_string()).collect();
-            Some((chain, spec))
-        }
-
-        // NAT table (POSTROUTING) rules
-        if let Ok(out) = Command::new("iptables").args(["-t", "nat", "-S"]).output()
-            && out.status.success()
-        {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                if line.contains(&comment)
-                    && let Some((chain, spec)) = parse_rule_line(Some("nat"), line)
-                    && chain == "POSTROUTING"
-                {
-                    // Convert Vec<String> -> Vec<&str>
-                    let spec_refs: Vec<&str> = spec.iter().map(|s| s.as_str()).collect();
-                    rules.push(IPTablesRule::new_existing(
-                        Some("nat"),
-                        chain.as_str(),
-                        spec_refs,
-                    ));
-                }
-            }
-        }
-
-        // Filter table FORWARD rules
-        if let Ok(out) = Command::new("iptables").args(["-S", "FORWARD"]).output()
-            && out.status.success()
-        {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                if line.contains(&comment)
-                    && let Some((chain, spec)) = parse_rule_line(None, line)
-                    && chain == "FORWARD"
-                {
-                    let spec_refs: Vec<&str> = spec.iter().map(|s| s.as_str()).collect();
-                    rules.push(IPTablesRule::new_existing(None, chain.as_str(), spec_refs));
-                }
-            }
-        }
-
+        // Create wrapper for existing table (will be cleaned up on drop)
+        let table = super::nftables::NFTable::for_existing(jail_id, false);
         Self {
             jail_id: jail_id.to_string(),
-            rules,
+            table: Some(table),
         }
     }
 }

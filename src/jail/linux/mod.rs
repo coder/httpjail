@@ -1,10 +1,10 @@
-mod iptables;
+mod nftables;
 mod resources;
 
 use super::{Jail, JailConfig};
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use resources::{IPTablesRules, NamespaceConfig, NetworkNamespace, VethPair};
+use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
@@ -26,7 +26,7 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// proxy settings.
 ///
 /// ```
-/// [Application in Namespace] ---> [iptables/ip6tables DNAT] ---> [Proxy on Host:HTTP/HTTPS]
+/// [Application in Namespace] ---> [nftables DNAT] ---> [Proxy on Host:HTTP/HTTPS]
 ///            |                                               |
 ///     (169.254.X.2)                                   (169.254.X.1)
 ///            |                                               |
@@ -40,17 +40,17 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// 1. **Network Namespace**: Complete isolation, no interference with host networking
 /// 2. **veth Pair**: Virtual ethernet cable connecting namespace to host
 /// 3. **Private IP Range**: Unique per-jail /30 within 169.254.0.0/16 (link-local)
-/// 4. **iptables DNAT**: Transparent redirection without environment variables
+/// 4. **nftables DNAT**: Transparent redirection without environment variables
 /// 5. **DNS Override**: Handle systemd-resolved incompatibility with namespaces
 ///
 /// ## Cleanup Guarantees
 ///
 /// Resources are cleaned up in priority order:
-/// 1. **Namespace deletion**: Automatically cleans up veth pair and namespace iptables rules
-/// 2. **Host iptables rules**: Tagged with comments for identification and cleanup
+/// 1. **Namespace deletion**: Automatically cleans up veth pair and namespace nftables rules
+/// 2. **Host nftables table**: Atomic cleanup of entire table with all rules
 /// 3. **Config directory**: /etc/netns/<namespace>/ removed if it exists
 ///
-/// The namespace deletion is the critical cleanup - even if host iptables cleanup fails,
+/// The namespace deletion is the critical cleanup - even if host nftables cleanup fails,
 /// the jail is effectively destroyed once the namespace is gone.
 ///
 /// Provides complete network isolation without persistent system state
@@ -59,7 +59,7 @@ pub struct LinuxJail {
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
-    iptables_rules: Option<ManagedResource<IPTablesRules>>,
+    nftables: Option<ManagedResource<NFTable>>,
     // Per-jail computed networking (unique /30 inside 169.254/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -76,7 +76,7 @@ impl LinuxJail {
             namespace: None,
             veth_pair: None,
             namespace_config: None,
-            iptables_rules: None,
+            nftables: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -275,194 +275,50 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Add iptables rules inside the namespace for traffic redirection
+    /// Add nftables rules inside the namespace for traffic redirection
     ///
     /// We use DNAT (Destination NAT) instead of REDIRECT for a critical reason:
     /// - REDIRECT changes the destination to 127.0.0.1 (localhost) within the namespace
     /// - Our proxy runs on the HOST, not inside the namespace
     /// - DNAT allows us to redirect to the host's IP address (169.254.1.1) where the proxy is actually listening
-    /// - This is why we must use DNAT --to-destination 169.254.1.1:8040 instead of REDIRECT --to-port 8040
-    fn setup_namespace_iptables(&self) -> Result<()> {
+    /// - This is why we must use DNAT to 169.254.1.1:8040 instead of REDIRECT
+    fn setup_namespace_nftables(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
+        let host_ip = format_ip(self.host_ip);
 
-        // Convert port numbers to strings to extend their lifetime
-        let http_port_str = self.config.http_proxy_port.to_string();
-        let https_port_str = self.config.https_proxy_port.to_string();
+        // Create namespace-side nftables rules
+        let _table = nftables::NFTable::new_namespace_table(
+            &namespace_name,
+            &host_ip,
+            self.config.http_proxy_port,
+            self.config.https_proxy_port,
+        )?;
 
-        // Format destination addresses for DNAT
-        // The proxy is listening on the host side of the veth pair (169.254.1.1)
-        // We need to redirect traffic to this specific IP:port combination
-        let http_dest = format!("{}:{}", format_ip(self.host_ip), http_port_str);
-        let https_dest = format!("{}:{}", format_ip(self.host_ip), https_port_str);
+        // The table will be cleaned up automatically when it goes out of scope
+        // But we want to keep it alive for the duration of the jail
+        std::mem::forget(_table);
 
-        let rules = vec![
-            // Skip DNS traffic (port 53) - don't redirect it
-            // DNS queries need to reach actual DNS servers (8.8.8.8 or system DNS)
-            // If we redirect DNS to our HTTP proxy, resolution will fail
-            // RETURN means "stop processing this chain and accept the packet as-is"
-            vec![
-                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j",
-                "RETURN",
-            ],
-            vec![
-                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j",
-                "RETURN",
-            ],
-            // Redirect HTTP traffic to proxy on host
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "80",
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &http_dest,
-            ],
-            // Redirect HTTPS traffic to proxy on host
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "443",
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &https_dest,
-            ],
-            // Allow local network traffic
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-d",
-                "169.254.0.0/16",
-                "-j",
-                "RETURN",
-            ],
-        ];
-
-        for rule_args in rules {
-            let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &namespace_name]);
-            cmd.args(&rule_args);
-
-            let output = cmd
-                .output()
-                .context(format!("Failed to execute iptables rule: {:?}", rule_args))?;
-
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to add iptables rule: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        }
-
-        info!(
-            "Set up iptables rules in namespace {} for HTTP:{} HTTPS:{}",
-            namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
-        );
         Ok(())
     }
 
     /// Setup NAT on the host for namespace connectivity
     fn setup_host_nat(&mut self) -> Result<()> {
-        use iptables::IPTablesRule;
+        // Create NFTable resource
+        let mut nftable = ManagedResource::<NFTable>::create(&self.config.jail_id)?;
 
-        // Create IPTablesRules resource
-        let mut iptables = ManagedResource::<IPTablesRules>::create(&self.config.jail_id)?;
+        // Create and add the host-side nftables table
+        if let Some(table_wrapper) = nftable.inner_mut() {
+            let table = nftables::NFTable::new_host_table(&self.config.jail_id, &self.subnet_cidr)?;
+            table_wrapper.set_table(table);
 
-        // Add MASQUERADE rule for namespace traffic with a comment for identification
-        // The comment allows us to find and remove this specific rule during cleanup
-        let comment = format!("httpjail-{}", self.namespace_name());
-
-        // Create and add rules to the resource
-        if let Some(rules) = iptables.inner_mut() {
-            // Create MASQUERADE rule
-            let masq_rule = IPTablesRule::new(
-                Some("nat"),
-                "POSTROUTING",
-                vec![
-                    "-s",
-                    &self.subnet_cidr,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "MASQUERADE",
-                ],
-            )
-            .context("Failed to add MASQUERADE rule")?;
-
-            rules.add_rule(masq_rule);
-
-            // Add explicit ACCEPT rules for namespace traffic in FORWARD chain
-            //
-            // The FORWARD chain controls packets being routed THROUGH this host (not TO/FROM it).
-            // Since we're routing packets between the namespace and the internet, they go through FORWARD.
-            //
-            // Without these rules:
-            // - Default FORWARD policy might be DROP/REJECT
-            // - Other firewall rules might block our namespace subnet
-            // - Docker/Kubernetes/other container tools might have restrictive FORWARD rules
-            //
-            // We use -I (insert) at position 1 to ensure our rules take precedence.
-            // We add comments to make these rules identifiable for cleanup.
-
-            // Forward rule for source traffic
-            let forward_src_rule = IPTablesRule::new(
-                None, // filter table is default
-                "FORWARD",
-                vec![
-                    "-s",
-                    &self.subnet_cidr,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            )
-            .context("Failed to add FORWARD source rule")?;
-
-            rules.add_rule(forward_src_rule);
-
-            // Forward rule for destination traffic
-            let forward_dst_rule = IPTablesRule::new(
-                None, // filter table is default
-                "FORWARD",
-                vec![
-                    "-d",
-                    &self.subnet_cidr,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            )
-            .context("Failed to add FORWARD destination rule")?;
-
-            rules.add_rule(forward_dst_rule);
+            info!(
+                "Set up NAT rules for namespace {} with subnet {}",
+                self.namespace_name(),
+                self.subnet_cidr
+            );
         }
 
-        self.iptables_rules = Some(iptables);
+        self.nftables = Some(nftable);
         Ok(())
     }
 
@@ -493,7 +349,7 @@ impl LinuxJail {
     ///
     /// Even if we tried:
     /// - `ip route add 127.0.0.53/32 via 169.254.1.1` - packets get dropped
-    /// - `iptables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
+    /// - `nftables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
     /// - Disabling rp_filter - doesn't help with loopback addresses
     ///
     /// ## Our Solution
@@ -574,8 +430,8 @@ impl Jail for LinuxJail {
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;
 
-        // Add iptables rules inside namespace
-        self.setup_namespace_iptables()?;
+        // Add nftables rules inside namespace
+        self.setup_namespace_nftables()?;
 
         // Fix DNS if using systemd-resolved
         self.fix_systemd_resolved_dns()?;
@@ -691,7 +547,7 @@ impl Jail for LinuxJail {
         }
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
-        // The jail uses iptables rules to transparently redirect traffic to the proxy,
+        // The jail uses nftables rules to transparently redirect traffic to the proxy,
         // making it work with applications that don't respect proxy environment variables.
 
         let status = cmd
@@ -723,7 +579,7 @@ impl Jail for LinuxJail {
         let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
         let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
         let _config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
-        let _iptables = ManagedResource::<IPTablesRules>::for_existing(jail_id);
+        let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
 
         Ok(())
     }
@@ -738,7 +594,7 @@ impl Clone for LinuxJail {
             namespace: None,
             veth_pair: None,
             namespace_config: None,
-            iptables_rules: None,
+            nftables: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),
