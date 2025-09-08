@@ -43,10 +43,18 @@ impl<J: Jail> ManagedJail<J> {
         })
     }
 
+    /// Public method to trigger orphan cleanup for debugging
+    pub fn debug_cleanup_orphans(&self) -> Result<()> {
+        self.cleanup_orphans()
+    }
+
     /// Scan and cleanup orphaned jails before setup
     fn cleanup_orphans(&self) -> Result<()> {
+        debug!("Starting orphan cleanup scan in {:?}", self.canary_dir);
+
         // Create directory if it doesn't exist
         if !self.canary_dir.exists() {
+            debug!("Canary directory does not exist, creating it");
             fs::create_dir_all(&self.canary_dir).context("Failed to create canary directory")?;
             return Ok(());
         }

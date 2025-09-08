@@ -8,11 +8,8 @@ use resources::{IPTablesRules, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
-/// Linux namespace network configuration constants
-pub const LINUX_NS_HOST_IP: [u8; 4] = [169, 254, 1, 1];
-pub const LINUX_NS_HOST_CIDR: &str = "169.254.1.1/30";
-pub const LINUX_NS_GUEST_CIDR: &str = "169.254.1.2/30";
-pub const LINUX_NS_SUBNET: &str = "169.254.1.0/30";
+// Linux namespace network configuration constants were previously fixed; the
+// implementation now computes unique per‑jail subnets dynamically.
 
 /// Format an IP address array as a string
 pub fn format_ip(ip: [u8; 4]) -> String {
@@ -29,9 +26,9 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// proxy settings.
 ///
 /// ```
-/// [Application in Namespace] ---> [iptables DNAT] ---> [Proxy on Host:8040/8043]
+/// [Application in Namespace] ---> [iptables/ip6tables DNAT] ---> [Proxy on Host:HTTP/HTTPS]
 ///            |                                               |
-///     (169.254.1.2)                                   (169.254.1.1)
+///     (169.254.X.2)                                   (169.254.X.1)
 ///            |                                               |
 ///       [veth_ns] <------- veth pair --------> [veth_host on Host]
 ///            |                                               |
@@ -42,7 +39,7 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 ///
 /// 1. **Network Namespace**: Complete isolation, no interference with host networking
 /// 2. **veth Pair**: Virtual ethernet cable connecting namespace to host
-/// 3. **Private IP Range**: 169.254.1.0/30 (link-local, won't conflict with real networks)
+/// 3. **Private IP Range**: Unique per-jail /30 within 169.254.0.0/16 (link-local)
 /// 4. **iptables DNAT**: Transparent redirection without environment variables
 /// 5. **DNS Override**: Handle systemd-resolved incompatibility with namespaces
 ///
@@ -63,16 +60,27 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
     iptables_rules: Option<ManagedResource<IPTablesRules>>,
+    // Per-jail computed networking (unique /30 inside 169.254/16)
+    host_ip: [u8; 4],
+    host_cidr: String,
+    guest_cidr: String,
+    subnet_cidr: String,
 }
 
 impl LinuxJail {
     pub fn new(config: JailConfig) -> Result<Self> {
+        let (host_ip, host_cidr, guest_cidr, subnet_cidr) =
+            Self::compute_subnet_for_jail(&config.jail_id);
         Ok(Self {
             config,
             namespace: None,
             veth_pair: None,
             namespace_config: None,
             iptables_rules: None,
+            host_ip,
+            host_cidr,
+            guest_cidr,
+            subnet_cidr,
         })
     }
 
@@ -106,6 +114,27 @@ impl LinuxJail {
     fn veth_ns(&self) -> String {
         format!("vn_{}", self.config.jail_id)
     }
+
+    /// Compute a stable unique /30 in 169.254.0.0/16 for this jail
+    /// There are 16384 possible /30 subnets in the /16.
+    fn compute_subnet_for_jail(jail_id: &str) -> ([u8; 4], String, String, String) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        jail_id.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = (h % 16384) as u32; // 0..16383
+        let base = idx * 4; // network base offset within 169.254/16
+        let third = ((base >> 8) & 0xFF) as u8;
+        let fourth = (base & 0xFF) as u8;
+        let network = [169u8, 254u8, third, fourth];
+        let host_ip = [network[0], network[1], network[2], network[3].saturating_add(1)];
+        let guest_ip = [network[0], network[1], network[2], network[3].saturating_add(2)];
+        let host_cidr = format!("{}/30", format_ip(host_ip));
+        let guest_cidr = format!("{}/30", format_ip(guest_ip));
+        let subnet_cidr = format!("{}/30", format_ip(network));
+        (host_ip, host_cidr, guest_cidr, subnet_cidr)
+    }
+
 
     /// Create the network namespace using ManagedResource
     fn create_namespace(&mut self) -> Result<()> {
@@ -155,14 +184,14 @@ impl LinuxJail {
         let veth_ns = self.veth_ns();
 
         // Format the host IP once
-        let host_ip = format_ip(LINUX_NS_HOST_IP);
+        let host_ip = format_ip(self.host_ip);
 
         // Commands to run inside the namespace
         let commands = vec![
             // Bring up loopback
             vec!["ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", LINUX_NS_GUEST_CIDR, "dev", &veth_ns],
+            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
             vec!["ip", "link", "set", &veth_ns, "up"],
             // Add default route pointing to host
             vec!["ip", "route", "add", "default", "via", &host_ip],
@@ -197,7 +226,7 @@ impl LinuxJail {
 
         // Configure host side of veth
         let commands = vec![
-            vec!["addr", "add", LINUX_NS_HOST_CIDR, "dev", &veth_host],
+            vec!["addr", "add", &self.host_cidr, "dev", &veth_host],
             vec!["link", "set", &veth_host, "up"],
         ];
 
@@ -254,8 +283,8 @@ impl LinuxJail {
         // Format destination addresses for DNAT
         // The proxy is listening on the host side of the veth pair (169.254.1.1)
         // We need to redirect traffic to this specific IP:port combination
-        let http_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), http_port_str);
-        let https_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), https_port_str);
+        let http_dest = format!("{}:{}", format_ip(self.host_ip), http_port_str);
+        let https_dest = format!("{}:{}", format_ip(self.host_ip), https_port_str);
 
         let rules = vec![
             // Skip DNS traffic (port 53) - don't redirect it
@@ -316,6 +345,7 @@ impl LinuxJail {
             ],
         ];
 
+
         for rule_args in rules {
             let mut cmd = Command::new("ip");
             cmd.args(["netns", "exec", &namespace_name]);
@@ -359,7 +389,7 @@ impl LinuxJail {
                 "POSTROUTING",
                 vec![
                     "-s",
-                    LINUX_NS_SUBNET,
+                    &self.subnet_cidr,
                     "-m",
                     "comment",
                     "--comment",
@@ -391,7 +421,7 @@ impl LinuxJail {
                 "FORWARD",
                 vec![
                     "-s",
-                    LINUX_NS_SUBNET,
+                    &self.subnet_cidr,
                     "-m",
                     "comment",
                     "--comment",
@@ -410,7 +440,7 @@ impl LinuxJail {
                 "FORWARD",
                 vec![
                     "-d",
-                    LINUX_NS_SUBNET,
+                    &self.subnet_cidr,
                     "-m",
                     "comment",
                     "--comment",
@@ -500,7 +530,9 @@ impl LinuxJail {
             let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
             std::fs::write(
                 &resolv_conf_path,
-                "# Custom DNS for httpjail namespace\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n",
+                "# Custom DNS for httpjail namespace\n\
+nameserver 8.8.8.8\n\
+nameserver 8.8.4.4\n",
             )
             .context("Failed to write namespace-specific resolv.conf")?;
 
@@ -554,85 +586,111 @@ impl Jail for LinuxJail {
             anyhow::bail!("No command specified");
         }
 
-        let namespace_name = self.namespace_name();
+        debug!(
+            "Executing command in namespace {}: {:?}",
+            self.namespace_name(),
+            command
+        );
 
-        // Get original UID for privilege dropping
-        let original_uid = std::env::var("SUDO_UID")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok());
-
-        // Build the command - using ip netns exec to run in namespace
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &namespace_name]);
-
-        // If we have an original UID, use su to drop privileges
-        if let Some(uid) = original_uid {
-            debug!("Dropping privileges to UID {} (from SUDO_UID)", uid);
-            cmd.arg("su");
-            cmd.arg("-");
-
-            // Get username from UID
-            let output = Command::new("id")
-                .args(["-un", &uid.to_string()])
-                .output()
-                .context("Failed to get username from UID")?;
-
-            let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if username.is_empty() {
-                anyhow::bail!("Could not determine username for UID {}", uid);
-            }
-
-            cmd.arg(&username);
-            cmd.arg("-c");
-
-            // Join the command and its arguments with proper escaping
-            let escaped_cmd: Vec<String> = command
-                .iter()
-                .map(|arg| {
-                    if arg.contains(char::is_whitespace) || arg.contains('\'') {
-                        format!("'{}'", arg.replace('\'', "'\\''"))
-                    } else {
-                        arg.clone()
-                    }
-                })
-                .collect();
-            cmd.arg(escaped_cmd.join(" "));
+        // Check if we're running as root and should drop privileges
+        let current_uid = unsafe { libc::getuid() };
+        let target_user = if current_uid == 0 {
+            // Running as root - check for SUDO_USER to drop privileges to original user
+            std::env::var("SUDO_USER").ok()
         } else {
-            // No privilege dropping needed - run command directly
-            cmd.args(command);
+            // Not root - no privilege dropping needed
+            None
+        };
+
+        if let Some(ref user) = target_user {
+            debug!(
+                "Will drop to user '{}' (from SUDO_USER) after entering namespace",
+                user
+            );
         }
 
-        // Add any extra environment variables
+        // Build command: ip netns exec <namespace> <command>
+        // If we need to drop privileges, we wrap with su
+        let mut cmd = Command::new("ip");
+        cmd.args(["netns", "exec", &self.namespace_name()]);
+
+        // When we have environment variables to pass OR need to drop privileges,
+        // use a shell wrapper to ensure proper environment handling
+        if target_user.is_some() || !extra_env.is_empty() {
+            // Build shell command with explicit environment exports
+            let mut shell_command = String::new();
+
+            // Export environment variables explicitly in the shell command
+            for (key, value) in extra_env {
+                // Escape the value for shell safety
+                let escaped_value = value.replace('\'', "'\\''");
+                shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
+            }
+
+            // Add the actual command with proper escaping
+            shell_command.push_str(
+                &command
+                    .iter()
+                    .map(|arg| {
+                        // Simple escaping: wrap in single quotes and escape existing single quotes
+                        if arg.contains('\'') {
+                            format!("\"{}\"", arg.replace('"', "\\\""))
+                        } else {
+                            format!("'{}'", arg)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+
+            if let Some(user) = target_user {
+                // Use su to drop privileges to the original user
+                cmd.arg("su");
+                cmd.arg("-s"); // Specify shell explicitly
+                cmd.arg("/bin/sh"); // Use sh for compatibility
+                cmd.arg("-p"); // Preserve environment
+                cmd.arg(&user); // Username from SUDO_USER
+                cmd.arg("-c"); // Execute command
+                cmd.arg(shell_command);
+            } else {
+                // No privilege dropping but need shell for env vars
+                cmd.arg("sh");
+                cmd.arg("-c");
+                cmd.arg(shell_command);
+            }
+        } else {
+            // No privilege dropping and no env vars, execute directly
+            cmd.arg(&command[0]);
+            for arg in &command[1..] {
+                cmd.arg(arg);
+            }
+        }
+
+        // Set environment variables
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
 
-        debug!(
-            "Executing command in namespace {}: {:?}",
-            namespace_name, command
-        );
-
-        // Execute and get status
-        let output = cmd
-            .output()
-            .context("Failed to execute command in namespace")?;
-
-        // We need to check if the command actually ran
-        if !output.status.success() {
-            // Check if it's a namespace execution failure vs command failure
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Cannot open network namespace")
-                || stderr.contains("No such file or directory")
-            {
-                anyhow::bail!("Network namespace {} not found", namespace_name);
-            }
+        // Preserve SUDO environment variables for consistency with macOS
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            cmd.env("SUDO_USER", sudo_user);
+        }
+        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+            cmd.env("SUDO_UID", sudo_uid);
+        }
+        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
+            cmd.env("SUDO_GID", sudo_gid);
         }
 
-        // Print output (mimicking normal command execution)
-        std::io::Write::write_all(&mut std::io::stdout(), &output.stdout)?;
-        std::io::Write::write_all(&mut std::io::stderr(), &output.stderr)?;
+        // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
+        // The jail uses iptables rules to transparently redirect traffic to the proxy,
+        // making it work with applications that don't respect proxy environment variables.
 
-        Ok(output.status)
+        let status = cmd
+            .status()
+            .context("Failed to execute command in namespace")?;
+
+        Ok(status)
     }
 
     fn cleanup(&self) -> Result<()> {
@@ -673,6 +731,10 @@ impl Clone for LinuxJail {
             veth_pair: None,
             namespace_config: None,
             iptables_rules: None,
+            host_ip: self.host_ip,
+            host_cidr: self.host_cidr.clone(),
+            guest_cidr: self.guest_cidr.clone(),
+            subnet_cidr: self.subnet_cidr.clone(),
         }
     }
 }

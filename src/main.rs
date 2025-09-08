@@ -58,8 +58,12 @@ struct Args {
     #[arg(long = "no-jail-cleanup", hide = true)]
     no_jail_cleanup: bool,
 
+    /// Clean up orphaned jails and exit (for debugging)
+    #[arg(long = "cleanup", hide = true)]
+    cleanup: bool,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required = true)]
+    #[arg(trailing_var_arg = true, required_unless_present = "cleanup")]
     command: Vec<String>,
 }
 
@@ -183,6 +187,89 @@ fn build_rules(args: &Args) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
+/// Direct orphan cleanup without creating jails
+fn cleanup_orphans() -> Result<()> {
+    use anyhow::Context;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+    use tracing::{debug, info};
+
+    let canary_dir = PathBuf::from("/tmp/httpjail");
+    let orphan_timeout = Duration::from_secs(5); // Short timeout to catch recent orphans
+
+    debug!("Starting direct orphan cleanup scan in {:?}", canary_dir);
+
+    // Check if directory exists
+    if !canary_dir.exists() {
+        debug!("Canary directory does not exist, nothing to clean up");
+        return Ok(());
+    }
+
+    // Scan for stale canary files
+    for entry in fs::read_dir(&canary_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Skip if not a file
+        if !path.is_file() {
+            debug!("Skipping non-file: {:?}", path);
+            continue;
+        }
+
+        // Check file age using modification time
+        let metadata = fs::metadata(&path)?;
+        let modified = metadata
+            .modified()
+            .context("Failed to get file modification time")?;
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or(Duration::from_secs(0));
+
+        debug!("Found canary file {:?} with age {:?}", path, age);
+
+        // If file is older than orphan timeout, clean it up
+        if age > orphan_timeout {
+            let jail_id = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            info!(
+                "Found orphaned jail '{}' (age: {:?}), cleaning up",
+                jail_id, age
+            );
+
+            // Call platform-specific cleanup
+            #[cfg(target_os = "linux")]
+            {
+                use httpjail::jail::{Jail, linux::LinuxJail};
+                LinuxJail::cleanup_orphaned(jail_id)?;
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                use httpjail::jail::{Jail, macos::MacOSJail};
+                MacOSJail::cleanup_orphaned(jail_id)?;
+            }
+
+            // Remove canary file after cleanup
+            if let Err(e) = fs::remove_file(&path) {
+                debug!("Failed to remove canary file {:?}: {}", path, e);
+            } else {
+                debug!("Removed canary file: {:?}", path);
+            }
+        } else {
+            debug!(
+                "Canary file {:?} is not old enough to be considered orphaned",
+                path
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -190,6 +277,17 @@ async fn main() -> Result<()> {
     setup_logging(args.verbose);
 
     debug!("Starting httpjail with args: {:?}", args);
+
+    // Handle cleanup flag
+    if args.cleanup {
+        info!("Running orphan cleanup and exiting...");
+
+        // Directly call platform-specific orphan cleanup without creating jails
+        cleanup_orphans()?;
+
+        info!("Cleanup completed successfully");
+        return Ok(());
+    }
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;

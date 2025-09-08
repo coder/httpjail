@@ -239,65 +239,58 @@ impl SystemResource for IPTablesRules {
     }
 
     fn for_existing(jail_id: &str) -> Self {
-        use super::LINUX_NS_SUBNET;
         use super::iptables::IPTablesRule;
 
         let namespace_name = format!("httpjail_{}", jail_id);
         let comment = format!("httpjail-{}", namespace_name);
 
-        // Create temporary IPTablesRule objects for cleanup
-        // Their Drop impl will remove the rules
-        let rules = vec![
-            // MASQUERADE rule
-            IPTablesRule::new_existing(
-                Some("nat"),
-                "POSTROUTING",
-                vec![
-                    "-s",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "MASQUERADE",
-                ],
-            ),
-            // FORWARD source rule
-            IPTablesRule::new_existing(
-                None,
-                "FORWARD",
-                vec![
-                    "-s",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            ),
-            // FORWARD destination rule
-            IPTablesRule::new_existing(
-                None,
-                "FORWARD",
-                vec![
-                    "-d",
-                    LINUX_NS_SUBNET,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "ACCEPT",
-                ],
-            ),
-        ];
+        let mut rules: Vec<IPTablesRule> = Vec::new();
 
-        Self {
-            jail_id: jail_id.to_string(),
-            rules,
+        // Helper to parse iptables -S output lines and create removal rules
+        fn parse_rule_line(_table: Option<&str>, line: &str) -> Option<(String, Vec<String>)> {
+            // Expect lines like: "-A POSTROUTING ..." or "-A FORWARD ..."
+            let mut parts = line.split_whitespace();
+            let dash_a = parts.next()?; // -A
+            if dash_a != "-A" { return None; }
+            let chain = parts.next()?.to_string(); // CHAIN
+            // Collect the remainder as the rule spec
+            let spec: Vec<String> = parts.map(|s| s.to_string()).collect();
+            Some((chain, spec))
         }
+
+        // NAT table (POSTROUTING) rules
+        if let Ok(out) = Command::new("iptables").args(["-t", "nat", "-S"]).output()
+            && out.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if line.contains(&comment)
+                    && let Some((chain, spec)) = parse_rule_line(Some("nat"), line)
+                    && chain == "POSTROUTING"
+                {
+                    // Convert Vec<String> -> Vec<&str>
+                    let spec_refs: Vec<&str> = spec.iter().map(|s| s.as_str()).collect();
+                    rules.push(IPTablesRule::new_existing(Some("nat"), chain.as_str(), spec_refs));
+                }
+            }
+        }
+
+        // Filter table FORWARD rules
+        if let Ok(out) = Command::new("iptables").args(["-S", "FORWARD"]).output()
+            && out.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if line.contains(&comment)
+                    && let Some((chain, spec)) = parse_rule_line(None, line)
+                    && chain == "FORWARD"
+                {
+                    let spec_refs: Vec<&str> = spec.iter().map(|s| s.as_str()).collect();
+                    rules.push(IPTablesRule::new_existing(None, chain.as_str(), spec_refs));
+                }
+            }
+        }
+
+        Self { jail_id: jail_id.to_string(), rules }
     }
 }
