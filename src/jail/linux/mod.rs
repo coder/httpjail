@@ -127,14 +127,23 @@ impl LinuxJail {
         let third = ((base >> 8) & 0xFF) as u8;
         let fourth = (base & 0xFF) as u8;
         let network = [169u8, 254u8, third, fourth];
-        let host_ip = [network[0], network[1], network[2], network[3].saturating_add(1)];
-        let guest_ip = [network[0], network[1], network[2], network[3].saturating_add(2)];
+        let host_ip = [
+            network[0],
+            network[1],
+            network[2],
+            network[3].saturating_add(1),
+        ];
+        let guest_ip = [
+            network[0],
+            network[1],
+            network[2],
+            network[3].saturating_add(2),
+        ];
         let host_cidr = format!("{}/30", format_ip(host_ip));
         let guest_cidr = format!("{}/30", format_ip(guest_ip));
         let subnet_cidr = format!("{}/30", format_ip(network));
         (host_ip, host_cidr, guest_cidr, subnet_cidr)
     }
-
 
     /// Create the network namespace using ManagedResource
     fn create_namespace(&mut self) -> Result<()> {
@@ -344,7 +353,6 @@ impl LinuxJail {
                 "RETURN",
             ],
         ];
-
 
         for rule_args in rules {
             let mut cmd = Command::new("ip");

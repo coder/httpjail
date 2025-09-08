@@ -251,7 +251,9 @@ impl SystemResource for IPTablesRules {
             // Expect lines like: "-A POSTROUTING ..." or "-A FORWARD ..."
             let mut parts = line.split_whitespace();
             let dash_a = parts.next()?; // -A
-            if dash_a != "-A" { return None; }
+            if dash_a != "-A" {
+                return None;
+            }
             let chain = parts.next()?.to_string(); // CHAIN
             // Collect the remainder as the rule spec
             let spec: Vec<String> = parts.map(|s| s.to_string()).collect();
@@ -270,7 +272,11 @@ impl SystemResource for IPTablesRules {
                 {
                     // Convert Vec<String> -> Vec<&str>
                     let spec_refs: Vec<&str> = spec.iter().map(|s| s.as_str()).collect();
-                    rules.push(IPTablesRule::new_existing(Some("nat"), chain.as_str(), spec_refs));
+                    rules.push(IPTablesRule::new_existing(
+                        Some("nat"),
+                        chain.as_str(),
+                        spec_refs,
+                    ));
                 }
             }
         }
@@ -291,6 +297,9 @@ impl SystemResource for IPTablesRules {
             }
         }
 
-        Self { jail_id: jail_id.to_string(), rules }
+        Self {
+            jail_id: jail_id.to_string(),
+            rules,
+        }
     }
 }
