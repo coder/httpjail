@@ -28,6 +28,11 @@ impl NFTable {
         let ruleset = format!(
             r#"
 table ip {} {{
+    chain prerouting {{
+        type filter hook prerouting priority -150; policy accept;
+        iifname "{}" accept comment "httpjail_{} prerouting"
+    }}
+    
     chain postrouting {{
         type nat hook postrouting priority srcnat; policy accept;
         ip saddr {} masquerade comment "httpjail_{}"
@@ -43,6 +48,7 @@ table ip {} {{
         type filter hook input priority -100; policy accept;
         iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
         iifname "{}" udp dport 53 accept comment "httpjail_{} dns"
+        iifname "{}" accept comment "httpjail_{} all"
     }}
     
     chain output {{
@@ -52,6 +58,8 @@ table ip {} {{
 }}
 "#,
             table_name,
+            veth_host,
+            jail_id,
             subnet_cidr,
             jail_id,
             subnet_cidr,
@@ -61,6 +69,8 @@ table ip {} {{
             veth_host,
             http_port,
             https_port,
+            jail_id,
+            veth_host,
             jail_id,
             veth_host,
             jail_id,
