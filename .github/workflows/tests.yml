@@ -82,6 +82,22 @@ jobs:
           ./scripts/debug_tls_env.sh
           sudo ./scripts/debug_tls_env.sh
 
+      - name: Debug network environment (CI only)
+        run: |
+          echo "=== Network Debug Information ==="
+          echo "1. Network interfaces:"
+          ip link show
+          echo ""
+          echo "2. Listening ports:"
+          sudo ss -lntp
+          echo ""
+          echo "3. NFTables rules:"
+          sudo nft list ruleset || echo "No nftables rules"
+          echo ""
+          echo "4. IPTables rules (if any):"
+          sudo iptables -L -v -n || echo "No iptables rules"
+          echo "=== End Network Debug ==="
+
       - name: Run Linux jail integration tests (root variant)
         if: matrix.privilege == 'root'
         run: |

@@ -308,7 +308,12 @@ impl LinuxJail {
 
         // Create and add the host-side nftables table
         if let Some(table_wrapper) = nftable.inner_mut() {
-            let table = nftables::NFTable::new_host_table(&self.config.jail_id, &self.subnet_cidr)?;
+            let table = nftables::NFTable::new_host_table(
+                &self.config.jail_id,
+                &self.subnet_cidr,
+                self.config.http_proxy_port,
+                self.config.https_proxy_port,
+            )?;
             table_wrapper.set_table(table);
 
             info!(

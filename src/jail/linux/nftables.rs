@@ -14,11 +14,17 @@ pub struct NFTable {
 }
 
 impl NFTable {
-    /// Create a host-side nftables table with NAT and forward rules
-    pub fn new_host_table(jail_id: &str, subnet_cidr: &str) -> Result<Self> {
+    /// Create a host-side nftables table with NAT, forward, and input rules
+    pub fn new_host_table(
+        jail_id: &str,
+        subnet_cidr: &str,
+        http_port: u16,
+        https_port: u16,
+    ) -> Result<Self> {
         let table_name = format!("httpjail_{}", jail_id);
+        let veth_host = format!("vh_{}", jail_id);
 
-        // Generate the ruleset for host-side NAT and forwarding
+        // Generate the ruleset for host-side NAT, forwarding, and input acceptance
         let ruleset = format!(
             r#"
 table ip {} {{
@@ -32,9 +38,24 @@ table ip {} {{
         ip saddr {} accept comment "httpjail_{} out"
         ip daddr {} accept comment "httpjail_{} in"
     }}
+    
+    chain input {{
+        type filter hook input priority filter; policy accept;
+        iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
+    }}
 }}
 "#,
-            table_name, subnet_cidr, jail_id, subnet_cidr, jail_id, subnet_cidr, jail_id
+            table_name,
+            subnet_cidr,
+            jail_id,
+            subnet_cidr,
+            jail_id,
+            subnet_cidr,
+            jail_id,
+            veth_host,
+            http_port,
+            https_port,
+            jail_id
         );
 
         debug!("Creating nftables table: {}", table_name);
