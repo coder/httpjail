@@ -48,6 +48,7 @@ jobs:
     name: Linux Tests (${{ matrix.privilege }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         privilege: [root, sudo]
 
@@ -84,8 +85,9 @@ jobs:
       - name: Run Linux jail integration tests (root variant)
         if: matrix.privilege == 'root'
         run: |
-          # Switch to root user and run tests directly
-          sudo su - root -c "cd $GITHUB_WORKSPACE && $(which cargo) nextest run --profile ci --test linux_integration --verbose"
+          # Run tests directly as root (GitHub Actions runner is already non-root)
+          # We need to preserve the environment including cargo/rust paths
+          sudo -E bash -c "cd $GITHUB_WORKSPACE && cargo nextest run --profile ci --test linux_integration --verbose"
 
       - name: Run Linux jail integration tests (sudo variant)
         if: matrix.privilege == 'sudo'
