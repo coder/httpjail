@@ -102,9 +102,6 @@ table ip {} {{
         
         # Redirect HTTPS to proxy
         tcp dport 443 dnat to {}:{}
-        
-        # Skip local network
-        ip daddr 169.254.0.0/16 return
     }}
 }}
 "#,
