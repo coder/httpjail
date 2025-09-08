@@ -96,6 +96,12 @@ jobs:
           echo ""
           echo "4. IPTables rules (if any):"
           sudo iptables -L -v -n || echo "No iptables rules"
+          echo ""
+          echo "5. /etc/netns directory:"
+          sudo ls -la /etc/netns/ 2>/dev/null || echo "No /etc/netns directory"
+          echo ""
+          echo "6. Network namespaces:"
+          sudo ip netns list || echo "No namespaces"
           echo "=== End Network Debug ==="
 
       - name: Run Linux jail integration tests (root variant)

@@ -377,7 +377,17 @@ impl LinuxJail {
 
         // Always create namespace config resource and custom resolv.conf
         // This ensures DNS works in all environments, not just systemd-resolved
-        debug!("Creating namespace-specific resolv.conf for DNS resolution");
+        info!(
+            "Setting up DNS for namespace {} with custom resolv.conf",
+            namespace_name
+        );
+
+        // Ensure /etc/netns directory exists
+        let netns_dir = "/etc/netns";
+        if !std::path::Path::new(netns_dir).exists() {
+            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
+            debug!("Created /etc/netns directory");
+        }
 
         // Create namespace config resource
         self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
@@ -395,10 +405,15 @@ nameserver 8.8.4.4\n",
         )
         .context("Failed to write namespace-specific resolv.conf")?;
 
-        debug!(
-            "Created namespace-specific resolv.conf at {}",
+        info!(
+            "Created namespace-specific resolv.conf at {} with Google DNS servers",
             resolv_conf_path
         );
+
+        // Verify the file was created
+        if !std::path::Path::new(&resolv_conf_path).exists() {
+            anyhow::bail!("Failed to create resolv.conf at {}", resolv_conf_path);
+        }
 
         Ok(())
     }
