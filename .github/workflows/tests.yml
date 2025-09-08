@@ -107,8 +107,9 @@ jobs:
       - name: Run Linux jail integration tests (root variant)
         if: matrix.privilege == 'root'
         run: |
-          # Run tests directly as root (GitHub Actions runner is already non-root)
-          # Use full path to cargo since PATH may not be preserved with sudo
+          # Run diagnostic test first to understand network setup
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration test_jail_network_diagnostics --verbose
+          # Then run all tests
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
       - name: Run Linux jail integration tests (sudo variant)
@@ -116,8 +117,9 @@ jobs:
         run: |
           # Ensure ip netns support is available
           sudo ip netns list || true
-          # Run the Linux-specific jail tests with sudo from regular user
-          # Use full path to cargo and nextest since sudo doesn't preserve PATH
+          # Run diagnostic test first to understand network setup
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration test_jail_network_diagnostics --verbose
+          # Then run all tests
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
   test-weak:
