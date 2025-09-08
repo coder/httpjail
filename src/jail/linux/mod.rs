@@ -364,11 +364,12 @@ impl LinuxJail {
     /// 2. Use public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
     /// 3. These DNS queries go out through our veth pair and work normally
     ///
-    /// **IMPORTANT**: `ip netns exec` automatically bind-mounts files from
-    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace. We create
-    /// /etc/netns/<namespace-name>/resolv.conf with our custom DNS servers,
-    /// which will override /etc/resolv.conf ONLY for processes running in the namespace.
-    /// The host's /etc/resolv.conf remains completely untouched.
+    /// **IMPORTANT**: `ip netns add` automatically bind-mounts files from
+    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace when the namespace
+    /// is created. We MUST create /etc/netns/<namespace-name>/resolv.conf BEFORE
+    /// creating the namespace for this to work. This overrides /etc/resolv.conf
+    /// ONLY for processes running in the namespace. The host's /etc/resolv.conf
+    /// remains completely untouched.
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
     fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
@@ -408,6 +409,10 @@ impl Jail for LinuxJail {
         // Check for root access
         Self::check_root()?;
 
+        // Fix DNS BEFORE creating namespace so bind mount works
+        // The /etc/netns/<namespace>/ directory must exist before namespace creation
+        self.fix_systemd_resolved_dns()?;
+
         // Create network namespace
         self.create_namespace()?;
 
@@ -425,9 +430,6 @@ impl Jail for LinuxJail {
 
         // Add nftables rules inside namespace
         self.setup_namespace_nftables()?;
-
-        // Fix DNS if using systemd-resolved
-        self.fix_systemd_resolved_dns()?;
 
         info!(
             "Linux jail setup complete using namespace {} with HTTP proxy on port {} and HTTPS proxy on port {}",
