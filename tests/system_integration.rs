@@ -631,11 +631,18 @@ pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
              ping -c 1 -W 1 8.8.8.8 2>&1 || true; \
              echo '---'; \
              echo 'Testing proxy ports on detected host IPs:'; \
+             found=0; \
              for host_ip in $(ip route | grep -oE '10\\.99\\.[0-9]+\\.[0-9]+' | grep -v '\\.0$' | sort -u); do \
-                 echo \"Scanning $host_ip for proxy ports...\"; \
-                 for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                     timeout 1 nc -zv $host_ip $port 2>&1 && echo \"Proxy found at $host_ip:$port\" && break 2 || true; \
-                 done; \
+                 if [ $found -eq 0 ]; then \
+                     echo \"Scanning $host_ip for proxy ports...\"; \
+                     for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
+                         if timeout 1 nc -zv $host_ip $port 2>&1; then \
+                             echo \"Proxy found at $host_ip:$port\"; \
+                             found=1; \
+                             break; \
+                         fi; \
+                     done; \
+                 fi; \
              done; \
              echo '---'; \
              echo 'nftables rules in namespace:'; \
