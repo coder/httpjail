@@ -546,75 +546,27 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     );
 }
 
-/// Test network connectivity diagnostics
+/// Test basic network connectivity inside jail
 pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
     P::require_privileges();
 
-    // Run diagnostic commands to understand network setup
+    // Basic connectivity check - verify network is set up
     let mut cmd = httpjail_cmd();
     cmd.arg("-r")
         .arg("allow: .*")
         .arg("--")
         .arg("sh")
         .arg("-c")
-        .arg(
-            r#"echo '=== Network Diagnostics ==='
-echo 'Network interfaces:'
-ip addr show 2>&1
-echo '---'
-echo 'Routing table (full output):'
-ip route show 2>&1
-echo '---'
-echo 'Checking for default route:'
-ip route | grep default || echo 'NO DEFAULT ROUTE FOUND'
-echo '---'
-echo 'Extracting gateway IP from route:'
-ip route | head -1 | awk '{print $3}' || echo 'FAILED TO EXTRACT'
-echo '---'
-echo 'Getting host IP from guest IP:'
-my_ip=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+/30' | cut -d/ -f1)
-echo "My IP: $my_ip"
-if [ -n "$my_ip" ]; then
-    last_octet=$(echo $my_ip | cut -d. -f4)
-    host_octet=$((last_octet - 1))
-    host_ip=$(echo $my_ip | sed "s/\\.[0-9]*$/.$host_octet/")
-    echo "Calculated host IP: $host_ip"
-    echo "Testing connectivity to host..."
-    ping -c 1 -W 1 $host_ip 2>&1 || echo "Ping failed"
-    echo "Scanning host for proxy ports..."
-    for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do
-        if timeout 1 nc -zv $host_ip $port 2>&1; then
-            echo "Found proxy at $host_ip:$port"
-            break
-        fi
-    done
-else
-    echo "Could not find my IP"
-fi
-echo '---'
-echo 'Testing direct curl to http://example.com (should be redirected to proxy):'
-curl -v --max-time 3 http://example.com 2>&1 | head -20 || true
-echo '=== End Diagnostics ==='"#,
-        );
+        .arg("ip route show | grep -q '10.99' && echo 'Network configured' || echo 'Network not configured'");
 
     let output = cmd.output().expect("Failed to execute httpjail");
-
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    println!(
-        "[{}] Network diagnostics stdout:\n{}",
-        P::platform_name(),
-        stdout
+    // Just verify that network namespace has basic setup
+    assert!(
+        stdout.contains("Network configured"),
+        "Network namespace should have basic routing configured"
     );
-    println!(
-        "[{}] Network diagnostics stderr:\n{}",
-        P::platform_name(),
-        stderr
-    );
-
-    // This test is for diagnostics only, check that we got output
-    assert!(!stdout.is_empty(), "Should have diagnostic output");
 }
 
 /// Test DNS resolution works inside the jail
