@@ -127,7 +127,7 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
 
     // Use a timeout to avoid hanging forever in CI
     let mut cmd = httpjail_cmd();
-    cmd.arg("-t")
+    cmd.arg("--timeout")
         .arg("5") // 5 second timeout
         .arg("-r")
         .arg("allow: ifconfig\\.me")
@@ -157,7 +157,7 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("-t")
+    cmd.arg("--timeout")
         .arg("5")
         .arg("-r")
         .arg("allow: ifconfig\\.me")
@@ -190,7 +190,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("-t")
+    cmd.arg("--timeout")
         .arg("5")
         .arg("-r")
         .arg("allow-get: ifconfig\\.me")
@@ -215,7 +215,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
-    cmd.arg("-t")
+    cmd.arg("--timeout")
         .arg("5")
         .arg("-r")
         .arg("allow-get: ifconfig\\.me")
@@ -270,7 +270,7 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("--dry-run")
-        .arg("-t")
+        .arg("--timeout")
         .arg("5")
         .arg("-r")
         .arg("deny: .*") // Deny everything
