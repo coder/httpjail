@@ -57,7 +57,7 @@ fn shell_curl_with_proxy_discovery(cmd: &mut Command, method: &str, url: &str) {
                 # Extract octets and calculate host IP
                 last_octet=$(echo $MY_IP | cut -d. -f4);
                 host_octet=$((last_octet - 1));
-                HOST_IP=$(echo $MY_IP | sed "s/\.[0-9]*$/.$host_octet/");
+                HOST_IP=$(echo $MY_IP | sed "s/\\.[0-9]*$/.$host_octet/");
             fi
         fi
         echo "Host IP detected as: $HOST_IP";
@@ -620,7 +620,7 @@ echo "My IP: $my_ip"
 if [ -n "$my_ip" ]; then
     last_octet=$(echo $my_ip | cut -d. -f4)
     host_octet=$((last_octet - 1))
-    host_ip=$(echo $my_ip | sed "s/\.[0-9]*$/.$host_octet/")
+    host_ip=$(echo $my_ip | sed "s/\\.[0-9]*$/.$host_octet/")
     echo "Calculated host IP: $host_ip"
     echo "Testing connectivity to host..."
     ping -c 1 -W 1 $host_ip 2>&1 || echo "Ping failed"

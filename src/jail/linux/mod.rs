@@ -514,11 +514,11 @@ impl Jail for LinuxJail {
         // Set up veth pair
         self.setup_veth_pair()?;
 
-        // Configure namespace networking
-        self.configure_namespace_networking()?;
-
-        // Configure host networking
+        // Configure host networking FIRST so the veth link is up
         self.configure_host_networking()?;
+
+        // Configure namespace networking after host side is ready
+        self.configure_namespace_networking()?;
 
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;
