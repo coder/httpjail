@@ -138,11 +138,6 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // In CI, if we get 000 (timeout), skip the test
-    if stdout.trim() == "000" && std::env::var("CI").is_ok() {
-        eprintln!("WARNING: Test timed out in CI environment - skipping");
-        return;
-    }
 
     assert_eq!(stdout.trim(), "200", "Request should be allowed");
     assert!(output.status.success());
@@ -164,11 +159,6 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // In CI, if we get 000 (timeout), skip the test
-    if stdout.trim() == "000" && std::env::var("CI").is_ok() {
-        eprintln!("WARNING: Test timed out in CI environment - skipping");
-        return;
-    }
 
     // Should get 403 Forbidden from our proxy
     assert_eq!(stdout.trim(), "403", "Request should be denied");
@@ -193,11 +183,6 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // In CI, if we get 000 (timeout), skip the test
-    if stdout.trim() == "000" && std::env::var("CI").is_ok() {
-        eprintln!("WARNING: GET test timed out in CI environment - skipping");
-        return;
-    }
 
     assert_eq!(stdout.trim(), "200", "GET request should be allowed");
 
@@ -210,11 +195,6 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // In CI, if we get 000 (timeout), skip the test
-    if stdout.trim() == "000" && std::env::var("CI").is_ok() {
-        eprintln!("WARNING: POST test timed out in CI environment - skipping");
-        return;
-    }
 
     assert_eq!(stdout.trim(), "403", "POST request should be denied");
 }
@@ -267,11 +247,6 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // In CI, if we get 000 (timeout), skip the test
-    if stdout.trim() == "000" && std::env::var("CI").is_ok() {
-        eprintln!("WARNING: Test timed out in CI environment - skipping");
-        return;
-    }
 
     // In dry-run mode, even deny rules should not block
     assert_eq!(

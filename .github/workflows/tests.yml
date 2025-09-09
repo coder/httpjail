@@ -45,65 +45,37 @@ jobs:
           cargo nextest run --profile ci --test weak_integration --verbose
 
   test-linux:
-    name: Linux Tests (${{ matrix.privilege }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        privilege: [root, sudo]
+    name: Linux Tests
+    runs-on: [self-hosted, linux]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        run: |
+          if ! command -v cargo-nextest &> /dev/null; then
+            cargo install cargo-nextest --locked
+          fi
 
       - name: Build
-        run: cargo build --verbose
+        run: |
+          source ~/.cargo/env
+          cargo build --verbose
 
       - name: Run unit tests
-        run: cargo nextest run --profile ci --bins --verbose
+        run: |
+          source ~/.cargo/env
+          cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
-        run: cargo nextest run --profile ci --test smoke_test --verbose
-
-      - name: Debug TLS environment
         run: |
-          echo "=== Debugging TLS/Certificate Environment ==="
-          chmod +x scripts/debug_tls_env.sh
-          ./scripts/debug_tls_env.sh
-          sudo ./scripts/debug_tls_env.sh
+          source ~/.cargo/env
+          cargo nextest run --profile ci --test smoke_test --verbose
 
-      - name: Debug DNS in network namespaces
+      - name: Run Linux jail integration tests
         run: |
-          echo "=== Running comprehensive DNS namespace debug ==="
-          sudo bash scripts/debug_namespace_dns.sh
-          echo "=== End DNS Debug ==="#
-
-      - name: Run Linux jail integration tests (root variant)
-        if: matrix.privilege == 'root'
-        run: |
-          # Run diagnostic test first to understand network setup
-          sudo -E $(which cargo) nextest run --profile ci --test linux_integration test_jail_network_diagnostics --verbose
-          # Then run all tests
-          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
-
-      - name: Run Linux jail integration tests (sudo variant)
-        if: matrix.privilege == 'sudo'
-        run: |
-          # Ensure ip netns support is available
-          sudo ip netns list || true
-          # Run diagnostic test first to understand network setup
-          sudo -E $(which cargo) nextest run --profile ci --test linux_integration test_jail_network_diagnostics --verbose
-          # Then run all tests
+          source ~/.cargo/env
+          # Run all tests without CI workarounds since this is a self-hosted runner
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
   test-weak:
