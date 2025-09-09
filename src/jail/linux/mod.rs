@@ -239,11 +239,11 @@ impl LinuxJail {
                         &host_ip,
                     ]);
 
-                    if let Ok(alt_output) = alt_cmd.output() {
-                        if alt_output.status.success() {
-                            info!("Successfully added route using 0.0.0.0/0 format");
-                            continue;
-                        }
+                    if let Ok(alt_output) = alt_cmd.output()
+                        && alt_output.status.success()
+                    {
+                        info!("Successfully added route using 0.0.0.0/0 format");
+                        continue;
                     }
 
                     // Try adding just the gateway route without "default"
