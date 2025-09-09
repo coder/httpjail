@@ -125,13 +125,9 @@ fn curl_https_status_args(cmd: &mut Command, url: &str) {
 pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
-    // Use a timeout to avoid hanging forever in CI
+    // httpjail_cmd() already sets timeout
     let mut cmd = httpjail_cmd();
-    cmd.arg("--timeout")
-        .arg("5") // 5 second timeout
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
     curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
@@ -157,11 +153,7 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("--timeout")
-        .arg("5")
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
@@ -190,11 +182,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("--timeout")
-        .arg("5")
-        .arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--");
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
     curl_http_method_status_args(&mut cmd, "GET", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
@@ -215,11 +203,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
-    cmd.arg("--timeout")
-        .arg("5")
-        .arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--");
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
     curl_http_method_status_args(&mut cmd, "POST", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
@@ -270,8 +254,6 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("--dry-run")
-        .arg("--timeout")
-        .arg("5")
         .arg("-r")
         .arg("deny: .*") // Deny everything
         .arg("--");
