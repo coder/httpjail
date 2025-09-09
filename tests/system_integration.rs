@@ -605,52 +605,43 @@ pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
         .arg("sh")
         .arg("-c")
         .arg(
-            "echo '=== Network Diagnostics ==='; \
-             echo 'Network interfaces:'; \
-             ip addr show 2>&1; \
-             echo '---'; \
-             echo 'Routing table (full output):'; \
-             ip route show 2>&1; \
-             echo '---'; \
-             echo 'Checking for default route:'; \
-             ip route | grep default || echo 'NO DEFAULT ROUTE FOUND'; \
-             echo '---'; \
-             echo 'Extracting gateway IP from route:'; \
-             ip route | head -1 | awk '{print $3}' || echo 'FAILED TO EXTRACT'; \
-             echo '---'; \
-             echo 'All IPs in routing table:'; \
-             ip route | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+' | sort -u; \
-             echo '---'; \
-             echo 'Checking connectivity to possible host IPs:'; \
-             for ip in $(ip route | grep -oE '10\\.99\\.[0-9]+\\.[0-9]+' | sort -u); do \
-                 echo \"Testing $ip...\"; \
-                 ping -c 1 -W 1 $ip 2>&1 && echo \"Host reachable at $ip\" || true; \
-             done; \
-             echo '---'; \
-             echo 'Checking internet connectivity:'; \
-             ping -c 1 -W 1 8.8.8.8 2>&1 || true; \
-             echo '---'; \
-             echo 'Testing proxy ports on detected host IPs:'; \
-             found=0; \
-             for host_ip in $(ip route | grep -oE '10\\.99\\.[0-9]+\\.[0-9]+' | grep -v '\\.0$' | sort -u); do \
-                 if [ $found -eq 0 ]; then \
-                     echo \"Scanning $host_ip for proxy ports...\"; \
-                     for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                         if timeout 1 nc -zv $host_ip $port 2>&1; then \
-                             echo \"Proxy found at $host_ip:$port\"; \
-                             found=1; \
-                             break; \
-                         fi; \
-                     done; \
-                 fi; \
-             done; \
-             echo '---'; \
-             echo 'nftables rules in namespace:'; \
-             nft list ruleset 2>&1 || echo 'nft not available or no rules'; \
-             echo '---'; \
-             echo 'Testing direct curl to http://example.com (should be redirected to proxy):'; \
-             curl -v --max-time 3 http://example.com 2>&1 | head -20 || true; \
-             echo '=== End Diagnostics ==='",
+            r#"echo '=== Network Diagnostics ==='
+echo 'Network interfaces:'
+ip addr show 2>&1
+echo '---'
+echo 'Routing table (full output):'
+ip route show 2>&1
+echo '---'
+echo 'Checking for default route:'
+ip route | grep default || echo 'NO DEFAULT ROUTE FOUND'
+echo '---'
+echo 'Extracting gateway IP from route:'
+ip route | head -1 | awk '{print $3}' || echo 'FAILED TO EXTRACT'
+echo '---'
+echo 'Getting host IP from guest IP:'
+my_ip=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+/30' | cut -d/ -f1)
+echo "My IP: $my_ip"
+if [ -n "$my_ip" ]; then
+    last_octet=$(echo $my_ip | cut -d. -f4)
+    host_octet=$((last_octet - 1))
+    host_ip=$(echo $my_ip | sed "s/\.[0-9]*$/.$host_octet/")
+    echo "Calculated host IP: $host_ip"
+    echo "Testing connectivity to host..."
+    ping -c 1 -W 1 $host_ip 2>&1 || echo "Ping failed"
+    echo "Scanning host for proxy ports..."
+    for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do
+        if timeout 1 nc -zv $host_ip $port 2>&1; then
+            echo "Found proxy at $host_ip:$port"
+            break
+        fi
+    done
+else
+    echo "Could not find my IP"
+fi
+echo '---'
+echo 'Testing direct curl to http://example.com (should be redirected to proxy):'
+curl -v --max-time 3 http://example.com 2>&1 | head -20 || true
+echo '=== End Diagnostics ==='"#,
         );
 
     let output = cmd.output().expect("Failed to execute httpjail");
