@@ -15,6 +15,9 @@ pub struct NFTable {
 
 impl NFTable {
     /// Create a host-side nftables table with NAT, forward, and input rules
+    ///
+    /// Note: We use numeric priorities instead of named ones (srcnat, dstnat) for
+    /// compatibility with older nftables versions (< 0.9.6)
     pub fn new_host_table(
         jail_id: &str,
         subnet_cidr: &str,
@@ -34,7 +37,7 @@ table ip {} {{
     }}
     
     chain postrouting {{
-        type nat hook postrouting priority srcnat; policy accept;
+        type nat hook postrouting priority 100; policy accept;
         ip saddr {} masquerade comment "httpjail_{}"
     }}
     
@@ -132,7 +135,7 @@ table ip {} {{
             r#"
 table ip {} {{
     chain output {{
-        type nat hook output priority dstnat; policy accept;
+        type nat hook output priority -100; policy accept;
         
         # Skip DNS traffic
         udp dport 53 return
