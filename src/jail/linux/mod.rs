@@ -511,13 +511,31 @@ nameserver 8.8.4.4\n",
             .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
             .output();
 
-        if let Ok(output) = check_cmd {
-            let content = String::from_utf8_lossy(&output.stdout);
-            if content.contains("nameserver") && !content.contains("127.0.0.53") {
-                // DNS looks good - has nameserver that's not systemd-resolved
-                debug!("DNS already configured in namespace {}", namespace_name);
-                return Ok(());
+        let needs_fix = if let Ok(output) = check_cmd {
+            if !output.status.success() {
+                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
+                true
+            } else {
+                let content = String::from_utf8_lossy(&output.stdout);
+                // Check if it's pointing to systemd-resolved or is empty
+                if content.is_empty() || content.contains("127.0.0.53") {
+                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
+                    true
+                } else if content.contains("nameserver") {
+                    info!("DNS already configured in namespace {}", namespace_name);
+                    false
+                } else {
+                    info!("No nameserver found in namespace resolv.conf, will fix");
+                    true
+                }
             }
+        } else {
+            info!("Failed to check DNS in namespace, will attempt fix");
+            true
+        };
+
+        if !needs_fix {
+            return Ok(());
         }
 
         // DNS not working, try to fix it by copying a working resolv.conf
@@ -527,31 +545,31 @@ nameserver 8.8.4.4\n",
         );
 
         // Create a temporary resolv.conf with public DNS
-        let temp_resolv = "/tmp/httpjail_resolv.conf";
+        let temp_resolv = format!("/tmp/httpjail_resolv_{}.conf", &namespace_name);
         std::fs::write(
-            temp_resolv,
+            &temp_resolv,
             "# Temporary DNS for httpjail namespace\n\
              nameserver 8.8.8.8\n\
              nameserver 8.8.4.4\n\
              nameserver 1.1.1.1\n",
         )?;
 
-        // Copy it into the namespace
-        let copy_cmd = Command::new("ip")
+        // First, try to directly write to /etc/resolv.conf in the namespace using echo
+        let write_cmd = Command::new("ip")
             .args([
                 "netns",
                 "exec",
                 &namespace_name,
                 "sh",
                 "-c",
-                &format!("cat {} > /etc/resolv.conf", temp_resolv),
+                "echo -e 'nameserver 8.8.8.8\\nnameserver 8.8.4.4\\nnameserver 1.1.1.1' > /etc/resolv.conf",
             ])
             .output();
 
-        if let Ok(output) = copy_cmd {
+        if let Ok(output) = write_cmd {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to copy resolv.conf into namespace: {}", stderr);
+                warn!("Failed to write resolv.conf into namespace: {}", stderr);
 
                 // Try another approach - mount bind
                 let mount_cmd = Command::new("ip")
@@ -561,7 +579,7 @@ nameserver 8.8.4.4\n",
                         &namespace_name,
                         "mount",
                         "--bind",
-                        temp_resolv,
+                        &temp_resolv,
                         "/etc/resolv.conf",
                     ])
                     .output();
@@ -569,15 +587,35 @@ nameserver 8.8.4.4\n",
                 if let Ok(mount_output) = mount_cmd {
                     if mount_output.status.success() {
                         info!("Successfully bind-mounted resolv.conf in namespace");
+                    } else {
+                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
+                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
+
+                        // Last resort - try copying the file content
+                        let cp_cmd = Command::new("cp")
+                            .args([
+                                &temp_resolv,
+                                &format!(
+                                    "/proc/self/root/etc/netns/{}/resolv.conf",
+                                    namespace_name
+                                ),
+                            ])
+                            .output();
+
+                        if let Ok(cp_output) = cp_cmd {
+                            if cp_output.status.success() {
+                                info!("Successfully copied resolv.conf via /proc");
+                            }
+                        }
                     }
                 }
             } else {
-                info!("Successfully copied resolv.conf into namespace");
+                info!("Successfully wrote resolv.conf into namespace");
             }
         }
 
         // Clean up temp file
-        let _ = std::fs::remove_file(temp_resolv);
+        let _ = std::fs::remove_file(&temp_resolv);
 
         Ok(())
     }
