@@ -44,20 +44,19 @@ fn shell_curl_with_proxy_discovery(cmd: &mut Command, method: &str, url: &str) {
     let script = format!(
         r#"
         echo 'Testing {} request to {}...';
-        # Get the actual gateway IP (host side of veth) - try multiple methods
-        HOST_IP=$(ip route | grep -E 'default|0\.0\.0\.0/0|0\.0\.0\.0/1' | head -1 | grep -oE 'via [0-9.]+' | awk '{{print $2}}' || true);
+        # Get the actual gateway IP (host side of veth) - simplified approach
+        # First try to get from default route
+        HOST_IP=$(ip route | grep default | awk '{{print $3}}');
+        # If empty, get any IP after 'via'
         if [ -z "$HOST_IP" ]; then
-            # Try to extract from any via route
-            HOST_IP=$(ip route | grep -oE 'via [0-9.]+' | head -1 | awk '{{print $2}}' || true);
+            HOST_IP=$(ip route | awk '/via/ {{print $3; exit}}');
         fi
+        # If still empty, calculate from our IP
         if [ -z "$HOST_IP" ]; then
-            # Last resort: calculate from our own IP (we're at .2, host is at .1 in /30 subnet)
-            MY_IP=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+/30' | cut -d/ -f1);
+            MY_IP=$(ip addr | awk '/10\.99\.[0-9]+\.[0-9]+\/30/ {{print $2; exit}}' | cut -d/ -f1);
             if [ -n "$MY_IP" ]; then
-                # Extract octets and calculate host IP
-                last_octet=$(echo $MY_IP | cut -d. -f4);
-                host_octet=$((last_octet - 1));
-                HOST_IP=$(echo $MY_IP | sed "s/\\.[0-9]*$/.$host_octet/");
+                # We're at .2, host is at .1
+                HOST_IP=$(echo "$MY_IP" | awk -F. '{{print $1"."$2"."$3"."($4-1)}}');
             fi
         fi
         echo "Host IP detected as: $HOST_IP";
