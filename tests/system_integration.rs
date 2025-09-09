@@ -126,12 +126,8 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("-v")
-        .arg("-v") // Extra verbose for debugging
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--");
-    shell_curl_with_proxy_discovery(&mut cmd, "GET", "http://ifconfig.me");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -141,13 +137,7 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // Extract just the status code (last 3 digits)
-    let status_code = stdout.trim().split_whitespace().last().unwrap_or("000");
-    assert_eq!(
-        status_code, "200",
-        "Request should be allowed. Full output: {}",
-        stdout
-    );
+    assert_eq!(stdout.trim(), "200", "Request should be allowed");
     assert!(output.status.success());
 }
 
@@ -156,12 +146,8 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     P::require_privileges();
 
     let mut cmd = httpjail_cmd();
-    cmd.arg("-v")
-        .arg("-v") // Extra verbose for debugging
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("--");
-    shell_curl_with_proxy_discovery(&mut cmd, "GET", "http://example.com");
+    cmd.arg("-r").arg("allow: ifconfig\\.me").arg("--");
+    curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -171,13 +157,9 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-    // Extract just the status code (last 3 digits)
-    let status_code = stdout.trim().split_whitespace().last().unwrap_or("000");
-    assert_eq!(
-        status_code, "403",
-        "Request should be denied. Full output: {}",
-        stdout
-    );
+    // Should get 403 Forbidden from our proxy
+    assert_eq!(stdout.trim(), "403", "Request should be denied");
+    // curl itself should succeed (it got a response)
     assert!(output.status.success());
 }
 
@@ -187,27 +169,8 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 
     // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("-v")
-        .arg("-v")
-        .arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg(
-            "echo 'Testing GET request...'; \
-             # Find the actual proxy port from environment or scan \
-             for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                 if timeout 1 nc -zv 10.99.0.1 $port 2>/dev/null; then \
-                     echo \"Found proxy on port $port\"; \
-                     # Try curl with explicit proxy \
-                     curl -X GET -s -o /dev/null -w '%{http_code}' -x http://10.99.0.1:$port http://ifconfig.me && exit 0; \
-                 fi; \
-             done; \
-             # If no proxy found, try the transparent redirect \
-             echo 'Trying transparent redirect...'; \
-             curl -X GET -s -o /dev/null -w '%{http_code}' --max-time 10 http://ifconfig.me",
-        );
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
+    curl_http_method_status_args(&mut cmd, "GET", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -216,54 +179,17 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     if !stderr.is_empty() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-
-    // Extract just the status code (last 3 digits)
-    let status_code = stdout.trim().split_whitespace().last().unwrap_or("000");
-    assert_eq!(
-        status_code, "200",
-        "GET request should be allowed. Full output: {}",
-        stdout
-    );
+    assert_eq!(stdout.trim(), "200", "GET request should be allowed");
 
     // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
-    cmd.arg("-v")
-        .arg("-v")
-        .arg("-r")
-        .arg("allow-get: ifconfig\\.me")
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg(
-            "echo 'Testing POST request...'; \
-             # Find the actual proxy port from environment or scan \
-             for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                 if timeout 1 nc -zv 10.99.0.1 $port 2>/dev/null; then \
-                     echo \"Found proxy on port $port\"; \
-                     # Try curl with explicit proxy \
-                     curl -X POST -s -o /dev/null -w '%{http_code}' -x http://10.99.0.1:$port http://ifconfig.me && exit 0; \
-                 fi; \
-             done; \
-             # If no proxy found, try the transparent redirect \
-             echo 'Trying transparent redirect...'; \
-             curl -X POST -s -o /dev/null -w '%{http_code}' --max-time 10 http://ifconfig.me",
-        );
+    cmd.arg("-r").arg("allow-get: ifconfig\\.me").arg("--");
+    curl_http_method_status_args(&mut cmd, "POST", "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.is_empty() {
-        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
-    }
-
-    // Extract just the status code (last 3 digits)
-    let status_code = stdout.trim().split_whitespace().last().unwrap_or("000");
-    assert_eq!(
-        status_code, "403",
-        "POST request should be denied. Full output: {}",
-        stdout
-    );
+    assert_eq!(stdout.trim(), "403", "POST request should be denied");
 }
 
 /// Test log-only mode
@@ -301,27 +227,10 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("--dry-run")
-        .arg("-v")
-        .arg("-v") // Extra verbose for debugging
         .arg("-r")
         .arg("deny: .*") // Deny everything
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg(
-            "echo 'Testing proxy connectivity in dry-run mode...'; \
-             # Find the actual proxy port from environment or scan \
-             for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                 if timeout 1 nc -zv 10.99.0.1 $port 2>/dev/null; then \
-                     echo \"Found proxy on port $port\"; \
-                     # Try curl with explicit proxy \
-                     curl -s -o /dev/null -w '%{http_code}' -x http://10.99.0.1:$port http://ifconfig.me && exit 0; \
-                 fi; \
-             done; \
-             # If no proxy found, try the transparent redirect \
-             echo 'Trying transparent redirect...'; \
-             curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://ifconfig.me",
-        );
+        .arg("--");
+    curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");
 
@@ -330,14 +239,11 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
     if !stderr.is_empty() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-
-    // Extract just the status code (last 3 digits)
-    let status_code = stdout.trim().split_whitespace().last().unwrap_or("000");
     // In dry-run mode, even deny rules should not block
     assert_eq!(
-        status_code, "200",
-        "Request should be allowed in dry-run mode. Full output: {}",
-        stdout
+        stdout.trim(),
+        "200",
+        "Request should be allowed in dry-run mode"
     );
     assert!(output.status.success());
 }
