@@ -44,18 +44,38 @@ fn shell_curl_with_proxy_discovery(cmd: &mut Command, method: &str, url: &str) {
     let script = format!(
         r#"
         echo 'Testing {} request to {}...';
-        # Get the actual gateway IP (host side of veth)
-        HOST_IP=$(ip route | grep default | awk '{{print $3}}');
+        # Get the actual gateway IP (host side of veth) - try multiple methods
+        HOST_IP=$(ip route | grep default | awk '{{print $3}}' || true);
+        if [ -z "$HOST_IP" ]; then
+            # If no default route, try to extract gateway from first route line
+            HOST_IP=$(ip route | head -1 | grep -oE 'via [0-9.]+' | awk '{{print $2}}' || true);
+        fi
+        if [ -z "$HOST_IP" ]; then
+            # Last resort: look for any 10.99.x.x IP that ends in .1, .5, .9, etc (host IPs in /30 subnets)
+            # In a /30 subnet, host is at offset 1: .1, .5, .9, .13, .17, .21, .25, .29, .33, .37, .41, .45, .49, .53, .57, .61, .65, .69, .73, .77, .81, .85, .89, .93, .97...
+            HOST_IP=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+' | while read ip; do
+                last_octet=$(echo $ip | cut -d. -f4);
+                # Check if it's a guest IP (offset 2 in /30: .2, .6, .10, .14, .18, .22, .26, .30...)
+                if [ $((last_octet % 4)) -eq 2 ]; then
+                    # Calculate host IP (guest IP - 1)
+                    host_octet=$((last_octet - 1));
+                    echo $ip | sed "s/\.[0-9]*$/.$host_octet/";
+                    break;
+                fi
+            done);
+        fi
         echo "Host IP detected as: $HOST_IP";
         
-        # Find the actual proxy port
-        for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do
-            if timeout 1 nc -zv "$HOST_IP" $port 2>/dev/null; then
-                echo "Found proxy on port $port";
-                # Try curl with explicit proxy
-                curl -X {} -s -o /dev/null -w '%{{http_code}}' -x http://"$HOST_IP":$port {} && exit 0;
-            fi;
-        done;
+        if [ -n "$HOST_IP" ]; then
+            # Find the actual proxy port
+            for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do
+                if timeout 1 nc -zv "$HOST_IP" $port 2>/dev/null; then
+                    echo "Found proxy on port $port";
+                    # Try curl with explicit proxy
+                    curl -X {} -s -o /dev/null -w '%{{http_code}}' -x http://"$HOST_IP":$port {} && exit 0;
+                fi;
+            done;
+        fi
         
         # If no proxy found, try the transparent redirect
         echo 'No proxy found via scanning, trying transparent redirect...';
@@ -589,21 +609,33 @@ pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
              echo 'Network interfaces:'; \
              ip addr show 2>&1; \
              echo '---'; \
-             echo 'Routing table:'; \
+             echo 'Routing table (full output):'; \
              ip route show 2>&1; \
              echo '---'; \
-             echo 'Checking connectivity to host veth (should be 10.99.X.1):'; \
-             ip route get 10.99.0.1 2>&1 || true; \
-             for ip in 10.99.0.1 10.99.1.1 10.99.2.1 10.99.3.1; do \
-                 ping -c 1 -W 1 $ip 2>&1 && echo \"Host reachable at $ip\" && break || true; \
+             echo 'Checking for default route:'; \
+             ip route | grep default || echo 'NO DEFAULT ROUTE FOUND'; \
+             echo '---'; \
+             echo 'Extracting gateway IP from route:'; \
+             ip route | head -1 | awk '{print $3}' || echo 'FAILED TO EXTRACT'; \
+             echo '---'; \
+             echo 'All IPs in routing table:'; \
+             ip route | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+' | sort -u; \
+             echo '---'; \
+             echo 'Checking connectivity to possible host IPs:'; \
+             for ip in $(ip route | grep -oE '10\\.99\\.[0-9]+\\.[0-9]+' | sort -u); do \
+                 echo \"Testing $ip...\"; \
+                 ping -c 1 -W 1 $ip 2>&1 && echo \"Host reachable at $ip\" || true; \
              done; \
              echo '---'; \
              echo 'Checking internet connectivity:'; \
              ping -c 1 -W 1 8.8.8.8 2>&1 || true; \
              echo '---'; \
-             echo 'Testing proxy ports on host (scanning common ports):'; \
-             for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
-                 timeout 1 nc -zv 10.99.0.1 $port 2>&1 && echo \"Port $port is open\" && break || true; \
+             echo 'Testing proxy ports on detected host IPs:'; \
+             for host_ip in $(ip route | grep -oE '10\\.99\\.[0-9]+\\.[0-9]+' | grep -v '\\.0$' | sort -u); do \
+                 echo \"Scanning $host_ip for proxy ports...\"; \
+                 for port in 8000 8001 8002 8003 8004 8005 8006 8007 8008 8009 8100 8200 8300 8400 8500 8600 8700 8800 8900; do \
+                     timeout 1 nc -zv $host_ip $port 2>&1 && echo \"Proxy found at $host_ip:$port\" && break 2 || true; \
+                 done; \
              done; \
              echo '---'; \
              echo 'nftables rules in namespace:'; \
