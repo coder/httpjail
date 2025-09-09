@@ -49,9 +49,16 @@ jobs:
     runs-on: [self-hosted, linux]
 
     steps:
+      - name: Fix permissions from previous runs
+        run: |
+          # Clean up any files left from previous sudo runs before checkout
+          if [ -d /home/ammar/actions-runner/_work/httpjail ]; then
+            sudo chown -R $(whoami):$(whoami) /home/ammar/actions-runner/_work/httpjail || true
+          fi
+
       - uses: actions/checkout@v4
 
-      - name: Fix permissions from previous runs
+      - name: Fix permissions on current directory
         run: |
           # Clean up any files left from previous sudo runs
           if [ -d target ]; then
