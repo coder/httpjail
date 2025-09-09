@@ -602,10 +602,10 @@ nameserver 8.8.4.4\n",
                             ])
                             .output();
 
-                        if let Ok(cp_output) = cp_cmd {
-                            if cp_output.status.success() {
-                                info!("Successfully copied resolv.conf via /proc");
-                            }
+                        if let Ok(cp_output) = cp_cmd
+                            && cp_output.status.success()
+                        {
+                            info!("Successfully copied resolv.conf via /proc");
                         }
                     }
                 }
