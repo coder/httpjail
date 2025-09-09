@@ -138,7 +138,6 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-
     assert_eq!(stdout.trim(), "200", "Request should be allowed");
     assert!(output.status.success());
 }
@@ -158,7 +157,6 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
     if !stderr.is_empty() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-
 
     // Should get 403 Forbidden from our proxy
     assert_eq!(stdout.trim(), "403", "Request should be denied");
@@ -183,7 +181,6 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
 
-
     assert_eq!(stdout.trim(), "200", "GET request should be allowed");
 
     // Test 2: Deny POST to same URL (ifconfig.me)
@@ -194,7 +191,6 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     let output = cmd.output().expect("Failed to execute httpjail");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-
 
     assert_eq!(stdout.trim(), "403", "POST request should be denied");
 }
@@ -246,7 +242,6 @@ pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
     if !stderr.is_empty() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-
 
     // In dry-run mode, even deny rules should not block
     assert_eq!(

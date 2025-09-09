@@ -53,6 +53,7 @@ jobs:
 
       - name: Install nextest
         run: |
+          source ~/.cargo/env
           if ! command -v cargo-nextest &> /dev/null; then
             cargo install cargo-nextest --locked
           fi
