@@ -222,67 +222,6 @@ impl LinuxJail {
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                // Special handling for route add failures - try alternative formats
-                if cmd_args.len() > 2 && cmd_args[1] == "route" && cmd_args[2] == "add" {
-                    warn!(
-                        "Default route command failed: {}. Trying alternative formats...",
-                        stderr
-                    );
-
-                    // Try adding route with explicit 0.0.0.0/0
-                    let mut alt_cmd = Command::new("ip");
-                    alt_cmd.args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "ip",
-                        "route",
-                        "add",
-                        "0.0.0.0/0",
-                        "via",
-                        &host_ip,
-                    ]);
-
-                    if let Ok(alt_output) = alt_cmd.output()
-                        && alt_output.status.success()
-                    {
-                        info!("Successfully added route using 0.0.0.0/0 format");
-                        continue;
-                    }
-
-                    // Try adding just the gateway route without "default"
-                    let mut gw_cmd = Command::new("ip");
-                    gw_cmd.args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "ip",
-                        "route",
-                        "add",
-                        "0.0.0.0/1",
-                        "via",
-                        &host_ip,
-                    ]);
-                    let _ = gw_cmd.output();
-
-                    let mut gw_cmd2 = Command::new("ip");
-                    gw_cmd2.args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "ip",
-                        "route",
-                        "add",
-                        "128.0.0.0/1",
-                        "via",
-                        &host_ip,
-                    ]);
-                    let _ = gw_cmd2.output();
-
-                    info!("Added split default routes (0.0.0.0/1 and 128.0.0.0/1) as fallback");
-                    continue;
-                }
-
                 anyhow::bail!(
                     "Failed to configure namespace networking ({}): {}",
                     cmd_args.join(" "),
