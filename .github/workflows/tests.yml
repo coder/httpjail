@@ -51,6 +51,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fix permissions from previous runs
+        run: |
+          # Clean up any files left from previous sudo runs
+          if [ -d target ]; then
+            sudo chown -R $(whoami):$(whoami) target || true
+          fi
+          if [ -d ~/.cargo/registry ]; then
+            sudo chown -R $(whoami):$(whoami) ~/.cargo/registry || true
+          fi
+
       - name: Install nextest
         run: |
           source ~/.cargo/env
@@ -78,6 +88,13 @@ jobs:
           source ~/.cargo/env
           # Run all tests without CI workarounds since this is a self-hosted runner
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
+
+      - name: Fix permissions after tests
+        if: always()
+        run: |
+          # Fix ownership of files created by sudo during tests
+          sudo chown -R $(whoami):$(whoami) target || true
+          sudo chown -R $(whoami):$(whoami) ~/.cargo/registry || true
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
