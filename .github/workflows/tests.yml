@@ -82,27 +82,11 @@ jobs:
           ./scripts/debug_tls_env.sh
           sudo ./scripts/debug_tls_env.sh
 
-      - name: Debug network environment (CI only)
+      - name: Debug DNS in network namespaces
         run: |
-          echo "=== Network Debug Information ==="
-          echo "1. Network interfaces:"
-          ip link show
-          echo ""
-          echo "2. Listening ports:"
-          sudo ss -lntp
-          echo ""
-          echo "3. NFTables rules:"
-          sudo nft list ruleset || echo "No nftables rules"
-          echo ""
-          echo "4. IPTables rules (if any):"
-          sudo iptables -L -v -n || echo "No iptables rules"
-          echo ""
-          echo "5. /etc/netns directory:"
-          sudo ls -la /etc/netns/ 2>/dev/null || echo "No /etc/netns directory"
-          echo ""
-          echo "6. Network namespaces:"
-          sudo ip netns list || echo "No namespaces"
-          echo "=== End Network Debug ==="
+          echo "=== Running comprehensive DNS namespace debug ==="
+          sudo bash scripts/debug_namespace_dns.sh
+          echo "=== End DNS Debug ==="#
 
       - name: Run Linux jail integration tests (root variant)
         if: matrix.privilege == 'root'
