@@ -52,8 +52,10 @@ jobs:
       - name: Fix permissions from previous runs
         run: |
           # Clean up any files left from previous sudo runs before checkout
-          if [ -d /home/ammar/actions-runner/_work/httpjail ]; then
-            sudo chown -R $(whoami):$(whoami) /home/ammar/actions-runner/_work/httpjail || true
+          # Use GITHUB_WORKSPACE parent directory or current working directory
+          WORK_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
+          if [ -d "$WORK_DIR" ]; then
+            sudo chown -R $(whoami):$(whoami) "$WORK_DIR" || true
           fi
 
       - uses: actions/checkout@v4
