@@ -98,13 +98,6 @@ jobs:
           # Run all tests without CI workarounds since this is a self-hosted runner
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
-      - name: Fix permissions after tests
-        if: always()
-        run: |
-          # Fix ownership of files created by sudo during tests
-          sudo chown -R $(whoami):$(whoami) target || true
-          sudo chown -R $(whoami):$(whoami) ~/.cargo/registry || true
-
   test-weak:
     name: Weak Mode Integration Tests (Linux)
     runs-on: ubuntu-latest
