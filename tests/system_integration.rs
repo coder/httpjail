@@ -45,24 +45,20 @@ fn shell_curl_with_proxy_discovery(cmd: &mut Command, method: &str, url: &str) {
         r#"
         echo 'Testing {} request to {}...';
         # Get the actual gateway IP (host side of veth) - try multiple methods
-        HOST_IP=$(ip route | grep default | awk '{{print $3}}' || true);
+        HOST_IP=$(ip route | grep -E 'default|0\.0\.0\.0/0|0\.0\.0\.0/1' | head -1 | grep -oE 'via [0-9.]+' | awk '{{print $2}}' || true);
         if [ -z "$HOST_IP" ]; then
-            # If no default route, try to extract gateway from first route line
-            HOST_IP=$(ip route | head -1 | grep -oE 'via [0-9.]+' | awk '{{print $2}}' || true);
+            # Try to extract from any via route
+            HOST_IP=$(ip route | grep -oE 'via [0-9.]+' | head -1 | awk '{{print $2}}' || true);
         fi
         if [ -z "$HOST_IP" ]; then
-            # Last resort: look for any 10.99.x.x IP that ends in .1, .5, .9, etc (host IPs in /30 subnets)
-            # In a /30 subnet, host is at offset 1: .1, .5, .9, .13, .17, .21, .25, .29, .33, .37, .41, .45, .49, .53, .57, .61, .65, .69, .73, .77, .81, .85, .89, .93, .97...
-            HOST_IP=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+' | while read ip; do
-                last_octet=$(echo $ip | cut -d. -f4);
-                # Check if it's a guest IP (offset 2 in /30: .2, .6, .10, .14, .18, .22, .26, .30...)
-                if [ $((last_octet % 4)) -eq 2 ]; then
-                    # Calculate host IP (guest IP - 1)
-                    host_octet=$((last_octet - 1));
-                    echo $ip | sed "s/\.[0-9]*$/.$host_octet/";
-                    break;
-                fi
-            done);
+            # Last resort: calculate from our own IP (we're at .2, host is at .1 in /30 subnet)
+            MY_IP=$(ip addr show | grep -oE '10\.99\.[0-9]+\.[0-9]+/30' | cut -d/ -f1);
+            if [ -n "$MY_IP" ]; then
+                # Extract octets and calculate host IP
+                last_octet=$(echo $MY_IP | cut -d. -f4);
+                host_octet=$((last_octet - 1));
+                HOST_IP=$(echo $MY_IP | sed "s/\.[0-9]*$/.$host_octet/");
+            fi
         fi
         echo "Host IP detected as: $HOST_IP";
         
