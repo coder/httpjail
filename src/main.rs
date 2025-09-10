@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "httpjail")]
-#[command(version, about, long_about = None)]
+#[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
     /// Rules for filtering requests (can be specified multiple times)
