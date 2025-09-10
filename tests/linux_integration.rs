@@ -280,4 +280,38 @@ mod tests {
             initial_ns_count, final_ns_count
         );
     }
+
+    /// Verify outbound TCP connections to non-HTTP ports are blocked inside the jail
+    ///
+    /// Uses portquiz.net which listens on all TCP ports and returns an HTTP response,
+    /// allowing us to test egress on non-standard ports reliably.
+    #[test]
+    fn test_outbound_tcp_non_http_blocked() {
+        LinuxPlatform::require_privileges();
+
+        // Attempt to connect to portquiz.net on port 81 (non-standard HTTP port)
+        // Expectation: connection is blocked by namespace egress filter
+        let mut cmd = httpjail_cmd();
+        cmd.arg("-r").arg("allow: .*") // proxy allows HTTP/HTTPS, but port 81 should be blocked
+            .arg("--")
+            .arg("sh")
+            .arg("-c")
+            .arg("curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 8 http://portquiz.net:81 && echo CONNECTED || echo BLOCKED");
+
+        let output = cmd.output().expect("Failed to execute httpjail");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        eprintln!("[Linux] outbound TCP test stdout: {}", stdout);
+        if !stderr.is_empty() {
+            eprintln!("[Linux] outbound TCP test stderr: {}", stderr);
+        }
+
+        assert!(
+            stdout.contains("BLOCKED"),
+            "Non-HTTP outbound TCP should be blocked. stdout: {}, stderr: {}",
+            stdout.trim(),
+            stderr.trim()
+        );
+    }
 }
