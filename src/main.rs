@@ -37,10 +37,6 @@ struct Args {
     #[arg(long = "request-log", value_name = "FILE")]
     request_log: Option<String>,
 
-    /// Disable HTTPS interception
-    #[arg(long = "no-tls-intercept")]
-    no_tls_intercept: bool,
-
     /// Interactive approval mode
     #[arg(long = "interactive")]
     interactive: bool,
@@ -65,8 +61,16 @@ struct Args {
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
+    /// Run as standalone proxy server (without executing a command)
+    #[arg(
+        long = "server",
+        conflicts_with = "cleanup",
+        conflicts_with = "timeout"
+    )]
+    server: bool,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present = "cleanup")]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server"])]
     command: Vec<String>,
 }
 
@@ -307,6 +311,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle server mode
+    if args.server {
+        info!("Starting httpjail in server mode");
+    }
+
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
     let request_log = if let Some(path) = &args.request_log {
@@ -322,18 +331,50 @@ async fn main() -> Result<()> {
     };
     let rule_engine = RuleEngine::new(rules, args.dry_run, request_log);
 
-    // Get ports from env vars (optional)
-    let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok());
+    // Parse bind configuration from env vars
+    // Supports both "port" and "ip:port" formats
+    fn parse_bind_config(env_var: &str) -> (Option<u16>, Option<std::net::IpAddr>) {
+        if let Ok(val) = std::env::var(env_var) {
+            if let Some(colon_pos) = val.rfind(':') {
+                // Try to parse as ip:port
+                let ip_str = &val[..colon_pos];
+                let port_str = &val[colon_pos + 1..];
 
-    let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok());
+                let port = port_str.parse::<u16>().ok();
+                let ip = ip_str.parse::<std::net::IpAddr>().ok();
 
-    // Determine bind address based on platform and mode
-    let bind_address = if args.weak {
-        // In weak mode, bind to localhost only
+                if port.is_some() && ip.is_some() {
+                    return (port, ip);
+                }
+            }
+
+            // Try to parse as just a port number
+            if let Ok(port) = val.parse::<u16>() {
+                return (Some(port), None);
+            }
+        }
+        (None, None)
+    }
+
+    let (http_port_env, http_bind_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
+    let (https_port_env, https_bind_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
+
+    // Use env port or default to 8080/8443 in server mode
+    let http_port = http_port_env.or(if args.server { Some(8080) } else { None });
+    let https_port = https_port_env.or(if args.server { Some(8443) } else { None });
+
+    // Determine bind address based on configuration and mode
+    let bind_address = if let Some(ip) = http_bind_ip.or(https_bind_ip) {
+        // If user explicitly specified an IP, use it
+        match ip {
+            std::net::IpAddr::V4(ipv4) => Some(ipv4.octets()),
+            std::net::IpAddr::V6(_) => {
+                warn!("IPv6 addresses are not currently supported, falling back to IPv4");
+                None
+            }
+        }
+    } else if args.weak || args.server {
+        // In weak mode or server mode, bind to localhost only by default
         None
     } else {
         // For jailed mode on Linux, bind to all interfaces
@@ -357,11 +398,35 @@ async fn main() -> Result<()> {
         actual_http_port, actual_https_port
     );
 
+    // In server mode, just run the proxy server
+    if args.server {
+        // Use tokio::sync::Notify for real-time shutdown signaling
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown_notify_clone = shutdown_notify.clone();
+
+        ctrlc::set_handler(move || {
+            info!("Received interrupt signal, shutting down server...");
+            shutdown_notify_clone.notify_one();
+        })
+        .expect("Error setting signal handler");
+
+        info!(
+            "Server running on ports {} (HTTP) and {} (HTTPS). Press Ctrl+C to stop.",
+            actual_http_port, actual_https_port
+        );
+
+        // Wait for shutdown signal
+        shutdown_notify.notified().await;
+
+        info!("Server shutdown complete");
+        return Ok(());
+    }
+
+    // Normal mode: create jail and execute command
     // Create jail configuration with actual bound ports
     let mut jail_config = JailConfig::new();
     jail_config.http_proxy_port = actual_http_port;
     jail_config.https_proxy_port = actual_https_port;
-    jail_config.tls_intercept = !args.no_tls_intercept;
 
     // Create and setup jail
     let mut jail = create_jail(jail_config.clone(), args.weak)?;
@@ -398,21 +463,19 @@ async fn main() -> Result<()> {
     // Set up CA certificate environment variables for common tools
     let mut extra_env = Vec::new();
 
-    if !args.no_tls_intercept {
-        match httpjail::tls::CertificateManager::get_ca_env_vars() {
-            Ok(ca_env_vars) => {
-                debug!(
-                    "Setting {} CA certificate environment variables",
-                    ca_env_vars.len()
-                );
-                extra_env = ca_env_vars;
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to set up CA certificate environment variables: {}",
-                    e
-                );
-            }
+    match httpjail::tls::CertificateManager::get_ca_env_vars() {
+        Ok(ca_env_vars) => {
+            debug!(
+                "Setting {} CA certificate environment variables",
+                ca_env_vars.len()
+            );
+            extra_env = ca_env_vars;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to set up CA certificate environment variables: {}",
+                e
+            );
         }
     }
 
@@ -531,13 +594,13 @@ mod tests {
             config: Some(file.path().to_str().unwrap().to_string()),
             dry_run: false,
             request_log: None,
-            no_tls_intercept: false,
             interactive: false,
             weak: false,
             verbose: 0,
             timeout: None,
             no_jail_cleanup: false,
             cleanup: false,
+            server: false,
             command: vec![],
         };
 
