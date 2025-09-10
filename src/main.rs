@@ -3,9 +3,10 @@ use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::{Action, Rule, RuleEngine};
+use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -28,9 +29,9 @@ struct Args {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     config: Option<String>,
 
-    /// Monitor without filtering
-    #[arg(long = "log-only")]
-    log_only: bool,
+    /// Append requests to a log file
+    #[arg(long = "request-log", value_name = "FILE")]
+    request_log: Option<String>,
 
     /// Interactive approval mode
     #[arg(long = "interactive")]
@@ -312,7 +313,18 @@ async fn main() -> Result<()> {
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
-    let rule_engine = RuleEngine::new(rules, args.log_only);
+    let request_log = if let Some(path) = &args.request_log {
+        Some(Arc::new(Mutex::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .context("Failed to open request log file")?,
+        )))
+    } else {
+        None
+    };
+    let rule_engine = RuleEngine::new(rules, request_log);
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
@@ -530,7 +542,7 @@ mod tests {
         assert!(rules.is_empty());
 
         // Rule engine should deny requests when no rules are specified
-        let engine = RuleEngine::new(rules, false);
+        let engine = RuleEngine::new(rules, None);
         assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
             Action::Deny
@@ -552,7 +564,7 @@ mod tests {
         let args = Args {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
-            log_only: false,
+            request_log: None,
             interactive: false,
             weak: false,
             verbose: 0,

@@ -28,8 +28,8 @@ macro_rules! platform_tests {
 
         #[test]
         #[::serial_test::serial]
-        fn test_jail_log_only_mode() {
-            system_integration::test_jail_log_only_mode::<$platform>();
+        fn test_jail_request_log() {
+            system_integration::test_jail_request_log::<$platform>();
         }
 
         #[test]

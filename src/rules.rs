@@ -1,7 +1,11 @@
 use anyhow::Result;
+use chrono::{SecondsFormat, Utc};
 use hyper::Method;
 use regex::Regex;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
@@ -48,22 +52,21 @@ impl Rule {
 #[derive(Clone)]
 pub struct RuleEngine {
     pub rules: Vec<Rule>,
-    pub log_only: bool,
+    pub request_log: Option<Arc<Mutex<File>>>,
 }
 
 impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, log_only: bool) -> Self {
-        RuleEngine { rules, log_only }
+    pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
+        RuleEngine { rules, request_log }
     }
 
     pub fn evaluate(&self, method: Method, url: &str) -> Action {
-        if self.log_only {
-            info!("Request: {} {}", method, url);
-            return Action::Allow;
-        }
+        let mut action = Action::Deny;
+        let mut matched = false;
 
         for rule in &self.rules {
             if rule.matches(method.clone(), url) {
+                matched = true;
                 match &rule.action {
                     Action::Allow => {
                         info!(
@@ -72,7 +75,7 @@ impl RuleEngine {
                             url,
                             rule.pattern.as_str()
                         );
-                        return Action::Allow;
+                        action = Action::Allow;
                     }
                     Action::Deny => {
                         warn!(
@@ -81,21 +84,39 @@ impl RuleEngine {
                             url,
                             rule.pattern.as_str()
                         );
-                        return Action::Deny;
+                        action = Action::Deny;
                     }
                 }
+                break;
             }
         }
 
-        // Default deny if no rules match
-        warn!("DENY: {} {} (no matching rules)", method, url);
-        Action::Deny
+        if !matched {
+            warn!("DENY: {} {} (no matching rules)", method, url);
+            action = Action::Deny;
+        }
+
+        if let Some(log) = &self.request_log
+            && let Ok(mut file) = log.lock()
+        {
+            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let status = match &action {
+                Action::Allow => '+',
+                Action::Deny => '-',
+            };
+            if let Err(e) = writeln!(file, "{} {} {} {}", timestamp, status, method, url) {
+                warn!("Failed to write to request log: {}", e);
+            }
+        }
+
+        action
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_rule_matching() {
@@ -125,7 +146,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false);
+        let engine = RuleEngine::new(rules, None);
 
         // Test allow rule
         assert!(matches!(
@@ -155,7 +176,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false);
+        let engine = RuleEngine::new(rules, None);
 
         // GET should be allowed
         assert!(matches!(
@@ -171,16 +192,39 @@ mod tests {
     }
 
     #[test]
-    fn test_log_only_mode() {
+    fn test_request_logging() {
+        use std::fs::OpenOptions;
+
+        let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
+        let log_file = tempfile::NamedTempFile::new().unwrap();
+        let file = OpenOptions::new()
+            .append(true)
+            .open(log_file.path())
+            .unwrap();
+        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
+
+        engine.evaluate(Method::GET, "https://example.com");
+
+        let contents = std::fs::read_to_string(log_file.path()).unwrap();
+        assert!(contents.contains("+ GET https://example.com"));
+    }
+
+    #[test]
+    fn test_request_logging_denied() {
+        use std::fs::OpenOptions;
+
         let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
+        let log_file = tempfile::NamedTempFile::new().unwrap();
+        let file = OpenOptions::new()
+            .append(true)
+            .open(log_file.path())
+            .unwrap();
+        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
 
-        let engine = RuleEngine::new(rules, true);
+        engine.evaluate(Method::GET, "https://blocked.com");
 
-        // In log-only mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::POST, "https://example.com"),
-            Action::Allow
-        ));
+        let contents = std::fs::read_to_string(log_file.path()).unwrap();
+        assert!(contents.contains("- GET https://blocked.com"));
     }
 
     #[test]

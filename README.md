@@ -35,8 +35,9 @@ cargo install httpjail
 # Allow only requests to github.com
 httpjail -r "allow: github\.com" -r "deny: .*" -- claude
 
-# Monitor all requests without blocking
-httpjail --log-only -- npm install
+# Log requests to a file
+httpjail --request-log requests.log -r "allow: .*" -- npm install
+# Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
 # Block specific domains
 httpjail -r "deny: telemetry\..*" -r "allow: .*" -- ./my-app
