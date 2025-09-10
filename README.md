@@ -94,12 +94,12 @@ httpjail creates an isolated network environment for the target process, interce
 
 ## Platform Support
 
-| Feature           | Linux                    | macOS                       | Windows       |
-| ----------------- | ------------------------ | --------------------------- | ------------- |
-| Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only            | 🚧 Planned    |
+| Feature           | Linux                        | macOS                       | Windows       |
+| ----------------- | ---------------------------- | --------------------------- | ------------- |
+| Traffic isolation | ✅ Namespaces + nftables     | ⚠️ Env vars only            | 🚧 Planned    |
 | TLS interception  | ✅ Transparent MITM + env CA | ✅ Env variables            | 🚧 Cert store |
-| Sudo required     | ⚠️ Yes                   | ✅ No                       | 🚧            |
-| Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧            |
+| Sudo required     | ⚠️ Yes                       | ✅ No                       | 🚧            |
+| Force all traffic | ✅ Yes                       | ❌ No (apps must cooperate) | 🚧            |
 
 ## Prerequisites
 
@@ -172,8 +172,6 @@ httpjail --dry-run --config rules.txt -- ./app
 # Verbose logging
 httpjail -vvv --allow ".*" -- curl https://example.com
 
-# Interactive mode - approve/deny requests in real-time
-httpjail --interactive -- ./app
 ```
 
 ## TLS Interception
@@ -187,14 +185,14 @@ How it works:
    - macOS: `~/Library/Application Support/httpjail/`
    - Linux: `~/.config/httpjail/`
    - Windows: `%APPDATA%\httpjail\`
-   Files: `ca-cert.pem`, `ca-key.pem` (key is chmod 600 on Unix).
+     Files: `ca-cert.pem`, `ca-key.pem` (key is chmod 600 on Unix).
 3. **Per‑process trust via env vars**: For the jailed command, httpjail sets common variables so clients trust the CA without touching system stores:
    - `SSL_CERT_FILE` and `SSL_CERT_DIR`
    - `CURL_CA_BUNDLE`
    - `GIT_SSL_CAINFO`
    - `REQUESTS_CA_BUNDLE`
    - `NODE_EXTRA_CA_CERTS`
-   These apply on both Linux (strong/transparent mode) and macOS (`--weak` env‑only mode).
+     These apply on both Linux (strong/transparent mode) and macOS (`--weak` env‑only mode).
 4. **Transparent MITM**:
    - Linux strong mode redirects TCP 80/443 to the local proxy. HTTPS is intercepted transparently by extracting SNI from ClientHello and presenting a per‑host certificate signed by the httpjail CA.
    - macOS uses explicit proxying via `HTTP_PROXY`/`HTTPS_PROXY` and typically negotiates HTTPS via CONNECT; interception occurs after CONNECT.
@@ -210,45 +208,6 @@ Notes and limits:
 ```bash
 # Only monitor/block HTTP traffic
 httpjail --no-tls-intercept --allow ".*" -- ./app
-```
-
-## Command-Line Options
-
-```
-httpjail [OPTIONS] -- <COMMAND> [ARGS]
-
-OPTIONS:
-    -r, --rule <RULE>            Add a rule (format: "action[-method]: pattern")
-                                 Actions: allow, deny
-                                 Methods: get, post, put, delete, head, options, connect, trace, patch
-    -c, --config <FILE>          Use configuration file
-    --dry-run                    Log actions without blocking
-    --log-only                   Monitor without filtering
-    --no-tls-intercept          Disable HTTPS interception
-    --interactive               Interactive approval mode
-    --weak                      Use weak mode (env vars only, no system isolation)
-    --timeout <SECONDS>         Timeout for command execution
-    -v, --verbose               Increase verbosity (-vvv for max)
-    -h, --help                  Print help
-    -V, --version               Print version with commit hash
-
-RULE FORMAT:
-    Rules are specified with -r/--rule and use the format:
-    "action[-method]: pattern"
-
-    Examples:
-    -r "allow: github\.com"              # Allow all methods to github.com
-    -r "allow-get: api\..*"              # Allow only GET requests to api.*
-    -r "deny-post: telemetry\..*"        # Deny POST requests to telemetry.*
-    -r "deny: .*"                        # Deny everything (usually last rule)
-
-    Rules are evaluated in the order specified.
-
-EXAMPLES:
-    httpjail -r "allow: github\.com" -r "deny: .*" -- git clone https://github.com/user/repo
-    httpjail --config rules.txt -- npm install
-    httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
-    httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
 
 ## License
