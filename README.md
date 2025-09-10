@@ -256,7 +256,7 @@ OPTIONS:
     --timeout <SECONDS>         Timeout for command execution
     -v, --verbose               Increase verbosity (-vvv for max)
     -h, --help                  Print help
-    -V, --version               Print version
+    -V, --version               Print version with commit hash
 
 RULE FORMAT:
     Rules are specified with -r/--rule and use the format:

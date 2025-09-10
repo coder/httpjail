@@ -15,10 +15,10 @@ fn test_httpjail_help() {
 fn test_httpjail_version() {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
     cmd.arg("--version");
-
+    let hash = env!("GIT_HASH");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("httpjail"));
+        .stdout(predicate::str::contains("httpjail").and(predicate::str::contains(hash)));
 }
 
 #[test]

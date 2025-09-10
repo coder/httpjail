@@ -47,3 +47,7 @@ cargo clippy --all-targets -- -D warnings
 
 When the user asks to run clippy and provides the ability to run on both targets, try to run it
 on both targets.
+
+## Formatting
+
+After modifying code, run `cargo fmt` to ensure consistent formatting before committing changes.
