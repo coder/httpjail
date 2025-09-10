@@ -325,13 +325,16 @@ async fn main() -> Result<()> {
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
 
     // Get ports from env vars (optional)
+    // In server mode, default to 8080/8443 if not specified
     let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok());
+        .and_then(|s| s.parse::<u16>().ok())
+        .or_else(|| if args.server { Some(8080) } else { None });
 
     let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok());
+        .and_then(|s| s.parse::<u16>().ok())
+        .or_else(|| if args.server { Some(8443) } else { None });
 
     // Determine bind address based on platform and mode
     let bind_address = if args.weak {

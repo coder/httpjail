@@ -46,9 +46,9 @@ httpjail --config rules.txt -- python script.py
 
 # Run as standalone proxy server (no command execution)
 httpjail --server -r "allow: .*"
-# Proxy auto-selects available ports (shown in output)
-# Configure your application with the displayed ports, e.g.:
-# HTTP_PROXY=http://localhost:8852 HTTPS_PROXY=http://localhost:8160
+# Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
+# Configure your application:
+# HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443
 ```
 
 ## Architecture Overview
@@ -180,7 +180,7 @@ httpjail -vvv -r "allow: .*" -- curl https://example.com
 
 # Server mode - run as standalone proxy without executing commands
 httpjail --server -r "allow: github\.com" -r "deny: .*"
-# Proxy auto-selects available ports in 8000-8999 range (shown in output)
+# Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 
 # Server mode with custom ports
 HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
@@ -193,17 +193,17 @@ HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*
 httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance.
 
 ```bash
-# Start server with automatic port selection (8000-8999 range)
+# Start server with default ports (8080 for HTTP, 8443 for HTTPS)
 httpjail --server -r "allow: github\.com" -r "deny: .*"
-# Output: Server running on ports 8852 (HTTP) and 8160 (HTTPS). Press Ctrl+C to stop.
+# Output: Server running on ports 8080 (HTTP) and 8443 (HTTPS). Press Ctrl+C to stop.
 
-# Start server with specific ports using environment variables
+# Start server with custom ports using environment variables
 HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
 # Output: Server running on ports 3128 (HTTP) and 3129 (HTTPS). Press Ctrl+C to stop.
 
 # Configure your applications to use the proxy:
-export HTTP_PROXY=http://localhost:8852
-export HTTPS_PROXY=http://localhost:8160
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8443
 curl https://github.com  # This request will go through httpjail
 ```
 
