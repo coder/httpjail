@@ -224,34 +224,6 @@ pub fn test_jail_log_only_mode<P: JailTestPlatform>() {
     );
 }
 
-/// Test dry-run mode
-pub fn test_jail_dry_run_mode<P: JailTestPlatform>() {
-    P::require_privileges();
-
-    let mut cmd = httpjail_cmd();
-    cmd.arg("--dry-run")
-        .arg("-r")
-        .arg("deny: .*") // Deny everything
-        .arg("--");
-    curl_http_status_args(&mut cmd, "http://ifconfig.me");
-
-    let output = cmd.output().expect("Failed to execute httpjail");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.is_empty() {
-        eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
-    }
-
-    // In dry-run mode, even deny rules should not block
-    assert_eq!(
-        stdout.trim(),
-        "200",
-        "Request should be allowed in dry-run mode"
-    );
-    assert!(output.status.success());
-}
-
 /// Test that jail requires a command
 pub fn test_jail_requires_command<P: JailTestPlatform>() {
     // This test doesn't require root

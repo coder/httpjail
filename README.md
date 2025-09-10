@@ -166,9 +166,6 @@ httpjail --config rules.txt -- ./my-application
 ### Advanced Options
 
 ```bash
-# Dry run - log what would be blocked without blocking
-httpjail --dry-run --config rules.txt -- ./app
-
 # Verbose logging
 httpjail -vvv --allow ".*" -- curl https://example.com
 

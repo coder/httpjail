@@ -458,7 +458,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let rule_engine = RuleEngine::new(rules, false, false);
+        let rule_engine = RuleEngine::new(rules, false);
         let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine, None);
 
         assert_eq!(proxy.http_port, Some(8080));
@@ -469,7 +469,7 @@ mod tests {
     async fn test_proxy_server_auto_port() {
         let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
 
-        let rule_engine = RuleEngine::new(rules, false, false);
+        let rule_engine = RuleEngine::new(rules, false);
         let mut proxy = ProxyServer::new(None, None, rule_engine, None);
 
         let (http_port, https_port) = proxy.start().await.unwrap();
