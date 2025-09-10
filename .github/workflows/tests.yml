@@ -80,10 +80,7 @@ jobs:
 
       - name: Setup Rust environment and install nextest
         run: |
-          # Ensure we're using the ci user's cargo
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           
           # Install nextest if not already present
           if ! command -v cargo-nextest &> /dev/null; then
@@ -92,44 +89,33 @@ jobs:
 
       - name: Build
         run: |
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           # Use incremental compilation for faster builds
           export CARGO_INCREMENTAL=1
           cargo build --verbose
 
       - name: Run unit tests
         run: |
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
         run: |
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           cargo nextest run --profile ci --test smoke_test --verbose
 
       - name: Run Linux jail integration tests
         run: |
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           # Run all tests without CI workarounds since this is a self-hosted runner
-          # Use sudo with env to preserve the full PATH
-          sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" $(which cargo) nextest run --profile ci --test linux_integration --verbose
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
       - name: Run isolated cleanup tests
         run: |
-          export PATH="/home/ci/.cargo/bin:$PATH"
-          export CARGO_HOME="/home/ci/.cargo"
-          export RUSTUP_HOME="/home/ci/.rustup"
+          source ~/.cargo/env
           # Run only the comprehensive cleanup and sigint tests with the feature flag
           # These tests need to run in isolation from other tests
-          sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
+          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
