@@ -46,7 +46,9 @@ httpjail --config rules.txt -- python script.py
 
 # Run as standalone proxy server (no command execution)
 httpjail --server -r "allow: .*"
-# Then set HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443 in your application
+# Proxy auto-selects available ports (shown in output)
+# Configure your application with the displayed ports, e.g.:
+# HTTP_PROXY=http://localhost:8852 HTTPS_PROXY=http://localhost:8160
 ```
 
 ## Architecture Overview
@@ -178,10 +180,34 @@ httpjail -vvv -r "allow: .*" -- curl https://example.com
 
 # Server mode - run as standalone proxy without executing commands
 httpjail --server -r "allow: github\.com" -r "deny: .*"
-# Proxy listens on localhost:8080 (HTTP) and localhost:8443 (HTTPS)
-# Configure applications to use these proxy endpoints
+# Proxy auto-selects available ports in 8000-8999 range (shown in output)
+
+# Server mode with custom ports
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
+# Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
 
 ```
+
+### Server Mode
+
+httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance.
+
+```bash
+# Start server with automatic port selection (8000-8999 range)
+httpjail --server -r "allow: github\.com" -r "deny: .*"
+# Output: Server running on ports 8852 (HTTP) and 8160 (HTTPS). Press Ctrl+C to stop.
+
+# Start server with specific ports using environment variables
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
+# Output: Server running on ports 3128 (HTTP) and 3129 (HTTPS). Press Ctrl+C to stop.
+
+# Configure your applications to use the proxy:
+export HTTP_PROXY=http://localhost:8852
+export HTTPS_PROXY=http://localhost:8160
+curl https://github.com  # This request will go through httpjail
+```
+
+**Note**: In server mode, httpjail does not create network isolation. Applications must be configured to use the proxy via environment variables or application-specific proxy settings.
 
 ## TLS Interception
 
