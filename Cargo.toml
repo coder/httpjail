@@ -2,6 +2,11 @@
 name = "httpjail"
 version = "0.1.0"
 edition = "2024"
+license = "CC0-1.0"
+description = "Monitor and restrict HTTP/HTTPS requests from processes"
+repository = "https://github.com/coder/httpjail"
+keywords = ["network", "security", "proxy", "monitoring", "sandbox"]
+categories = ["command-line-utilities", "network-programming", "development-tools"]
 
 [features]
 # Feature to enable isolated cleanup tests that should run separately in CI
