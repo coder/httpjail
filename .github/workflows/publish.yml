@@ -22,6 +22,9 @@ jobs:
         with:
           toolchain: stable
       
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+      
       - name: Verify version matches tag
         run: |
           # Extract version from Cargo.toml
