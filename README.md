@@ -171,7 +171,7 @@ httpjail --config rules.txt -- ./my-application
 httpjail --dry-run --config rules.txt -- ./app
 
 # Verbose logging
-httpjail -vvv --allow ".*" -- curl https://example.com
+httpjail -vvv -r "allow: .*" -- curl https://example.com
 
 ```
 
