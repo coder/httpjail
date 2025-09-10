@@ -35,6 +35,8 @@ httpjail -r "allow: github\.com" -r "deny: .*" -- claude
 # Log requests to a file
 httpjail --request-log requests.log -r "allow: .*" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
+# e.g:
+#   2025-09-10T18:45:53.032Z + GET http://google.com/
 
 # Block specific domains
 httpjail -r "deny: telemetry\..*" -r "allow: .*" -- ./my-app
