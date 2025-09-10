@@ -55,55 +55,81 @@ jobs:
           # Use GITHUB_WORKSPACE parent directory or current working directory
           WORK_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
           if [ -d "$WORK_DIR" ]; then
-            sudo chown -R $(whoami):$(whoami) "$WORK_DIR" || true
+            sudo chown -R ci:ci "$WORK_DIR" || true
           fi
-
+          # Ensure cargo cache has correct permissions
+          if [ -d /home/ci/.cargo ]; then
+            sudo chown -R ci:ci /home/ci/.cargo || true
+          fi
       - uses: actions/checkout@v4
 
       - name: Fix permissions on current directory
         run: |
           # Clean up any files left from previous sudo runs
           if [ -d target ]; then
-            sudo chown -R $(whoami):$(whoami) target || true
+            sudo chown -R ci:ci target || true
           fi
-          if [ -d ~/.cargo/registry ]; then
-            sudo chown -R $(whoami):$(whoami) ~/.cargo/registry || true
+          # Fix cargo registry permissions to enable cache reuse
+          if [ -d /home/ci/.cargo/registry ]; then
+            sudo chown -R ci:ci /home/ci/.cargo/registry || true
+          fi
+          # Ensure git index cache has correct permissions
+          if [ -d /home/ci/.cargo/git ]; then
+            sudo chown -R ci:ci /home/ci/.cargo/git || true
           fi
 
-      - name: Install nextest
+      - name: Setup Rust environment and install nextest
         run: |
-          source ~/.cargo/env
+          # Ensure we're using the ci user's cargo
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
+          
+          # Install nextest if not already present
           if ! command -v cargo-nextest &> /dev/null; then
             cargo install cargo-nextest --locked
           fi
 
       - name: Build
         run: |
-          source ~/.cargo/env
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
+          # Use incremental compilation for faster builds
+          export CARGO_INCREMENTAL=1
           cargo build --verbose
 
       - name: Run unit tests
         run: |
-          source ~/.cargo/env
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
           cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
         run: |
-          source ~/.cargo/env
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
           cargo nextest run --profile ci --test smoke_test --verbose
 
       - name: Run Linux jail integration tests
         run: |
-          source ~/.cargo/env
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
           # Run all tests without CI workarounds since this is a self-hosted runner
-          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
+          # Preserve environment for sudo to maintain cargo paths
+          sudo -E PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
       - name: Run isolated cleanup tests
         run: |
-          source ~/.cargo/env
+          export PATH="/home/ci/.cargo/bin:$PATH"
+          export CARGO_HOME="/home/ci/.cargo"
+          export RUSTUP_HOME="/home/ci/.rustup"
           # Run only the comprehensive cleanup and sigint tests with the feature flag
           # These tests need to run in isolation from other tests
-          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
+          sudo -E PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
