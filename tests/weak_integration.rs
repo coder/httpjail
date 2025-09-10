@@ -157,6 +157,8 @@ fn wait_for_server(port: u16, max_wait: Duration) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < max_wait {
         if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            // Give the server a bit more time to fully initialize
+            thread::sleep(Duration::from_millis(500));
             return true;
         }
         thread::sleep(Duration::from_millis(100));
@@ -165,21 +167,40 @@ fn wait_for_server(port: u16, max_wait: Duration) -> bool {
 }
 
 fn test_curl_through_proxy(http_port: u16, _https_port: u16) -> Result<String, String> {
+    // Use a simple HTTP endpoint that should work in CI
     let output = Command::new("curl")
         .arg("-x")
         .arg(format!("http://127.0.0.1:{}", http_port))
         .arg("--max-time")
-        .arg("3")
+        .arg("5")
         .arg("-s")
-        .arg("http://httpbin.org/ip")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg("http://example.com")
         .output()
         .map_err(|e| format!("Failed to run curl: {}", e))?;
 
+    // Check if curl succeeded (exit code 0)
     if !output.status.success() {
-        return Err(format!("Curl failed with status: {}", output.status));
+        // If curl failed, also try to get stderr for debugging
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Curl failed with status: {}, stderr: {}",
+            output.status, stderr
+        ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let response = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Check if we got a valid HTTP response (status code should be at the end)
+    if response.ends_with("200")
+        || response.contains("<!doctype html>")
+        || response.contains("Example Domain")
+    {
+        Ok(response)
+    } else {
+        Err(format!("Unexpected response: {}", response))
+    }
 }
 
 fn verify_bind_address(port: u16, expected_ip: &str) -> bool {
@@ -200,12 +221,8 @@ fn test_server_mode_default_ports() {
 
     // Test HTTP proxy works
     match test_curl_through_proxy(8080, 8443) {
-        Ok(response) => {
-            assert!(
-                response.contains("\"origin\"") || response.contains("origin"),
-                "Expected valid response from httpbin, got: {}",
-                response
-            );
+        Ok(_response) => {
+            // Success - proxy is working
         }
         Err(e) => panic!("Curl test failed: {}", e),
     }
@@ -235,12 +252,8 @@ fn test_server_mode_custom_ports() {
 
     // Test HTTP proxy works on custom port
     match test_curl_through_proxy(9090, 9091) {
-        Ok(response) => {
-            assert!(
-                response.contains("\"origin\"") || response.contains("origin"),
-                "Expected valid response from httpbin, got: {}",
-                response
-            );
+        Ok(_response) => {
+            // Success - proxy is working
         }
         Err(e) => panic!("Curl test failed: {}", e),
     }
@@ -270,12 +283,8 @@ fn test_server_mode_specific_ip() {
 
     // Test HTTP proxy works
     match test_curl_through_proxy(9092, 9093) {
-        Ok(response) => {
-            assert!(
-                response.contains("\"origin\"") || response.contains("origin"),
-                "Expected valid response from httpbin, got: {}",
-                response
-            );
+        Ok(_response) => {
+            // Success - proxy is working
         }
         Err(e) => panic!("Curl test failed: {}", e),
     }
