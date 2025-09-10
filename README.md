@@ -1,6 +1,31 @@
 # httpjail
 
+[![Crates.io](https://img.shields.io/crates/v/httpjail.svg)](https://crates.io/crates/httpjail)
+[![CI](https://github.com/coder/httpjail/actions/workflows/tests.yml/badge.svg)](https://github.com/coder/httpjail/actions/workflows/tests.yml)
+
 A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from processes using network isolation and transparent proxy interception.
+
+## Installation
+
+### Install via Cargo
+
+```bash
+cargo install httpjail
+```
+
+### Install from source
+
+```bash
+# Clone the repository
+git clone https://github.com/coder/httpjail
+cd httpjail
+
+# Build with Cargo
+cargo build --release
+
+# Install to PATH
+sudo cp target/release/httpjail /usr/local/bin/
+```
 
 ## Features
 
@@ -96,43 +121,19 @@ httpjail creates an isolated network environment for the target process, interce
 | Sudo required     | ⚠️ Yes                   | ✅ No                       | 🚧            |
 | Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧            |
 
-## Installation
+## Prerequisites
 
-### Prerequisites
-
-#### Linux
+### Linux
 
 - Linux kernel 3.8+ (network namespace support)
 - nftables (nft command)
 - libssl-dev (for TLS)
 - sudo access (for namespace creation)
 
-#### macOS
+### macOS
 
 - macOS 10.15+ (Catalina or later)
 - No special permissions required (runs in weak mode)
-
-### Install from source
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/httpjail
-cd httpjail
-
-# Build with Cargo
-cargo build --release
-
-# Install to PATH
-sudo cp target/release/httpjail /usr/local/bin/
-
-# CA certificate is auto-generated on first run
-```
-
-### Install via Cargo
-
-```bash
-cargo install httpjail
-```
 
 ## Usage Examples
 

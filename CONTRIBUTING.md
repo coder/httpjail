@@ -163,6 +163,54 @@ sudo pfctl -a httpjail -sr
 sudo pfctl -a httpjail -F all
 ```
 
+## Release Process
+
+### Publishing a New Version
+
+Releases are automated through GitHub Actions when a version tag is pushed. The process:
+
+1. **Update version in Cargo.toml**
+   ```bash
+   # Edit Cargo.toml and update the version field
+   # Example: version = "0.2.0"
+   ```
+
+2. **Commit the version change**
+   ```bash
+   git add Cargo.toml
+   git commit -m "Bump version to 0.2.0"
+   git push
+   ```
+
+3. **Create and push a version tag**
+   ```bash
+   # Tag format must be v<version> matching Cargo.toml version
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+4. **Automated release workflow**
+   - The GitHub Actions workflow will automatically:
+     - Run all tests (macOS, Linux, weak mode)
+     - Run clippy and format checks
+     - Verify the tag version matches Cargo.toml
+     - Build the release binary
+     - Publish to crates.io (only if all tests pass)
+
+### Prerequisites for Publishing
+
+- **GitHub Environment**: The `publish` environment must be configured in the repository settings
+- **Cargo Token**: The `CARGO_REGISTRY_TOKEN` secret must be set in the `publish` environment
+- **Version Match**: The git tag (without `v` prefix) must exactly match the version in Cargo.toml
+
+### Manual Publishing (if needed)
+
+If automated publishing fails, you can publish manually:
+
+```bash
+cargo publish --token <your-token>
+```
+
 ## License
 
 By contributing to httpjail, you agree that your contributions will be licensed under the same license as the project.
