@@ -30,6 +30,8 @@ jobs:
       
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
       
       - name: Verify version matches tag
         run: |
