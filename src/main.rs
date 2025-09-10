@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
@@ -175,7 +175,20 @@ fn parse_rule(rule_str: &str) -> Result<Rule> {
 fn build_rules(args: &Args) -> Result<Vec<Rule>> {
     let mut rules = Vec::new();
 
-    // Parse rules in the exact order specified
+    // Load rules from config file if provided
+    if let Some(config_path) = &args.config {
+        let contents = std::fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read config file: {}", config_path))?;
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            rules.push(parse_rule(line)?);
+        }
+    }
+
+    // Parse command line rules in the exact order specified
     for rule_str in &args.rules {
         rules.push(parse_rule(rule_str)?);
     }
@@ -500,5 +513,46 @@ mod tests {
             engine.evaluate(Method::POST, "https://example.com"),
             Action::Allow
         ));
+    }
+
+    #[test]
+    fn test_build_rules_from_config_file() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "allow-get: google\\.com\n# comment\ndeny: yahoo.com\n\nallow: .*"
+        )
+        .unwrap();
+
+        let args = Args {
+            rules: vec![],
+            config: Some(file.path().to_str().unwrap().to_string()),
+            dry_run: false,
+            log_only: false,
+            no_tls_intercept: false,
+            interactive: false,
+            weak: false,
+            verbose: 0,
+            timeout: None,
+            no_jail_cleanup: false,
+            cleanup: false,
+            command: vec![],
+        };
+
+        let rules = build_rules(&args).unwrap();
+        assert_eq!(rules.len(), 3);
+
+        // First rule should be allow for GET method only
+        assert!(matches!(rules[0].action, Action::Allow));
+        assert!(rules[0].methods.as_ref().unwrap().contains(&Method::GET));
+
+        // Second rule should be deny
+        assert!(matches!(rules[1].action, Action::Deny));
+
+        // Third rule allow all
+        assert!(matches!(rules[2].action, Action::Allow));
     }
 }

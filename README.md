@@ -46,7 +46,7 @@ httpjail -r "deny: telemetry\..*" -r "allow: .*" -- ./my-app
 httpjail -r "allow-get: api\.github\.com" -r "deny: .*" -- git pull
 
 # Use config file for complex rules
-httpjail --config rules.yaml -- python script.py
+httpjail --config rules.txt -- python script.py
 ```
 
 ## Architecture Overview
@@ -152,41 +152,26 @@ httpjail \
 
 ### Configuration File
 
-Create a `rules.yaml`:
+Create a `rules.txt` (one rule per line, `#` comments and blank lines are ignored):
 
-```yaml
-# rules.yaml
-rules:
-  - action: allow
-    pattern: "github\.com"
-    methods: ["GET", "POST"]
-
-  - action: allow
-    pattern: "api\..*\.com"
-    methods: ["GET"]
-
-  - action: deny
-    pattern: "telemetry"
-
-  - action: deny
-    pattern: ".*"
-
-logging:
-  level: info
-  file: /var/log/httpjail.log
+```text
+# rules.txt
+allow-get: github\.com
+deny: telemetry
+allow: .*
 ```
 
 Use the config:
 
 ```bash
-httpjail --config rules.yaml -- ./my-application
+httpjail --config rules.txt -- ./my-application
 ```
 
 ### Advanced Options
 
 ```bash
 # Dry run - log what would be blocked without blocking
-httpjail --dry-run --config rules.yaml -- ./app
+httpjail --dry-run --config rules.txt -- ./app
 
 # Verbose logging
 httpjail -vvv --allow ".*" -- curl https://example.com
@@ -257,7 +242,7 @@ RULE FORMAT:
 
 EXAMPLES:
     httpjail -r "allow: github\.com" -r "deny: .*" -- git clone https://github.com/user/repo
-    httpjail --config rules.yaml -- npm install
+    httpjail --config rules.txt -- npm install
     httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
     httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
