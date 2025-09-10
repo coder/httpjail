@@ -121,7 +121,7 @@ table ip {} {{
         })
     }
 
-    /// Create namespace-side nftables rules for traffic redirection
+    /// Create namespace-side nftables rules for traffic redirection and egress filtering
     pub fn new_namespace_table(
         namespace: &str,
         host_ip: &str,
@@ -130,26 +130,45 @@ table ip {} {{
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
-        // Generate the ruleset for namespace-side DNAT
+        // Generate the ruleset for namespace-side DNAT + FILTER
         let ruleset = format!(
             r#"
 table ip {} {{
+    # NAT output chain: redirect HTTP/HTTPS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
-        
-        # Skip DNS traffic
+
+        # Skip DNS traffic from NAT processing
         udp dport 53 return
         tcp dport 53 return
-        
-        # Redirect HTTP to proxy
+
+        # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {}:{}
-        
-        # Redirect HTTPS to proxy
+
+        # Redirect HTTPS to proxy running on host
         tcp dport 443 dnat to {}:{}
+    }}
+
+    # FILTER output chain: block non-HTTP/HTTPS egress
+    chain outfilter {{
+        type filter hook output priority 0; policy drop;
+
+        # Always allow established/related traffic
+        ct state established,related accept
+
+        # Allow DNS to anywhere
+        udp dport 53 accept
+        tcp dport 53 accept
+
+        # Explicitly block all other UDP (e.g., QUIC on 443)
+        ip protocol udp drop
+
+        # Allow traffic to the host proxy ports after DNAT
+        ip daddr {} tcp dport {{ {}, {} }} accept
     }}
 }}
 "#,
-            table_name, host_ip, http_port, host_ip, https_port
+            table_name, host_ip, http_port, host_ip, https_port, host_ip, http_port, https_port
         );
 
         debug!(
