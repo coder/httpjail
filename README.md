@@ -200,15 +200,8 @@ How it works:
 
 Notes and limits:
 
-- Tools that ignore the above env vars will fail TLS verification when intercepted. For those, either add tool‑specific flags to point at `ca-cert.pem` or run with `--no-tls-intercept`.
+- Tools that ignore the above env vars will fail TLS verification when intercepted. For those, add tool‑specific flags to point at `ca-cert.pem`.
 - Long‑lived connections are supported: timeouts are applied only to protocol detection, CONNECT header reads, and TLS handshakes — not to proxied streams (e.g., gRPC/WebSocket).
-
-### Disable TLS Interception
-
-```bash
-# Only monitor/block HTTP traffic
-httpjail --no-tls-intercept --allow ".*" -- ./app
-```
 
 ## License
 
