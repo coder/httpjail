@@ -189,13 +189,13 @@ Releases are automated through GitHub Actions when a version tag is pushed. The 
    git push origin v0.2.0
    ```
 
-4. **Automated publish workflow**
+4. **Automated release workflow**
    - The GitHub Actions workflow will automatically:
-     - Verify the tag version matches Cargo.toml
-     - Run all tests
+     - Run all tests (macOS, Linux, weak mode)
      - Run clippy and format checks
+     - Verify the tag version matches Cargo.toml
      - Build the release binary
-     - Publish to crates.io
+     - Publish to crates.io (only if all tests pass)
 
 ### Prerequisites for Publishing
 
