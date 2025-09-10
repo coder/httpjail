@@ -68,7 +68,6 @@ struct Args {
     #[arg(
         long = "server",
         conflicts_with = "cleanup",
-        conflicts_with = "weak",
         conflicts_with = "timeout"
     )]
     server: bool,
@@ -324,21 +323,50 @@ async fn main() -> Result<()> {
     let rules = build_rules(&args)?;
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
 
-    // Get ports from env vars (optional)
-    // In server mode, default to 8080/8443 if not specified
-    let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .or_else(|| if args.server { Some(8080) } else { None });
+    // Parse bind configuration from env vars
+    // Supports both "port" and "ip:port" formats
+    fn parse_bind_config(env_var: &str) -> (Option<u16>, Option<std::net::IpAddr>) {
+        if let Ok(val) = std::env::var(env_var) {
+            if let Some(colon_pos) = val.rfind(':') {
+                // Try to parse as ip:port
+                let ip_str = &val[..colon_pos];
+                let port_str = &val[colon_pos + 1..];
 
-    let https_port = std::env::var("HTTPJAIL_HTTPS_BIND")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .or_else(|| if args.server { Some(8443) } else { None });
+                let port = port_str.parse::<u16>().ok();
+                let ip = ip_str.parse::<std::net::IpAddr>().ok();
 
-    // Determine bind address based on platform and mode
-    let bind_address = if args.weak {
-        // In weak mode, bind to localhost only
+                if port.is_some() && ip.is_some() {
+                    return (port, ip);
+                }
+            }
+
+            // Try to parse as just a port number
+            if let Ok(port) = val.parse::<u16>() {
+                return (Some(port), None);
+            }
+        }
+        (None, None)
+    }
+
+    let (http_port_env, http_bind_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
+    let (https_port_env, https_bind_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
+
+    // Use env port or default to 8080/8443 in server mode
+    let http_port = http_port_env.or_else(|| if args.server { Some(8080) } else { None });
+    let https_port = https_port_env.or_else(|| if args.server { Some(8443) } else { None });
+
+    // Determine bind address based on configuration and mode
+    let bind_address = if let Some(ip) = http_bind_ip.or(https_bind_ip) {
+        // If user explicitly specified an IP, use it
+        match ip {
+            std::net::IpAddr::V4(ipv4) => Some(ipv4.octets()),
+            std::net::IpAddr::V6(_) => {
+                warn!("IPv6 addresses are not currently supported, falling back to IPv4");
+                None
+            }
+        }
+    } else if args.weak || args.server {
+        // In weak mode or server mode, bind to localhost only by default
         None
     } else {
         // For jailed mode on Linux, bind to all interfaces
@@ -364,16 +392,13 @@ async fn main() -> Result<()> {
 
     // In server mode, just run the proxy server
     if args.server {
-        // Set up signal handler for graceful shutdown
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = shutdown.clone();
+        // Use tokio::sync::Notify for real-time shutdown signaling
+        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+        let shutdown_notify_clone = shutdown_notify.clone();
 
         ctrlc::set_handler(move || {
-            if !shutdown_clone.load(Ordering::SeqCst) {
-                info!("Received interrupt signal, shutting down server...");
-                shutdown_clone.store(true, Ordering::SeqCst);
-                std::process::exit(0);
-            }
+            info!("Received interrupt signal, shutting down server...");
+            shutdown_notify_clone.notify_one();
         })
         .expect("Error setting signal handler");
 
@@ -382,14 +407,10 @@ async fn main() -> Result<()> {
             actual_http_port, actual_https_port
         );
 
-        // Keep the server running until interrupted
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if shutdown.load(Ordering::SeqCst) {
-                break;
-            }
-        }
+        // Wait for shutdown signal
+        shutdown_notify.notified().await;
 
+        info!("Server shutdown complete");
         return Ok(());
     }
 

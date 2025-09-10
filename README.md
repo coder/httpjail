@@ -182,24 +182,31 @@ httpjail -vvv -r "allow: .*" -- curl https://example.com
 httpjail --server -r "allow: github\.com" -r "deny: .*"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 
-# Server mode with custom ports
+# Server mode with custom ports (format: port or ip:port)
 HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
 # Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
+
+# Bind to specific interface
+HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server -r "allow: .*"
 
 ```
 
 ### Server Mode
 
-httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance.
+httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance. The server binds to localhost (127.0.0.1) only for security.
 
 ```bash
-# Start server with default ports (8080 for HTTP, 8443 for HTTPS)
+# Start server with default ports (8080 for HTTP, 8443 for HTTPS) on localhost
 httpjail --server -r "allow: github\.com" -r "deny: .*"
 # Output: Server running on ports 8080 (HTTP) and 8443 (HTTPS). Press Ctrl+C to stop.
 
 # Start server with custom ports using environment variables
 HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
 # Output: Server running on ports 3128 (HTTP) and 3129 (HTTPS). Press Ctrl+C to stop.
+
+# Bind to all interfaces (use with caution - exposes proxy to network)
+HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server -r "allow: .*"
+# Output: Server running on ports 8080 (HTTP) and 8443 (HTTPS). Press Ctrl+C to stop.
 
 # Configure your applications to use the proxy:
 export HTTP_PROXY=http://localhost:8080

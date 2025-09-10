@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "cargo fmt"
+          },
+          {
+            "type": "command",
+            "command": "cargo clippy --all-targets -- -D warnings"
           }
         ]
       }
