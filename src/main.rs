@@ -64,8 +64,17 @@ struct Args {
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
+    /// Run as standalone proxy server (without executing a command)
+    #[arg(
+        long = "server",
+        conflicts_with = "cleanup",
+        conflicts_with = "weak",
+        conflicts_with = "timeout"
+    )]
+    server: bool,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present = "cleanup")]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server"])]
     command: Vec<String>,
 }
 
@@ -306,6 +315,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle server mode
+    if args.server {
+        info!("Starting httpjail in server mode");
+    }
+
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
     let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
@@ -345,6 +359,38 @@ async fn main() -> Result<()> {
         actual_http_port, actual_https_port
     );
 
+    // In server mode, just run the proxy server
+    if args.server {
+        // Set up signal handler for graceful shutdown
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+
+        ctrlc::set_handler(move || {
+            if !shutdown_clone.load(Ordering::SeqCst) {
+                info!("Received interrupt signal, shutting down server...");
+                shutdown_clone.store(true, Ordering::SeqCst);
+                std::process::exit(0);
+            }
+        })
+        .expect("Error setting signal handler");
+
+        info!(
+            "Server running on ports {} (HTTP) and {} (HTTPS). Press Ctrl+C to stop.",
+            actual_http_port, actual_https_port
+        );
+
+        // Keep the server running until interrupted
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+
+        return Ok(());
+    }
+
+    // Normal mode: create jail and execute command
     // Create jail configuration with actual bound ports
     let mut jail_config = JailConfig::new();
     jail_config.http_proxy_port = actual_http_port;
@@ -539,6 +585,7 @@ mod tests {
             timeout: None,
             no_jail_cleanup: false,
             cleanup: false,
+            server: false,
             command: vec![],
         };
 

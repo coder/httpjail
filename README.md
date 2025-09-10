@@ -23,7 +23,7 @@ cargo install httpjail
 ## MVP TODO
 
 - [ ] Update README to be more reflective of AI agent restrictions
-- [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
+- [x] Add a `--server` mode that runs the proxy server but doesn't execute the command
 - [ ] Expand test cases to include WebSockets
 
 ## Quick Start
@@ -43,6 +43,10 @@ httpjail -r "allow-get: api\.github\.com" -r "deny: .*" -- git pull
 
 # Use config file for complex rules
 httpjail --config rules.txt -- python script.py
+
+# Run as standalone proxy server (no command execution)
+httpjail --server -r "allow: .*"
+# Then set HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443 in your application
 ```
 
 ## Architecture Overview
@@ -171,6 +175,11 @@ httpjail --dry-run --config rules.txt -- ./app
 
 # Verbose logging
 httpjail -vvv -r "allow: .*" -- curl https://example.com
+
+# Server mode - run as standalone proxy without executing commands
+httpjail --server -r "allow: github\.com" -r "deny: .*"
+# Proxy listens on localhost:8080 (HTTP) and localhost:8443 (HTTPS)
+# Configure applications to use these proxy endpoints
 
 ```
 
