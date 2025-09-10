@@ -193,10 +193,9 @@ fn build_rules(args: &Args) -> Result<Vec<Rule>> {
         rules.push(parse_rule(rule_str)?);
     }
 
-    // If no rules specified, default to allow all (for testing)
+    // If no rules specified, the rule engine will deny all requests by default
     if rules.is_empty() {
-        info!("No rules specified, defaulting to allow all");
-        rules.push(Rule::new(Action::Allow, ".*")?);
+        info!("No rules specified; unmatched requests will be denied");
     }
 
     Ok(rules)
@@ -558,6 +557,33 @@ mod tests {
         assert!(matches!(
             engine.evaluate(Method::POST, "https://example.com"),
             Action::Allow
+        ));
+    }
+
+    #[test]
+    fn test_build_rules_no_rules_default_deny() {
+        let args = Args {
+            rules: vec![],
+            config: None,
+            log_only: false,
+            interactive: false,
+            weak: false,
+            verbose: 0,
+            timeout: None,
+            no_jail_cleanup: false,
+            cleanup: false,
+            server: false,
+            command: vec![],
+        };
+
+        let rules = build_rules(&args).unwrap();
+        assert!(rules.is_empty());
+
+        // Rule engine should deny requests when no rules are specified
+        let engine = RuleEngine::new(rules, false);
+        assert!(matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Deny
         ));
     }
 
