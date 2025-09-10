@@ -85,16 +85,16 @@ httpjail creates an isolated network environment for the target process, interce
 └─────────────────────────────────────────────────┘
 ```
 
-**Note**: Due to macOS PF (Packet Filter) limitations, httpjail uses environment-based proxy configuration on macOS. PF translation rules (such as `rdr` and `route-to`) cannot match on user or group, making transparent traffic interception impossible. As a result, httpjail operates in "weak mode" on macOS, relying on applications to respect the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Most command-line tools and modern applications respect these settings, but some may bypass them.
+**Note**: Due to macOS PF (Packet Filter) limitations, httpjail uses environment-based proxy configuration on macOS. PF translation rules (such as `rdr` and `route-to`) cannot match on user or group, making transparent traffic interception impossible. As a result, httpjail operates in "weak mode" on macOS, relying on applications to respect the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Most command-line tools and modern applications respect these settings, but some may bypass them. See also https://github.com/coder/httpjail/issues/7.
 
 ## Platform Support
 
-| Feature           | Linux                    | macOS               | Windows       |
-| ----------------- | ------------------------ | ------------------- | ------------- |
-| Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only    | 🚧 Planned    |
-| TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store |
-| Sudo required     | ⚠️ Yes                   | ✅ No                | 🚧            |
-| Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧    |
+| Feature           | Linux                    | macOS                       | Windows       |
+| ----------------- | ------------------------ | --------------------------- | ------------- |
+| Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only            | 🚧 Planned    |
+| TLS interception  | ✅ CA injection          | ✅ Env variables            | 🚧 Cert store |
+| Sudo required     | ⚠️ Yes                   | ✅ No                       | 🚧            |
+| Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧            |
 
 ## Installation
 
