@@ -69,7 +69,7 @@ httpjail creates an isolated network environment for the target process, interce
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                 httpjail Process                 │
+│                 httpjail Process                │
 ├─────────────────────────────────────────────────┤
 │  1. Start HTTP/HTTPS proxy servers              │
 │  2. Set HTTP_PROXY/HTTPS_PROXY env vars         │
