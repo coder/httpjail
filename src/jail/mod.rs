@@ -52,10 +52,6 @@ pub struct JailConfig {
     /// Port for HTTPS proxy
     pub https_proxy_port: u16,
 
-    /// Whether to use TLS interception
-    #[allow(dead_code)]
-    pub tls_intercept: bool,
-
     /// Unique identifier for this jail instance
     pub jail_id: String,
 
@@ -79,7 +75,6 @@ impl JailConfig {
         Self {
             http_proxy_port: 8040,
             https_proxy_port: 8043,
-            tls_intercept: true,
             jail_id,
             enable_heartbeat: true,
             heartbeat_interval_secs: 1,
