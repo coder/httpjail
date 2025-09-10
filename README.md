@@ -23,12 +23,8 @@ cargo install httpjail
 ## MVP TODO
 
 - [ ] Update README to be more reflective of AI agent restrictions
-- [ ] Block all other TCP/UDP traffic when in jail mode. Exception for UDP to 53. DNS is pretty darn safe.
 - [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
 - [ ] Expand test cases to include WebSockets
-- [x] Add Linux support with parity with macOS
-- [x] Add robust firewall cleanup mechanism for Linux and macOS
-- [x] Support/test concurrent jailing across macOS and Linux
 
 ## Quick Start
 
