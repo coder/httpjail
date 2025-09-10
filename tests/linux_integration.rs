@@ -286,7 +286,6 @@ mod tests {
     /// Uses portquiz.net which listens on all TCP ports and returns an HTTP response,
     /// allowing us to test egress on non-standard ports reliably.
     #[test]
-    #[serial]
     fn test_outbound_tcp_non_http_blocked() {
         LinuxPlatform::require_privileges();
 
