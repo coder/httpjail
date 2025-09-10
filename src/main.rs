@@ -4,6 +4,8 @@ use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::{Action, Rule, RuleEngine};
 use std::os::unix::process::ExitStatusExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -342,8 +344,31 @@ async fn main() -> Result<()> {
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
 
-    // Wrap jail in Arc for potential sharing with timeout task
+    // Wrap jail in Arc for potential sharing with timeout task and signal handler
     let jail = std::sync::Arc::new(jail);
+
+    // Set up signal handler for cleanup
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let jail_for_signal = jail.clone();
+    let shutdown_clone = shutdown.clone();
+    let no_cleanup = args.no_jail_cleanup;
+
+    // Set up signal handler for SIGINT and SIGTERM
+    ctrlc::set_handler(move || {
+        if !shutdown_clone.load(Ordering::SeqCst) {
+            info!("Received interrupt signal, cleaning up...");
+            shutdown_clone.store(true, Ordering::SeqCst);
+
+            // Cleanup jail unless testing flag is set
+            if !no_cleanup && let Err(e) = jail_for_signal.cleanup() {
+                warn!("Failed to cleanup jail on signal: {}", e);
+            }
+
+            // Exit with signal termination status
+            std::process::exit(130); // 128 + SIGINT(2)
+        }
+    })
+    .expect("Error setting signal handler");
 
     // Set up CA certificate environment variables for common tools
     let mut extra_env = Vec::new();

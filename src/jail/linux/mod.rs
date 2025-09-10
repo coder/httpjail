@@ -709,9 +709,16 @@ impl Jail for LinuxJail {
     }
 
     fn cleanup(&self) -> Result<()> {
-        // Resources will be cleaned up automatically when dropped
-        // But we can log that cleanup is happening
-        info!("Jail cleanup complete - resources will be cleaned up automatically");
+        // Since the jail might be in an Arc (e.g., for signal handling),
+        // we can't rely on Drop alone. We need to explicitly trigger cleanup
+        // of the managed resources by taking them out of the jail.
+        // However, since cleanup takes &self not &mut self, we can't modify the jail.
+        // The best we can do is ensure the orphan cleanup works.
+        info!("Triggering jail cleanup for {}", self.config.jail_id);
+
+        // Call the static cleanup method which will clean up all resources
+        Self::cleanup_orphaned(&self.config.jail_id)?;
+
         Ok(())
     }
 
@@ -723,7 +730,7 @@ impl Jail for LinuxJail {
     where
         Self: Sized,
     {
-        info!("Cleaning up orphaned Linux jail: {}", jail_id);
+        debug!("Cleaning up orphaned Linux jail: {}", jail_id);
 
         // Create managed resources for existing system resources
         // When these go out of scope, they will clean themselves up
