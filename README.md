@@ -5,26 +5,10 @@
 
 A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from processes using network isolation and transparent proxy interception.
 
-## Installation
-
-### Install via Cargo
+Install:
 
 ```bash
 cargo install httpjail
-```
-
-### Install from source
-
-```bash
-# Clone the repository
-git clone https://github.com/coder/httpjail
-cd httpjail
-
-# Build with Cargo
-cargo build --release
-
-# Install to PATH
-sudo cp target/release/httpjail /usr/local/bin/
 ```
 
 ## Features
