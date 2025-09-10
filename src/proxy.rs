@@ -203,9 +203,11 @@ impl ProxyServer {
     pub async fn start(&mut self) -> Result<(u16, u16)> {
         // Start HTTP proxy
         let http_listener = if let Some(port) = self.http_port {
+            // If port is 0, let OS choose any available port
+            // Otherwise bind to the specified port
             TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
         } else {
-            // Find available port in 8000-8999 range
+            // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
             self.http_port = Some(listener.local_addr()?.port());
             listener
@@ -245,9 +247,11 @@ impl ProxyServer {
 
         // Start HTTPS proxy
         let https_listener = if let Some(port) = self.https_port {
+            // If port is 0, let OS choose any available port
+            // Otherwise bind to the specified port
             TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
         } else {
-            // Find available port in 8000-8999 range
+            // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
             self.https_port = Some(listener.local_addr()?.port());
             listener

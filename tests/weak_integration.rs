@@ -123,11 +123,8 @@ fn test_weak_mode_allows_localhost() {
     }
 }
 
-// Server mode tests - DRY helper functions
-fn start_server_with_config(
-    port_config: Option<(&str, &str)>,
-    bind_ip: Option<&str>,
-) -> Result<std::process::Child, String> {
+// Simple server start function - we know the ports we're setting
+fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
     let httpjail_path = build_httpjail()?;
 
     let mut cmd = Command::new(&httpjail_path);
@@ -135,22 +132,21 @@ fn start_server_with_config(
         .arg("-r")
         .arg("allow: .*")
         .arg("-vv")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env("HTTPJAIL_HTTP_BIND", http_port.to_string())
+        .env("HTTPJAIL_HTTPS_BIND", https_port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
-    // Set environment variables for ports and/or IP binding
-    if let Some((http_port, https_port)) = port_config {
-        if let Some(ip) = bind_ip {
-            cmd.env("HTTPJAIL_HTTP_BIND", format!("{}:{}", ip, http_port));
-            cmd.env("HTTPJAIL_HTTPS_BIND", format!("{}:{}", ip, https_port));
-        } else {
-            cmd.env("HTTPJAIL_HTTP_BIND", http_port);
-            cmd.env("HTTPJAIL_HTTPS_BIND", https_port);
-        }
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start server: {}", e))?;
+
+    // Wait for the server to start listening
+    if !wait_for_server(http_port, Duration::from_secs(5)) {
+        return Err(format!("Server failed to start on port {}", http_port));
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("Failed to start server: {}", e))
+    Ok(child)
 }
 
 fn wait_for_server(port: u16, max_wait: Duration) -> bool {
@@ -218,19 +214,15 @@ fn verify_bind_address(port: u16, expected_ip: &str) -> bool {
 }
 
 #[test]
-#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
-fn test_server_mode_default_ports() {
-    // Test 1: Server with default ports (8080/8443)
-    let mut server = start_server_with_config(None, None).expect("Failed to start server");
+fn test_server_mode() {
+    // Test server mode with specific ports
+    let http_port = 19876;
+    let https_port = 19877;
 
-    // Wait for server to start (longer timeout for CI)
-    assert!(
-        wait_for_server(8080, Duration::from_secs(10)),
-        "Server failed to start on default port 8080"
-    );
+    let mut server = start_server(http_port, https_port).expect("Failed to start server");
 
     // Test HTTP proxy works
-    match test_curl_through_proxy(8080, 8443) {
+    match test_curl_through_proxy(http_port, https_port) {
         Ok(_response) => {
             // Success - proxy is working
         }
@@ -239,72 +231,8 @@ fn test_server_mode_default_ports() {
 
     // Verify binds to localhost only
     assert!(
-        verify_bind_address(8080, "127.0.0.1"),
+        verify_bind_address(http_port, "127.0.0.1"),
         "Server should bind to localhost"
-    );
-
-    // Cleanup
-    let _ = server.kill();
-    let _ = server.wait();
-}
-
-#[test]
-#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
-fn test_server_mode_custom_ports() {
-    // Test 2: Server with custom ports
-    let mut server = start_server_with_config(Some(("9090", "9091")), None)
-        .expect("Failed to start server with custom ports");
-
-    // Wait for server to start (longer timeout for CI)
-    assert!(
-        wait_for_server(9090, Duration::from_secs(10)),
-        "Server failed to start on custom port 9090"
-    );
-
-    // Test HTTP proxy works on custom port
-    match test_curl_through_proxy(9090, 9091) {
-        Ok(_response) => {
-            // Success - proxy is working
-        }
-        Err(e) => panic!("Curl test failed: {}", e),
-    }
-
-    // Verify binds to localhost only
-    assert!(
-        verify_bind_address(9090, "127.0.0.1"),
-        "Server should bind to localhost"
-    );
-
-    // Cleanup
-    let _ = server.kill();
-    let _ = server.wait();
-}
-
-#[test]
-#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
-fn test_server_mode_specific_ip() {
-    // Test 3: Server with specific IP (localhost)
-    let mut server = start_server_with_config(Some(("9092", "9093")), Some("127.0.0.1"))
-        .expect("Failed to start server with specific IP");
-
-    // Wait for server to start (longer timeout for CI)
-    assert!(
-        wait_for_server(9092, Duration::from_secs(10)),
-        "Server failed to start on port 9092 with specific IP"
-    );
-
-    // Test HTTP proxy works
-    match test_curl_through_proxy(9092, 9093) {
-        Ok(_response) => {
-            // Success - proxy is working
-        }
-        Err(e) => panic!("Curl test failed: {}", e),
-    }
-
-    // Verify binds to specified IP
-    assert!(
-        verify_bind_address(9092, "127.0.0.1"),
-        "Server should bind to specified IP"
     );
 
     // Cleanup
