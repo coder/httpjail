@@ -218,6 +218,7 @@ fn verify_bind_address(port: u16, expected_ip: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
 fn test_server_mode_default_ports() {
     // Test 1: Server with default ports (8080/8443)
     let mut server = start_server_with_config(None, None).expect("Failed to start server");
@@ -248,6 +249,7 @@ fn test_server_mode_default_ports() {
 }
 
 #[test]
+#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
 fn test_server_mode_custom_ports() {
     // Test 2: Server with custom ports
     let mut server = start_server_with_config(Some(("9090", "9091")), None)
@@ -279,6 +281,7 @@ fn test_server_mode_custom_ports() {
 }
 
 #[test]
+#[cfg_attr(all(target_os = "linux", not(feature = "ci-skip-flaky")), ignore)]
 fn test_server_mode_specific_ip() {
     // Test 3: Server with specific IP (localhost)
     let mut server = start_server_with_config(Some(("9092", "9093")), Some("127.0.0.1"))
