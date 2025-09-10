@@ -89,6 +89,7 @@ mod tests {
     /// Comprehensive test to verify all resources are cleaned up after jail execution
     #[test]
     #[serial]
+    #[cfg(feature = "isolated-cleanup-tests")]
     fn test_comprehensive_resource_cleanup() {
         LinuxPlatform::require_privileges();
 
@@ -217,6 +218,7 @@ mod tests {
     /// Test cleanup after abnormal termination (SIGINT)
     #[test]
     #[serial]
+    #[cfg(feature = "isolated-cleanup-tests")]
     fn test_cleanup_after_sigint() {
         LinuxPlatform::require_privileges();
 

@@ -98,6 +98,13 @@ jobs:
           # Run all tests without CI workarounds since this is a self-hosted runner
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
+      - name: Run isolated cleanup tests
+        run: |
+          source ~/.cargo/env
+          # Run only the comprehensive cleanup and sigint tests with the feature flag
+          # These tests need to run in isolation from other tests
+          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
+
   test-weak:
     name: Weak Mode Integration Tests (Linux)
     runs-on: ubuntu-latest
