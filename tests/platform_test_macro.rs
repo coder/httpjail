@@ -34,12 +34,6 @@ macro_rules! platform_tests {
 
         #[test]
         #[::serial_test::serial]
-        fn test_jail_dry_run_mode() {
-            system_integration::test_jail_dry_run_mode::<$platform>();
-        }
-
-        #[test]
-        #[::serial_test::serial]
         fn test_jail_requires_command() {
             system_integration::test_jail_requires_command::<$platform>();
         }

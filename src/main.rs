@@ -28,10 +28,6 @@ struct Args {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     config: Option<String>,
 
-    /// Log actions without blocking
-    #[arg(long = "dry-run")]
-    dry_run: bool,
-
     /// Monitor without filtering
     #[arg(long = "log-only")]
     log_only: bool,
@@ -317,7 +313,7 @@ async fn main() -> Result<()> {
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
-    let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
+    let rule_engine = RuleEngine::new(rules, args.log_only);
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
@@ -531,7 +527,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, false);
+        let engine = RuleEngine::new(rules, false);
 
         // Test allow rule
         assert!(matches!(
@@ -553,23 +549,10 @@ mod tests {
     }
 
     #[test]
-    fn test_dry_run_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, true, false);
-
-        // In dry-run mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
     fn test_log_only_mode() {
         let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
 
-        let engine = RuleEngine::new(rules, false, true);
+        let engine = RuleEngine::new(rules, true);
 
         // In log-only mode, everything should be allowed
         assert!(matches!(
@@ -593,7 +576,6 @@ mod tests {
         let args = Args {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
-            dry_run: false,
             log_only: false,
             interactive: false,
             weak: false,

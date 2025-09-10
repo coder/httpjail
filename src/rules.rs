@@ -48,17 +48,12 @@ impl Rule {
 #[derive(Clone)]
 pub struct RuleEngine {
     pub rules: Vec<Rule>,
-    pub dry_run: bool,
     pub log_only: bool,
 }
 
 impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, dry_run: bool, log_only: bool) -> Self {
-        RuleEngine {
-            rules,
-            dry_run,
-            log_only,
-        }
+    pub fn new(rules: Vec<Rule>, log_only: bool) -> Self {
+        RuleEngine { rules, log_only }
     }
 
     pub fn evaluate(&self, method: Method, url: &str) -> Action {
@@ -77,9 +72,7 @@ impl RuleEngine {
                             url,
                             rule.pattern.as_str()
                         );
-                        if !self.dry_run {
-                            return Action::Allow;
-                        }
+                        return Action::Allow;
                     }
                     Action::Deny => {
                         warn!(
@@ -88,9 +81,7 @@ impl RuleEngine {
                             url,
                             rule.pattern.as_str()
                         );
-                        if !self.dry_run {
-                            return Action::Deny;
-                        }
+                        return Action::Deny;
                     }
                 }
             }
@@ -98,11 +89,7 @@ impl RuleEngine {
 
         // Default deny if no rules match
         warn!("DENY: {} {} (no matching rules)", method, url);
-        if self.dry_run {
-            Action::Allow
-        } else {
-            Action::Deny
-        }
+        Action::Deny
     }
 }
 
@@ -138,7 +125,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, false);
+        let engine = RuleEngine::new(rules, false);
 
         // Test allow rule
         assert!(matches!(
@@ -168,7 +155,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, false);
+        let engine = RuleEngine::new(rules, false);
 
         // GET should be allowed
         assert!(matches!(
@@ -184,23 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn test_dry_run_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, true, false);
-
-        // In dry-run mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
     fn test_log_only_mode() {
         let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
 
-        let engine = RuleEngine::new(rules, false, true);
+        let engine = RuleEngine::new(rules, true);
 
         // In log-only mode, everything should be allowed
         assert!(matches!(
