@@ -3,9 +3,10 @@ use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::{Action, Rule, RuleEngine};
+use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -28,9 +29,9 @@ struct Args {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     config: Option<String>,
 
-    /// Monitor without filtering
-    #[arg(long = "log-only")]
-    log_only: bool,
+    /// Append requests to a log file
+    #[arg(long = "request-log", value_name = "FILE")]
+    request_log: Option<String>,
 
     /// Interactive approval mode
     #[arg(long = "interactive")]
@@ -313,7 +314,18 @@ async fn main() -> Result<()> {
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
-    let rule_engine = RuleEngine::new(rules, args.log_only);
+    let request_log = if let Some(path) = &args.request_log {
+        Some(Arc::new(Mutex::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .context("Failed to open request log file")?,
+        )))
+    } else {
+        None
+    };
+    let rule_engine = RuleEngine::new(rules, request_log);
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
@@ -527,7 +539,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false);
+        let engine = RuleEngine::new(rules, None);
 
         // Test allow rule
         assert!(matches!(
@@ -549,19 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn test_log_only_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, true);
-
-        // In log-only mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::POST, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
     fn test_build_rules_from_config_file() {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -576,7 +575,7 @@ mod tests {
         let args = Args {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
-            log_only: false,
+            request_log: None,
             interactive: false,
             weak: false,
             verbose: 0,
