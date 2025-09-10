@@ -17,6 +17,7 @@ cargo install httpjail
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🎯 **Regex-based filtering** - Flexible allow/deny rules with regex patterns
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
+- ⛔ **Default deny** - Requests are blocked unless explicitly allowed
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 - ⚡ **Zero configuration** - Works out of the box with sensible defaults
 
@@ -27,6 +28,8 @@ cargo install httpjail
 - [ ] Expand test cases to include WebSockets
 
 ## Quick Start
+
+> By default, httpjail denies all network requests. Add `allow:` rules to permit traffic.
 
 ```bash
 # Allow only requests to github.com
