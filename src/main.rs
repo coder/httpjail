@@ -344,8 +344,8 @@ async fn main() -> Result<()> {
     let (https_port_env, https_bind_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
 
     // Use env port or default to 8080/8443 in server mode
-    let http_port = http_port_env.or_else(|| if args.server { Some(8080) } else { None });
-    let https_port = https_port_env.or_else(|| if args.server { Some(8443) } else { None });
+    let http_port = http_port_env.or(if args.server { Some(8080) } else { None });
+    let https_port = https_port_env.or(if args.server { Some(8443) } else { None });
 
     // Determine bind address based on configuration and mode
     let bind_address = if let Some(ip) = http_bind_ip.or(https_bind_ip) {
