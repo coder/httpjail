@@ -58,7 +58,7 @@ httpjail creates an isolated network environment for the target process, interce
 │  1. Create network namespace                    │
 │  2. Setup nftables rules                        │
 │  3. Start embedded proxy                        │
-│  4. Inject CA certificate                       │
+│  4. Export CA trust env vars                    │
 │  5. Execute target process in namespace         │
 └─────────────────────────────────────────────────┘
                          ↓
@@ -66,7 +66,7 @@ httpjail creates an isolated network environment for the target process, interce
 │              Target Process                     │
 │  • Isolated in network namespace                │
 │  • All HTTP/HTTPS → local proxy                 │
-│  • CA cert in trust store                       │
+│  • CA cert trusted via env vars                 │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -97,7 +97,7 @@ httpjail creates an isolated network environment for the target process, interce
 | Feature           | Linux                    | macOS                       | Windows       |
 | ----------------- | ------------------------ | --------------------------- | ------------- |
 | Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only            | 🚧 Planned    |
-| TLS interception  | ✅ CA injection          | ✅ Env variables            | 🚧 Cert store |
+| TLS interception  | ✅ Transparent MITM + env CA | ✅ Env variables            | 🚧 Cert store |
 | Sudo required     | ⚠️ Yes                   | ✅ No                       | 🚧            |
 | Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧            |
 
@@ -178,24 +178,32 @@ httpjail --interactive -- ./app
 
 ## TLS Interception
 
-httpjail uses a locally-generated Certificate Authority (CA) to intercept HTTPS traffic:
+httpjail performs HTTPS interception using a locally-generated Certificate Authority (CA). The tool does not modify your system trust store. Instead, it configures the jailed process to trust the httpjail CA via environment variables.
 
-1. **Automatic CA Generation**: On first run, httpjail generates a unique CA certificate
-2. **Persistent CA Storage**: The CA is cached in the user's config directory:
+How it works:
+
+1. **CA generation (first run)**: A unique CA keypair is created and persisted.
+2. **Persistent storage** (via `dirs::config_dir()`):
    - macOS: `~/Library/Application Support/httpjail/`
    - Linux: `~/.config/httpjail/`
    - Windows: `%APPDATA%\httpjail\`
-3. **Trust Store Injection**: The CA is temporarily added to the system trust store
-4. **Certificate Generation**: Dynamic certificate generation for intercepted domains
-5. **Cleanup**: CA is removed from trust store after process termination
+   Files: `ca-cert.pem`, `ca-key.pem` (key is chmod 600 on Unix).
+3. **Per‑process trust via env vars**: For the jailed command, httpjail sets common variables so clients trust the CA without touching system stores:
+   - `SSL_CERT_FILE` and `SSL_CERT_DIR`
+   - `CURL_CA_BUNDLE`
+   - `GIT_SSL_CAINFO`
+   - `REQUESTS_CA_BUNDLE`
+   - `NODE_EXTRA_CA_CERTS`
+   These apply on both Linux (strong/transparent mode) and macOS (`--weak` env‑only mode).
+4. **Transparent MITM**:
+   - Linux strong mode redirects TCP 80/443 to the local proxy. HTTPS is intercepted transparently by extracting SNI from ClientHello and presenting a per‑host certificate signed by the httpjail CA.
+   - macOS uses explicit proxying via `HTTP_PROXY`/`HTTPS_PROXY` and typically negotiates HTTPS via CONNECT; interception occurs after CONNECT.
+5. **No system trust changes**: httpjail never installs the CA into OS trust stores; there is no global modification and thus no trust cleanup step. The CA files remain in the config dir for reuse across runs.
 
-### Security Considerations
+Notes and limits:
 
-- CA private key is stored with 600 permissions (Unix) in the config directory
-- CA is only trusted for the duration of the jailed process
-- Each httpjail installation has a unique CA
-- The same CA is reused across runs for consistency
-- Certificates are generated on-the-fly and not persisted
+- Tools that ignore the above env vars will fail TLS verification when intercepted. For those, either add tool‑specific flags to point at `ca-cert.pem` or run with `--no-tls-intercept`.
+- Long‑lived connections are supported: timeouts are applied only to protocol detection, CONNECT header reads, and TLS handshakes — not to proxied streams (e.g., gRPC/WebSocket).
 
 ### Disable TLS Interception
 
