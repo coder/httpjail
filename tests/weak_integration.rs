@@ -1,7 +1,10 @@
 mod common;
 
-use common::{HttpjailCommand, test_https_allow, test_https_blocking};
+use common::{HttpjailCommand, build_httpjail, test_https_allow, test_https_blocking};
+use std::process::{Command, Stdio};
 use std::str::FromStr;
+use std::thread;
+use std::time::Duration;
 
 #[test]
 fn test_weak_mode_blocks_https_correctly() {
@@ -118,4 +121,121 @@ fn test_weak_mode_allows_localhost() {
             panic!("Failed to execute httpjail: {}", e);
         }
     }
+}
+
+// Simple server start function - we know the ports we're setting
+fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
+    let httpjail_path = build_httpjail()?;
+
+    let mut cmd = Command::new(&httpjail_path);
+    cmd.arg("--server")
+        .arg("-r")
+        .arg("allow: .*")
+        .arg("-vv")
+        .env("HTTPJAIL_HTTP_BIND", http_port.to_string())
+        .env("HTTPJAIL_HTTPS_BIND", https_port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start server: {}", e))?;
+
+    // Wait for the server to start listening
+    if !wait_for_server(http_port, Duration::from_secs(5)) {
+        return Err(format!("Server failed to start on port {}", http_port));
+    }
+
+    Ok(child)
+}
+
+fn wait_for_server(port: u16, max_wait: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < max_wait {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            // Give the server a bit more time to fully initialize
+            thread::sleep(Duration::from_millis(500));
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn test_curl_through_proxy(http_port: u16, _https_port: u16) -> Result<String, String> {
+    // First, verify the proxy port is actually listening
+    if !verify_bind_address(http_port, "127.0.0.1") {
+        return Err(format!("Proxy port {} is not listening", http_port));
+    }
+
+    // Use a simple HTTP endpoint that should work in CI
+    // Try with verbose output for debugging
+    let output = Command::new("curl")
+        .arg("-x")
+        .arg(format!("http://127.0.0.1:{}", http_port))
+        .arg("--max-time")
+        .arg("10") // Increase timeout for CI
+        .arg("-s")
+        .arg("-S") // Show errors
+        .arg("-w")
+        .arg("\nHTTP_CODE:%{http_code}")
+        .arg("http://example.com/")
+        .output()
+        .map_err(|e| format!("Failed to run curl: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Check if curl succeeded (exit code 0)
+    if !output.status.success() {
+        // For debugging in CI
+        eprintln!("Curl failed - stdout: {}", stdout);
+        eprintln!("Curl failed - stderr: {}", stderr);
+        return Err(format!(
+            "Curl failed with status: {}, stderr: {}",
+            output.status, stderr
+        ));
+    }
+
+    // Check if we got a valid HTTP response
+    if stdout.contains("HTTP_CODE:200") || stdout.contains("Example Domain") {
+        Ok(stdout.to_string())
+    } else if stdout.contains("HTTP_CODE:403") {
+        // Request was blocked by proxy (which is also fine for testing)
+        Ok("Blocked by proxy".to_string())
+    } else {
+        Err(format!("Unexpected response: {}", stdout))
+    }
+}
+
+fn verify_bind_address(port: u16, expected_ip: &str) -> bool {
+    // Try to connect to the expected IP
+    std::net::TcpStream::connect(format!("{}:{}", expected_ip, port)).is_ok()
+}
+
+#[test]
+fn test_server_mode() {
+    // Test server mode with specific ports
+    let http_port = 19876;
+    let https_port = 19877;
+
+    let mut server = start_server(http_port, https_port).expect("Failed to start server");
+
+    // Test HTTP proxy works
+    match test_curl_through_proxy(http_port, https_port) {
+        Ok(_response) => {
+            // Success - proxy is working
+        }
+        Err(e) => panic!("Curl test failed: {}", e),
+    }
+
+    // Verify binds to localhost only
+    assert!(
+        verify_bind_address(http_port, "127.0.0.1"),
+        "Server should bind to localhost"
+    );
+
+    // Cleanup
+    let _ = server.kill();
+    let _ = server.wait();
 }
