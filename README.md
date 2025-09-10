@@ -211,45 +211,6 @@ Notes and limits:
 httpjail --no-tls-intercept --allow ".*" -- ./app
 ```
 
-## Command-Line Options
-
-```
-httpjail [OPTIONS] -- <COMMAND> [ARGS]
-
-OPTIONS:
-    -r, --rule <RULE>            Add a rule (format: "action[-method]: pattern")
-                                 Actions: allow, deny
-                                 Methods: get, post, put, delete, head, options, connect, trace, patch
-    -c, --config <FILE>          Use configuration file
-    --dry-run                    Log actions without blocking
-    --request-log <FILE>         Append requests to log file (+ for allowed, - for blocked)
-    --no-tls-intercept          Disable HTTPS interception
-    --interactive               Interactive approval mode
-    --weak                      Use weak mode (env vars only, no system isolation)
-    --timeout <SECONDS>         Timeout for command execution
-    -v, --verbose               Increase verbosity (-vvv for max)
-    -h, --help                  Print help
-    -V, --version               Print version with commit hash
-
-RULE FORMAT:
-    Rules are specified with -r/--rule and use the format:
-    "action[-method]: pattern"
-
-    Examples:
-    -r "allow: github\.com"              # Allow all methods to github.com
-    -r "allow-get: api\..*"              # Allow only GET requests to api.*
-    -r "deny-post: telemetry\..*"        # Deny POST requests to telemetry.*
-    -r "deny: .*"                        # Deny everything (usually last rule)
-
-    Rules are evaluated in the order specified.
-
-EXAMPLES:
-    httpjail -r "allow: github\.com" -r "deny: .*" -- git clone https://github.com/user/repo
-    httpjail --config rules.txt -- npm install
-    httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
-    httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
-```
-
 ## License
 
 This project is released into the public domain under the CC0 1.0 Universal license. See [LICENSE](LICENSE) for details.
