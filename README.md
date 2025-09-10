@@ -17,8 +17,9 @@ A cross-platform tool for monitoring and restricting HTTP/HTTPS requests from pr
 - [ ] Block all other TCP/UDP traffic when in jail mode. Exception for UDP to 53. DNS is pretty darn safe.
 - [ ] Add a `--server` mode that runs the proxy server but doesn't execute the command
 - [ ] Expand test cases to include WebSockets
-- [ ] Add Linux support with parity with macOS
-- [ ] Add robust firewall cleanup mechanism for Linux and macOS
+- [x] Add Linux support with parity with macOS
+- [x] Add robust firewall cleanup mechanism for Linux and macOS
+- [x] Support/test concurrent jailing across macOS and Linux
 
 ## Quick Start
 
@@ -50,7 +51,7 @@ httpjail creates an isolated network environment for the target process, interce
 │                 httpjail Process                │
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
-│  2. Setup iptables rules                        │
+│  2. Setup nftables rules                        │
 │  3. Start embedded proxy                        │
 │  4. Inject CA certificate                       │
 │  5. Execute target process in namespace         │
@@ -71,37 +72,29 @@ httpjail creates an isolated network environment for the target process, interce
 │                 httpjail Process                 │
 ├─────────────────────────────────────────────────┤
 │  1. Start HTTP/HTTPS proxy servers              │
-│  2. Configure PF (Packet Filter) rules          │
-│  3. Create httpjail group (GID-based isolation) │
-│  4. Generate/load CA certificate                │
-│  5. Execute target with group membership        │
+│  2. Set HTTP_PROXY/HTTPS_PROXY env vars         │
+│  3. Generate/load CA certificate                │
+│  4. Execute target with proxy environment       │
 └─────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────┐
 │              Target Process                     │
-│  • Running with httpjail GID                    │
-│  • TCP traffic redirected via PF rules          │
-│  • HTTP → port 8xxx, HTTPS → port 8xxx          │
+│  • HTTP_PROXY/HTTPS_PROXY environment vars      │
+│  • Applications must respect proxy settings     │
 │  • CA cert via environment variables            │
 └─────────────────────────────────────────────────┘
 ```
 
-The macOS implementation uses PF (Packet Filter) for transparent TCP redirection:
-
-- Creates a dedicated `httpjail` group for process isolation
-- Uses PF rules to redirect TCP traffic from processes with the httpjail GID
-- HTTP traffic (port 80) → local proxy (port 8xxx)
-- HTTPS traffic (port 443) → local proxy (port 8xxx)
-- Supports both CONNECT tunneling and transparent TLS interception
-- CA certificate distributed via environment variables
+**Note**: Due to macOS PF (Packet Filter) limitations, httpjail uses environment-based proxy configuration on macOS. PF translation rules (such as `rdr` and `route-to`) cannot match on user or group, making transparent traffic interception impossible. As a result, httpjail operates in "weak mode" on macOS, relying on applications to respect the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Most command-line tools and modern applications respect these settings, but some may bypass them. See also https://github.com/coder/httpjail/issues/7.
 
 ## Platform Support
 
-| Feature           | Linux                    | macOS               | Windows       | Weak Mode (All) |
-| ----------------- | ------------------------ | ------------------- | ------------- | --------------- |
-| Traffic isolation | ✅ Namespaces + iptables | ✅ GID + PF (pfctl) | 🚧 Planned    | ✅ Env vars     |
-| TLS interception  | ✅ CA injection          | ✅ Env variables    | 🚧 Cert store | ✅ Env vars     |
-| Sudo required     | ⚠️ Yes                   | ⚠️ Yes              | 🚧            | ✅ No           |
+| Feature           | Linux                    | macOS                       | Windows       |
+| ----------------- | ------------------------ | --------------------------- | ------------- |
+| Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only            | 🚧 Planned    |
+| TLS interception  | ✅ CA injection          | ✅ Env variables            | 🚧 Cert store |
+| Sudo required     | ⚠️ Yes                   | ✅ No                       | 🚧            |
+| Force all traffic | ✅ Yes                   | ❌ No (apps must cooperate) | 🚧            |
 
 ## Installation
 
@@ -110,16 +103,14 @@ The macOS implementation uses PF (Packet Filter) for transparent TCP redirection
 #### Linux
 
 - Linux kernel 3.8+ (network namespace support)
-- iptables
+- nftables (nft command)
 - libssl-dev (for TLS)
 - sudo access (for namespace creation)
 
 #### macOS
 
 - macOS 10.15+ (Catalina or later)
-- pfctl (included in macOS)
-- sudo access (for PF rules and group creation)
-- coreutils (optional, for gtimeout support)
+- No special permissions required (runs in weak mode)
 
 ### Install from source
 
@@ -285,3 +276,7 @@ EXAMPLES:
     httpjail --dry-run -r "deny: telemetry" -r "allow: .*" -- ./application
     httpjail --weak -r "allow: .*" -- npm test  # Use environment variables only
 ```
+
+## License
+
+This project is released into the public domain under the CC0 1.0 Universal license. See [LICENSE](LICENSE) for details.

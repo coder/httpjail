@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,72 +26,89 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo test --bins --verbose
+        run: cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
-        run: cargo test --test smoke_test --verbose
+        run: cargo nextest run --profile ci --test smoke_test --verbose
 
-      - name: Run macOS integration tests (with sudo)
+      - name: Run weak mode integration tests
         run: |
-          # The tests require root privileges for PF rules on macOS
-          # GitHub Actions provides passwordless sudo on macOS runners
-          # Use -E to preserve environment and full path to cargo
-          sudo -E $(which cargo) test --test macos_integration --verbose
+          # On macOS, we only support weak mode due to PF limitations
+          # (PF translation rules cannot match on user/group)
+          cargo nextest run --profile ci --test weak_integration --verbose
 
   test-linux:
     name: Linux Tests
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [stable]
+    runs-on: [self-hosted, linux]
 
     steps:
+      - name: Fix permissions from previous runs
+        run: |
+          # Clean up any files left from previous sudo runs before checkout
+          # Use GITHUB_WORKSPACE parent directory or current working directory
+          WORK_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
+          if [ -d "$WORK_DIR" ]; then
+            sudo chown -R $(whoami):$(whoami) "$WORK_DIR" || true
+          fi
+
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
+      - name: Fix permissions on current directory
+        run: |
+          # Clean up any files left from previous sudo runs
+          if [ -d target ]; then
+            sudo chown -R $(whoami):$(whoami) target || true
+          fi
+          if [ -d ~/.cargo/registry ]; then
+            sudo chown -R $(whoami):$(whoami) ~/.cargo/registry || true
+          fi
 
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        run: |
+          source ~/.cargo/env
+          if ! command -v cargo-nextest &> /dev/null; then
+            cargo install cargo-nextest --locked
+          fi
 
       - name: Build
-        run: cargo build --verbose
+        run: |
+          source ~/.cargo/env
+          cargo build --verbose
 
       - name: Run unit tests
-        run: cargo test --bins --verbose
+        run: |
+          source ~/.cargo/env
+          cargo nextest run --profile ci --bins --verbose
 
       - name: Run smoke tests
-        run: cargo test --test smoke_test --verbose
-
-      - name: Run jail integration tests
-        run: cargo test --test jail_integration --verbose
-
-      - name: Debug TLS environment
         run: |
-          echo "=== Debugging TLS/Certificate Environment ==="
-          chmod +x scripts/debug_tls_env.sh
-          ./scripts/debug_tls_env.sh
-          sudo ./scripts/debug_tls_env.sh
-          echo "=== End TLS Debug ==="
+          source ~/.cargo/env
+          cargo nextest run --profile ci --test smoke_test --verbose
 
-      - name: Run Linux jail integration tests (with sudo)
+      - name: Run Linux jail integration tests
         run: |
-          # Ensure ip netns support is available
-          sudo ip netns list || true
-          # Run the Linux-specific jail tests with root privileges
-          # Use full path to cargo since sudo doesn't preserve PATH
-          sudo -E $(which cargo) test --test linux_integration --verbose
+          source ~/.cargo/env
+          # Run all tests without CI workarounds since this is a self-hosted runner
+          sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
+
+      - name: Run isolated cleanup tests
+        run: |
+          source ~/.cargo/env
+          # Run only the comprehensive cleanup and sigint tests with the feature flag
+          # These tests need to run in isolation from other tests
+          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -103,15 +120,21 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build
         run: cargo build --verbose
 
       - name: Run weak mode integration tests
-        run: cargo test --test weak_integration --verbose
+        run: cargo nextest run --profile ci --test weak_integration --verbose
 
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -126,7 +149,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   fmt:
     name: Format

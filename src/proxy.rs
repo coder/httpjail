@@ -103,13 +103,11 @@ pub fn init_client_with_ca(ca_cert_der: rustls::pki_types::CertificateDer<'stati
         } else {
             // Normal path - use webpki roots + httpjail CA
             let config = create_client_config_with_ca(ca_cert_der);
-
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(config)
-                .https_or_http()
-                .enable_http1()
-                .build();
-
+            // Build an HttpConnector with fast IPv6->IPv4 fallback
+            let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+            http.enforce_http(false);
+            http.set_happy_eyeballs_timeout(Some(Duration::from_millis(250)));
+            let https = hyper_rustls::HttpsConnector::from((http, config));
             info!("HTTPS connector initialized with webpki roots and httpjail CA");
             https
         };
@@ -243,6 +241,8 @@ impl ProxyServer {
             }
         });
 
+        // IPv6-specific listener not required; IPv4 listener suffices for jail routing
+
         // Start HTTPS proxy
         let https_listener = if let Some(port) = self.https_port {
             TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
@@ -282,6 +282,8 @@ impl ProxyServer {
                 }
             }
         });
+
+        // IPv6-specific listener not required; IPv4 listener suffices for jail routing
 
         Ok((http_port, https_port))
     }

@@ -203,16 +203,26 @@ impl CertificateManager {
         params.serial_number = Some(rcgen::SerialNumber::from(vec![1, 2, 3, 4]));
 
         // Set validity period - 1 year from now
+        // Use shorter validity period to ensure UTCTime format for OpenSSL 3.0 compatibility
         use chrono::{Datelike, Utc};
         let now = Utc::now();
+        // Ensure we use UTCTime format (years < 2050) for OpenSSL 3.0 compatibility
+        let end_year = std::cmp::min(now.year() + 1, 2049);
         let not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-        let not_after = rcgen::date_time_ymd(now.year() + 1, now.month() as u8, now.day() as u8);
+        let not_after = rcgen::date_time_ymd(end_year, now.month() as u8, now.day() as u8);
         params.not_before = not_before;
         params.not_after = not_after;
 
         // Sign certificate with CA using the shared key pair
         let cert = params.signed_by(&self.server_key_pair, &self.ca_cert, &self.ca_key_pair)?;
         let cert_der = cert.der().clone();
+
+        // Debug certificate details for OpenSSL compatibility issues
+        debug!(
+            "Generated certificate for {}: {} bytes",
+            hostname,
+            cert_der.len()
+        );
 
         // Also include CA cert in chain
         let ca_cert_der = self.ca_cert.der().clone();
@@ -274,14 +284,12 @@ impl CertificateManager {
                 Some(PathBuf::from("/root/.config/httpjail/ca-cert.pem")),
             ];
 
-            for path_option in &possible_paths {
-                if let Some(path) = path_option {
-                    if path.exists() {
-                        ca_path = Utf8PathBuf::try_from(path.clone())
-                            .context("CA cert path is not valid UTF-8")?;
-                        debug!("Found CA certificate at alternate location: {}", ca_path);
-                        break;
-                    }
+            for path in possible_paths.iter().flatten() {
+                if path.exists() {
+                    ca_path = Utf8PathBuf::try_from(path.clone())
+                        .context("CA cert path is not valid UTF-8")?;
+                    debug!("Found CA certificate at alternate location: {}", ca_path);
+                    break;
                 }
             }
 

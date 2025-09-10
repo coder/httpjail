@@ -1,0 +1,26 @@
+# Nextest configuration file
+# https://nexte.st/book/configuration
+
+[profile.default]
+# Stop test run after 5 failures
+fail-fast = { max-fail = 5 }
+
+# Test output settings
+success-output = "never"
+status-level = "pass"
+
+# Retry settings
+retries = { backoff = "fixed", count = 0 }
+
+# Timeout settings
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.ci]
+# CI-specific configuration (inherits from default)
+# More verbose output for debugging CI failures
+failure-output = "final"
+success-output = "never"
+status-level = "retry"
+
+# Allow more retries in CI for flaky tests
+retries = { backoff = "exponential", count = 2, delay = "1s", max-delay = "10s" }

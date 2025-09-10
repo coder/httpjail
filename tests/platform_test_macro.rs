@@ -4,6 +4,12 @@ macro_rules! platform_tests {
     ($platform:ty) => {
         #[test]
         #[::serial_test::serial]
+        fn test_jail_network_diagnostics() {
+            system_integration::test_jail_network_diagnostics::<$platform>();
+        }
+
+        #[test]
+        #[::serial_test::serial]
         fn test_jail_allows_matching_requests() {
             system_integration::test_jail_allows_matching_requests::<$platform>();
         }
@@ -72,6 +78,18 @@ macro_rules! platform_tests {
         #[::serial_test::serial]
         fn test_jail_privilege_dropping() {
             system_integration::test_jail_privilege_dropping::<$platform>();
+        }
+
+        #[test]
+        #[::serial_test::serial]
+        fn test_concurrent_jail_isolation() {
+            system_integration::test_concurrent_jail_isolation::<$platform>();
+        }
+
+        #[test]
+        #[::serial_test::serial]
+        fn test_jail_dns_resolution() {
+            system_integration::test_jail_dns_resolution::<$platform>();
         }
     };
 }

@@ -36,3 +36,14 @@ User-facing documentation should be in the README.md file.
 Code/testing/contributing documentation should be in the CONTRIBUTING.md file.
 
 When updating any user-facing interface of the tool in a way that breaks compatibility or adds a new feature, update the README.md file.
+
+## Clippy
+
+CI requires the following to pass on both macOS and Linux targets:
+
+```
+cargo clippy --all-targets -- -D warnings
+```
+
+When the user asks to run clippy and provides the ability to run on both targets, try to run it
+on both targets.

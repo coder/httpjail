@@ -47,7 +47,7 @@ mod tests {
 
         // Get initial namespace count
         let output = std::process::Command::new("ip")
-            .args(&["netns", "list"])
+            .args(["netns", "list"])
             .output()
             .expect("Failed to list namespaces");
 
@@ -69,7 +69,7 @@ mod tests {
 
         // Check namespace was cleaned up
         let output = std::process::Command::new("ip")
-            .args(&["netns", "list"])
+            .args(["netns", "list"])
             .output()
             .expect("Failed to list namespaces");
 
@@ -86,70 +86,198 @@ mod tests {
         );
     }
 
-    /// Linux-specific test: verify concurrent namespace isolation
+    /// Comprehensive test to verify all resources are cleaned up after jail execution
     #[test]
     #[serial]
-    fn test_concurrent_namespace_isolation() {
+    #[cfg(feature = "isolated-cleanup-tests")]
+    fn test_comprehensive_resource_cleanup() {
         LinuxPlatform::require_privileges();
-        use std::thread;
-        use std::time::Duration;
 
-        // Start first httpjail instance that sleeps (using std Command for spawn)
-        let httpjail_path = std::env::current_dir()
-            .unwrap()
-            .join("target/debug/httpjail");
+        // 1. Get initial state of all resources
 
-        let mut child1 = std::process::Command::new(&httpjail_path)
-            .arg("-r")
-            .arg("allow: .*")
-            .arg("--")
-            .arg("sh")
-            .arg("-c")
-            .arg("echo Instance1 && sleep 2 && echo Instance1Done")
-            .spawn()
-            .expect("Failed to start first httpjail");
+        // Network namespaces
+        let initial_namespaces = std::process::Command::new("ip")
+            .args(["netns", "list"])
+            .output()
+            .expect("Failed to list namespaces")
+            .stdout;
+        let initial_ns_count = String::from_utf8_lossy(&initial_namespaces)
+            .lines()
+            .filter(|line| line.contains("httpjail_"))
+            .count();
 
-        // Give it time to set up
-        thread::sleep(Duration::from_millis(500));
+        // Virtual ethernet pairs
+        let initial_links = std::process::Command::new("ip")
+            .args(["link", "show"])
+            .output()
+            .expect("Failed to list network links")
+            .stdout;
+        let initial_veth_count = String::from_utf8_lossy(&initial_links)
+            .lines()
+            .filter(|line| line.contains("vh_") || line.contains("vn_"))
+            .count();
 
-        // Start second httpjail instance
-        let output2 = std::process::Command::new(&httpjail_path)
-            .arg("-r")
+        // NFTables tables
+        let initial_nft_tables = std::process::Command::new("nft")
+            .args(["list", "tables"])
+            .output()
+            .expect("Failed to list nftables")
+            .stdout;
+        let initial_nft_count = String::from_utf8_lossy(&initial_nft_tables)
+            .lines()
+            .filter(|line| line.contains("httpjail_"))
+            .count();
+
+        // Namespace config directories
+        let initial_netns_dirs = std::fs::read_dir("/etc/netns")
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().contains("httpjail_"))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        // 2. Run httpjail command
+        let mut cmd = httpjail_cmd();
+        cmd.arg("-r")
             .arg("allow: .*")
             .arg("--")
             .arg("echo")
-            .arg("Instance2")
+            .arg("test");
+
+        let output = cmd.output().expect("Failed to execute httpjail");
+        assert!(output.status.success(), "httpjail command failed");
+
+        // 3. Check all resources were cleaned up
+
+        // Network namespaces
+        let final_namespaces = std::process::Command::new("ip")
+            .args(["netns", "list"])
             .output()
-            .expect("Failed to execute second httpjail");
-
-        // Both should succeed without interference
-        let output1 = child1
-            .wait_with_output()
-            .expect("Failed to wait for first httpjail");
-
-        assert!(
-            output1.status.success(),
-            "First instance failed: {:?}",
-            String::from_utf8_lossy(&output1.stderr)
-        );
-        assert!(
-            output2.status.success(),
-            "Second instance failed: {:?}",
-            String::from_utf8_lossy(&output2.stderr)
+            .expect("Failed to list namespaces")
+            .stdout;
+        let final_ns_count = String::from_utf8_lossy(&final_namespaces)
+            .lines()
+            .filter(|line| line.contains("httpjail_"))
+            .count();
+        assert_eq!(
+            initial_ns_count, final_ns_count,
+            "Network namespace not cleaned up. Initial: {}, Final: {}",
+            initial_ns_count, final_ns_count
         );
 
-        // Verify both ran
-        let stdout1 = String::from_utf8_lossy(&output1.stdout);
-        let stdout2 = String::from_utf8_lossy(&output2.stdout);
-        assert!(
-            stdout1.contains("Instance1"),
-            "First instance didn't run: {}",
-            stdout1
+        // Virtual ethernet pairs
+        let final_links = std::process::Command::new("ip")
+            .args(["link", "show"])
+            .output()
+            .expect("Failed to list network links")
+            .stdout;
+        let final_veth_count = String::from_utf8_lossy(&final_links)
+            .lines()
+            .filter(|line| line.contains("vh_") || line.contains("vn_"))
+            .count();
+        assert_eq!(
+            initial_veth_count, final_veth_count,
+            "Virtual ethernet pairs not cleaned up. Initial: {}, Final: {}",
+            initial_veth_count, final_veth_count
         );
-        assert!(
-            stdout2.contains("Instance2"),
-            "Second instance didn't run: {}",
-            stdout2
+
+        // NFTables tables
+        let final_nft_tables = std::process::Command::new("nft")
+            .args(["list", "tables"])
+            .output()
+            .expect("Failed to list nftables")
+            .stdout;
+        let final_nft_count = String::from_utf8_lossy(&final_nft_tables)
+            .lines()
+            .filter(|line| line.contains("httpjail_"))
+            .count();
+        assert_eq!(
+            initial_nft_count, final_nft_count,
+            "NFTables not cleaned up. Initial: {}, Final: {}",
+            initial_nft_count, final_nft_count
+        );
+
+        // Namespace config directories
+        let final_netns_dirs = std::fs::read_dir("/etc/netns")
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().contains("httpjail_"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            initial_netns_dirs, final_netns_dirs,
+            "Namespace config directories not cleaned up. Initial: {}, Final: {}",
+            initial_netns_dirs, final_netns_dirs
+        );
+    }
+
+    /// Test cleanup after abnormal termination (SIGINT)
+    #[test]
+    #[serial]
+    #[cfg(feature = "isolated-cleanup-tests")]
+    fn test_cleanup_after_sigint() {
+        LinuxPlatform::require_privileges();
+
+        use std::thread;
+        use std::time::Duration;
+
+        // Get initial resource counts
+        let initial_ns_count = std::process::Command::new("ip")
+            .args(["netns", "list"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| l.contains("httpjail_"))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        // Start httpjail with a long-running command using std::process::Command directly
+        let httpjail_path = assert_cmd::cargo::cargo_bin("httpjail");
+        let mut child = std::process::Command::new(&httpjail_path)
+            .arg("-r")
+            .arg("allow: .*")
+            .arg("--")
+            .arg("sleep")
+            .arg("60")
+            .spawn()
+            .expect("Failed to spawn httpjail");
+
+        // Give it time to set up resources
+        thread::sleep(Duration::from_millis(500));
+
+        // Send SIGINT (which ctrlc handles)
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGINT);
+        }
+
+        // Wait for process to exit
+        let _ = child.wait();
+
+        // Give cleanup a moment to complete
+        thread::sleep(Duration::from_millis(500));
+
+        // Check resources were cleaned up
+        let final_ns_count = std::process::Command::new("ip")
+            .args(["netns", "list"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|l| l.contains("httpjail_"))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        assert_eq!(
+            initial_ns_count, final_ns_count,
+            "Resources not cleaned up after SIGINT. Initial namespaces: {}, Final: {}",
+            initial_ns_count, final_ns_count
         );
     }
 }

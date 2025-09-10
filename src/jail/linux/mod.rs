@@ -1,17 +1,15 @@
-mod iptables;
+mod nftables;
+mod resources;
 
 use super::{Jail, JailConfig};
+use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use iptables::IPTablesRule;
+use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-/// Linux namespace network configuration constants
-pub const LINUX_NS_HOST_IP: [u8; 4] = [169, 254, 1, 1];
-pub const LINUX_NS_HOST_CIDR: &str = "169.254.1.1/30";
-pub const LINUX_NS_GUEST_CIDR: &str = "169.254.1.2/30";
-pub const LINUX_NS_SUBNET: &str = "169.254.1.0/30";
+// Linux namespace network configuration constants were previously fixed; the
+// implementation now computes unique per‑jail subnets dynamically.
 
 /// Format an IP address array as a string
 pub fn format_ip(ip: [u8; 4]) -> String {
@@ -28,9 +26,9 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// proxy settings.
 ///
 /// ```
-/// [Application in Namespace] ---> [iptables DNAT] ---> [Proxy on Host:8040/8043]
+/// [Application in Namespace] ---> [nftables DNAT] ---> [Proxy on Host:HTTP/HTTPS]
 ///            |                                               |
-///     (169.254.1.2)                                   (169.254.1.1)
+///     (10.99.X.2)                                      (10.99.X.1)
 ///            |                                               |
 ///       [veth_ns] <------- veth pair --------> [veth_host on Host]
 ///            |                                               |
@@ -41,59 +39,49 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 ///
 /// 1. **Network Namespace**: Complete isolation, no interference with host networking
 /// 2. **veth Pair**: Virtual ethernet cable connecting namespace to host
-/// 3. **Private IP Range**: 169.254.1.0/30 (link-local, won't conflict with real networks)
-/// 4. **iptables DNAT**: Transparent redirection without environment variables
+/// 3. **Private IP Range**: Unique per-jail /30 within 10.99.0.0/16 (RFC1918)
+/// 4. **nftables DNAT**: Transparent redirection without environment variables
 /// 5. **DNS Override**: Handle systemd-resolved incompatibility with namespaces
 ///
 /// ## Cleanup Guarantees
 ///
 /// Resources are cleaned up in priority order:
-/// 1. **Namespace deletion**: Automatically cleans up veth pair and namespace iptables rules
-/// 2. **Host iptables rules**: Tagged with comments for identification and cleanup
+/// 1. **Namespace deletion**: Automatically cleans up veth pair and namespace nftables rules
+/// 2. **Host nftables table**: Atomic cleanup of entire table with all rules
 /// 3. **Config directory**: /etc/netns/<namespace>/ removed if it exists
 ///
-/// The namespace deletion is the critical cleanup - even if host iptables cleanup fails,
+/// The namespace deletion is the critical cleanup - even if host nftables cleanup fails,
 /// the jail is effectively destroyed once the namespace is gone.
 ///
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
     config: JailConfig,
-    namespace_name: String,
-    veth_host: String,
-    veth_ns: String,
-    namespace_created: bool,
-    /// Host iptables rules that will be automatically cleaned up on drop
-    host_iptables_rules: Vec<IPTablesRule>,
+    namespace: Option<ManagedResource<NetworkNamespace>>,
+    veth_pair: Option<ManagedResource<VethPair>>,
+    namespace_config: Option<ManagedResource<NamespaceConfig>>,
+    nftables: Option<ManagedResource<NFTable>>,
+    // Per-jail computed networking (unique /30 inside 10.99/16)
+    host_ip: [u8; 4],
+    host_cidr: String,
+    guest_cidr: String,
+    subnet_cidr: String,
 }
 
 impl LinuxJail {
     pub fn new(config: JailConfig) -> Result<Self> {
-        // Generate unique names for concurrent safety
-        let unique_id = Self::generate_unique_id();
-
+        let (host_ip, host_cidr, guest_cidr, subnet_cidr) =
+            Self::compute_subnet_for_jail(&config.jail_id);
         Ok(Self {
             config,
-            namespace_name: format!("httpjail_{}", unique_id),
-            veth_host: format!("veth_h_{}", unique_id),
-            veth_ns: format!("veth_n_{}", unique_id),
-            namespace_created: false,
-            host_iptables_rules: Vec::new(),
+            namespace: None,
+            veth_pair: None,
+            namespace_config: None,
+            nftables: None,
+            host_ip,
+            host_cidr,
+            guest_cidr,
+            subnet_cidr,
         })
-    }
-
-    /// Generate a unique ID for namespace and interface names
-    fn generate_unique_id() -> String {
-        // Use microseconds for timestamp to keep the ID shorter
-        // Linux interface names are limited to 15 characters (IFNAMSIZ - 1)
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros();
-
-        // Take last 7 digits of timestamp for uniqueness while keeping it short
-        // This gives us ~10 seconds of unique values which is plenty for concurrent runs
-        // With "veth_n_" prefix (7 chars) + 7 digits = 14 chars (under 15 char limit)
-        format!("{:07}", timestamp % 10_000_000)
     }
 
     /// Check if running as root
@@ -112,70 +100,80 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Create the network namespace
-    fn create_namespace(&mut self) -> Result<()> {
-        // Try to create namespace with retry logic for concurrent safety
-        for attempt in 0..3 {
-            let output = Command::new("ip")
-                .args(["netns", "add", &self.namespace_name])
-                .output()
-                .context("Failed to execute ip netns add")?;
-
-            if output.status.success() {
-                info!("Created network namespace: {}", self.namespace_name);
-                self.namespace_created = true;
-                return Ok(());
-            }
-
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("File exists") && attempt < 2 {
-                // Namespace name collision, regenerate and retry
-                warn!(
-                    "Namespace {} already exists, regenerating name",
-                    self.namespace_name
-                );
-                let unique_id = Self::generate_unique_id();
-                self.namespace_name = format!("httpjail_{}", unique_id);
-                self.veth_host = format!("veth_h_{}", unique_id);
-                self.veth_ns = format!("veth_n_{}", unique_id);
-                continue;
-            }
-
-            anyhow::bail!("Failed to create namespace: {}", stderr);
-        }
-
-        anyhow::bail!("Failed to create namespace after 3 attempts")
+    /// Get the namespace name from the config
+    fn namespace_name(&self) -> String {
+        format!("httpjail_{}", self.config.jail_id)
     }
 
-    /// Set up veth pair for namespace connectivity
-    fn setup_veth_pair(&self) -> Result<()> {
+    /// Get the veth host interface name
+    fn veth_host(&self) -> String {
+        format!("vh_{}", self.config.jail_id)
+    }
+
+    /// Get the veth namespace interface name
+    fn veth_ns(&self) -> String {
+        format!("vn_{}", self.config.jail_id)
+    }
+
+    /// Compute a stable unique /30 in 10.99.0.0/16 for this jail
+    /// There are 16384 possible /30 subnets in the /16.
+    fn compute_subnet_for_jail(jail_id: &str) -> ([u8; 4], String, String, String) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        jail_id.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = (h % 16384) as u32; // 0..16383
+        let base = idx * 4; // network base offset within 10.99/16
+        let third = ((base >> 8) & 0xFF) as u8;
+        let fourth = (base & 0xFF) as u8;
+        let network = [10u8, 99u8, third, fourth];
+        let host_ip = [
+            network[0],
+            network[1],
+            network[2],
+            network[3].saturating_add(1),
+        ];
+        let guest_ip = [
+            network[0],
+            network[1],
+            network[2],
+            network[3].saturating_add(2),
+        ];
+        let host_cidr = format!("{}/30", format_ip(host_ip));
+        let guest_cidr = format!("{}/30", format_ip(guest_ip));
+        let subnet_cidr = format!("{}/30", format_ip(network));
+        (host_ip, host_cidr, guest_cidr, subnet_cidr)
+    }
+
+    /// Create the network namespace using ManagedResource
+    fn create_namespace(&mut self) -> Result<()> {
+        self.namespace = Some(ManagedResource::<NetworkNamespace>::create(
+            &self.config.jail_id,
+        )?);
+        info!("Created network namespace: {}", self.namespace_name());
+        Ok(())
+    }
+
+    /// Set up veth pair for namespace connectivity using ManagedResource
+    fn setup_veth_pair(&mut self) -> Result<()> {
         // Create veth pair
-        let output = Command::new("ip")
-            .args([
-                "link",
-                "add",
-                &self.veth_host,
-                "type",
-                "veth",
-                "peer",
-                "name",
-                &self.veth_ns,
-            ])
-            .output()
-            .context("Failed to create veth pair")?;
+        self.veth_pair = Some(ManagedResource::<VethPair>::create(&self.config.jail_id)?);
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create veth pair: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        debug!("Created veth pair: {} <-> {}", self.veth_host, self.veth_ns);
+        debug!(
+            "Created veth pair: {} <-> {}",
+            self.veth_host(),
+            self.veth_ns()
+        );
 
         // Move veth_ns end into the namespace
         let output = Command::new("ip")
-            .args(["link", "set", &self.veth_ns, "netns", &self.namespace_name])
+            .args([
+                "link",
+                "set",
+                &self.veth_ns(),
+                "netns",
+                &self.namespace_name(),
+            ])
             .output()
             .context("Failed to move veth to namespace")?;
 
@@ -191,59 +189,77 @@ impl LinuxJail {
 
     /// Configure networking inside the namespace
     fn configure_namespace_networking(&self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+        let veth_ns = self.veth_ns();
+
+        // Ensure DNS is properly configured in the namespace
+        // This is a fallback in case the bind mount didn't work
+        self.ensure_namespace_dns()?;
+
         // Format the host IP once
-        let host_ip = format_ip(LINUX_NS_HOST_IP);
+        let host_ip = format_ip(self.host_ip);
 
         // Commands to run inside the namespace
         let commands = vec![
             // Bring up loopback
             vec!["ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            vec![
-                "ip",
-                "addr",
-                "add",
-                LINUX_NS_GUEST_CIDR,
-                "dev",
-                &self.veth_ns,
-            ],
-            vec!["ip", "link", "set", &self.veth_ns, "up"],
+            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
+            vec!["ip", "link", "set", &veth_ns, "up"],
             // Add default route pointing to host
             vec!["ip", "route", "add", "default", "via", &host_ip],
         ];
 
         for cmd_args in commands {
             let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &self.namespace_name]);
+            cmd.args(["netns", "exec", &namespace_name]);
             cmd.args(&cmd_args);
 
             let output = cmd.output().context(format!(
                 "Failed to execute: ip netns exec {} {:?}",
-                self.namespace_name, cmd_args
+                namespace_name, cmd_args
             ))?;
 
             if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
                 anyhow::bail!(
                     "Failed to configure namespace networking ({}): {}",
                     cmd_args.join(" "),
-                    String::from_utf8_lossy(&output.stderr)
+                    stderr
                 );
             }
         }
 
-        debug!(
-            "Configured networking inside namespace {}",
-            self.namespace_name
-        );
+        // Verify routes were added
+        let mut verify_cmd = Command::new("ip");
+        verify_cmd.args(["netns", "exec", &namespace_name, "ip", "route", "show"]);
+        if let Ok(output) = verify_cmd.output() {
+            let routes = String::from_utf8_lossy(&output.stdout);
+            info!(
+                "Routes in namespace {} after configuration:\n{}",
+                namespace_name, routes
+            );
+
+            if !routes.contains(&host_ip) && !routes.contains("default") {
+                warn!(
+                    "WARNING: No route to host {} found in namespace. Network may not work properly.",
+                    host_ip
+                );
+            }
+        }
+
+        debug!("Configured networking inside namespace {}", namespace_name);
         Ok(())
     }
 
     /// Configure host side of veth pair
     fn configure_host_networking(&self) -> Result<()> {
+        let veth_host = self.veth_host();
+
         // Configure host side of veth
         let commands = vec![
-            vec!["addr", "add", LINUX_NS_HOST_CIDR, "dev", &self.veth_host],
-            vec!["link", "set", &self.veth_host, "up"],
+            vec!["addr", "add", &self.host_cidr, "dev", &veth_host],
+            vec!["link", "set", &veth_host, "up"],
         ];
 
         for cmd_args in commands {
@@ -278,202 +294,74 @@ impl LinuxJail {
             );
         }
 
-        debug!("Configured host side networking for {}", self.veth_host);
+        debug!("Configured host side networking for {}", veth_host);
         Ok(())
     }
 
-    /// Add iptables rules inside the namespace for traffic redirection
+    /// Add nftables rules inside the namespace for traffic redirection
     ///
     /// We use DNAT (Destination NAT) instead of REDIRECT for a critical reason:
     /// - REDIRECT changes the destination to 127.0.0.1 (localhost) within the namespace
     /// - Our proxy runs on the HOST, not inside the namespace
-    /// - DNAT allows us to redirect to the host's IP address (169.254.1.1) where the proxy is actually listening
-    /// - This is why we must use DNAT --to-destination 169.254.1.1:8040 instead of REDIRECT --to-port 8040
-    fn setup_namespace_iptables(&self) -> Result<()> {
-        // Convert port numbers to strings to extend their lifetime
-        let http_port_str = self.config.http_proxy_port.to_string();
-        let https_port_str = self.config.https_proxy_port.to_string();
+    /// - DNAT allows us to redirect to the host's IP address (10.99.X.1) where the proxy is actually listening
+    /// - This is why we must use DNAT to 10.99.X.1:PORT instead of REDIRECT
+    fn setup_namespace_nftables(&self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+        let host_ip = format_ip(self.host_ip);
 
-        // Format destination addresses for DNAT
-        // The proxy is listening on the host side of the veth pair (169.254.1.1)
-        // We need to redirect traffic to this specific IP:port combination
-        let http_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), http_port_str);
-        let https_dest = format!("{}:{}", format_ip(LINUX_NS_HOST_IP), https_port_str);
+        // Create namespace-side nftables rules
+        let _table = nftables::NFTable::new_namespace_table(
+            &namespace_name,
+            &host_ip,
+            self.config.http_proxy_port,
+            self.config.https_proxy_port,
+        )?;
 
-        let rules = vec![
-            // Skip DNS traffic (port 53) - don't redirect it
-            // DNS queries need to reach actual DNS servers (8.8.8.8 or system DNS)
-            // If we redirect DNS to our HTTP proxy, resolution will fail
-            // RETURN means "stop processing this chain and accept the packet as-is"
-            vec![
-                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j",
-                "RETURN",
-            ],
-            vec![
-                "iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j",
-                "RETURN",
-            ],
-            // Redirect HTTP traffic to proxy on host
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "80",
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &http_dest,
-            ],
-            // Redirect HTTPS traffic to proxy on host
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "443",
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &https_dest,
-            ],
-            // Allow local network traffic
-            vec![
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-d",
-                "169.254.0.0/16",
-                "-j",
-                "RETURN",
-            ],
-        ];
+        // The table will be cleaned up automatically when it goes out of scope
+        // But we want to keep it alive for the duration of the jail
+        std::mem::forget(_table);
 
-        for rule_args in rules {
-            let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &self.namespace_name]);
-            cmd.args(&rule_args);
-
-            let output = cmd
-                .output()
-                .context(format!("Failed to execute iptables rule: {:?}", rule_args))?;
-
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to add iptables rule: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        }
-
-        info!(
-            "Set up iptables rules in namespace {} for HTTP:{} HTTPS:{}",
-            self.namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
-        );
         Ok(())
     }
 
     /// Setup NAT on the host for namespace connectivity
     fn setup_host_nat(&mut self) -> Result<()> {
-        // Add MASQUERADE rule for namespace traffic with a comment for identification
-        // The comment allows us to find and remove this specific rule during cleanup
-        let comment = format!("httpjail-{}", self.namespace_name);
+        // Create NFTable resource
+        let mut nftable = ManagedResource::<NFTable>::create(&self.config.jail_id)?;
 
-        // Create MASQUERADE rule
-        let masq_rule = IPTablesRule::new(
-            Some("nat"),
-            "POSTROUTING",
-            vec![
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "MASQUERADE",
-            ],
-        )
-        .context("Failed to add MASQUERADE rule")?;
+        // Create and add the host-side nftables table
+        if let Some(table_wrapper) = nftable.inner_mut() {
+            let table = nftables::NFTable::new_host_table(
+                &self.config.jail_id,
+                &self.subnet_cidr,
+                self.config.http_proxy_port,
+                self.config.https_proxy_port,
+            )?;
+            table_wrapper.set_table(table);
 
-        self.host_iptables_rules.push(masq_rule);
+            info!(
+                "Set up NAT rules for namespace {} with subnet {}",
+                self.namespace_name(),
+                self.subnet_cidr
+            );
+        }
 
-        // Add explicit ACCEPT rules for namespace traffic in FORWARD chain
-        //
-        // The FORWARD chain controls packets being routed THROUGH this host (not TO/FROM it).
-        // Since we're routing packets between the namespace and the internet, they go through FORWARD.
-        //
-        // Without these rules:
-        // - Default FORWARD policy might be DROP/REJECT
-        // - Other firewall rules might block our namespace subnet
-        // - Docker/Kubernetes/other container tools might have restrictive FORWARD rules
-        //
-        // We use -I (insert) at position 1 to ensure our rules take precedence.
-        // We add comments to make these rules identifiable for cleanup.
-
-        // Forward rule for source traffic
-        let forward_src_rule = IPTablesRule::new(
-            None, // filter table is default
-            "FORWARD",
-            vec![
-                "-s",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-        )
-        .context("Failed to add FORWARD source rule")?;
-
-        self.host_iptables_rules.push(forward_src_rule);
-
-        // Forward rule for destination traffic
-        let forward_dst_rule = IPTablesRule::new(
-            None, // filter table is default
-            "FORWARD",
-            vec![
-                "-d",
-                LINUX_NS_SUBNET,
-                "-m",
-                "comment",
-                "--comment",
-                &comment,
-                "-j",
-                "ACCEPT",
-            ],
-        )
-        .context("Failed to add FORWARD destination rule")?;
-
-        self.host_iptables_rules.push(forward_dst_rule);
-
+        self.nftables = Some(nftable);
         Ok(())
     }
 
-    /// Fix DNS if systemd-resolved is in use
+    /// Fix DNS resolution in network namespaces
     ///
-    /// ## The systemd-resolved Problem
+    /// ## The DNS Problem
     ///
-    /// Modern Linux systems often use systemd-resolved as a local DNS stub resolver.
-    /// This service listens on 127.0.0.53:53 and /etc/resolv.conf points to it.
+    /// Network namespaces have isolated network stacks, including their own loopback.
+    /// When we create a namespace, it gets a copy of /etc/resolv.conf from the host.
     ///
-    /// When we create a network namespace:
-    /// 1. The namespace gets a COPY of /etc/resolv.conf pointing to 127.0.0.53
-    /// 2. But 127.0.0.53 in the namespace is NOT the host's systemd-resolved
-    /// 3. Each namespace has its own isolated loopback interface
-    /// 4. Result: DNS queries fail because there's no DNS server at 127.0.0.53 in the namespace
+    /// Common issues:
+    /// 1. **systemd-resolved**: Points to 127.0.0.53 which doesn't exist in the namespace
+    /// 2. **Local DNS**: Any local DNS resolver (127.0.0.1, etc.) won't be accessible
+    /// 3. **Corporate DNS**: Internal DNS servers might not be reachable from the namespace
+    /// 4. **CI environments**: Often have minimal or no DNS configuration
     ///
     /// ## Why We Can't Route Loopback Traffic to the Host
     ///
@@ -488,104 +376,185 @@ impl LinuxJail {
     ///    loopback addresses should NEVER appear on the network
     ///
     /// Even if we tried:
-    /// - `ip route add 127.0.0.53/32 via 169.254.1.1` - packets get dropped
-    /// - `iptables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
+    /// - `ip route add 127.0.0.53/32 via 10.99.X.1` - packets get dropped
+    /// - `nftables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
     /// - Disabling rp_filter - doesn't help with loopback addresses
     ///
     /// ## Our Solution
     ///
     /// Instead of fighting the kernel's security measures, we:
-    /// 1. Detect if /etc/resolv.conf points to systemd-resolved (127.0.0.53)
-    /// 2. Replace it with public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
+    /// 1. Always create a custom resolv.conf for the namespace
+    /// 2. Use public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
     /// 3. These DNS queries go out through our veth pair and work normally
     ///
-    /// **IMPORTANT**: `ip netns exec` automatically bind-mounts files from
-    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace. We create
-    /// /etc/netns/<namespace-name>/resolv.conf with our custom DNS servers,
-    /// which will override /etc/resolv.conf ONLY for processes running in the namespace.
-    /// The host's /etc/resolv.conf remains completely untouched.
+    /// **IMPORTANT**: `ip netns add` automatically bind-mounts files from
+    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace when the namespace
+    /// is created. We MUST create /etc/netns/<namespace-name>/resolv.conf BEFORE
+    /// creating the namespace for this to work. This overrides /etc/resolv.conf
+    /// ONLY for processes running in the namespace. The host's /etc/resolv.conf
+    /// remains completely untouched.
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
-    fn fix_systemd_resolved_dns(&self) -> Result<()> {
-        // Check if resolv.conf points to systemd-resolved
-        let output = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &self.namespace_name,
-                "grep",
-                "127.0.0.53",
-                "/etc/resolv.conf",
-            ])
-            .output()?;
+    fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
+        let namespace_name = self.namespace_name();
 
-        if output.status.success() {
-            // systemd-resolved is in use, create namespace-specific resolv.conf
-            debug!("Detected systemd-resolved, creating namespace-specific resolv.conf");
+        // Always create namespace config resource and custom resolv.conf
+        // This ensures DNS works in all environments, not just systemd-resolved
+        info!(
+            "Setting up DNS for namespace {} with custom resolv.conf",
+            namespace_name
+        );
 
-            // Create /etc/netns/<namespace>/ directory if it doesn't exist
-            let netns_etc = format!("/etc/netns/{}", self.namespace_name);
-            std::fs::create_dir_all(&netns_etc).context("Failed to create /etc/netns directory")?;
+        // Ensure /etc/netns directory exists
+        let netns_dir = "/etc/netns";
+        if !std::path::Path::new(netns_dir).exists() {
+            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
+            debug!("Created /etc/netns directory");
+        }
 
-            // Write custom resolv.conf that will be bind-mounted into the namespace
-            let resolv_conf_path = format!("{}/resolv.conf", netns_etc);
-            std::fs::write(
-                &resolv_conf_path,
-                "# Custom DNS for httpjail namespace\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n",
-            )
-            .context("Failed to write namespace-specific resolv.conf")?;
+        // Create namespace config resource
+        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
+            &self.config.jail_id,
+        )?);
 
-            debug!(
-                "Created namespace-specific resolv.conf at {}",
-                resolv_conf_path
-            );
+        // Write custom resolv.conf that will be bind-mounted into the namespace
+        // Use Google's public DNS servers which are reliable and always accessible
+        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
+        std::fs::write(
+            &resolv_conf_path,
+            "# Custom DNS for httpjail namespace\n\
+nameserver 8.8.8.8\n\
+nameserver 8.8.4.4\n",
+        )
+        .context("Failed to write namespace-specific resolv.conf")?;
+
+        info!(
+            "Created namespace-specific resolv.conf at {} with Google DNS servers",
+            resolv_conf_path
+        );
+
+        // Verify the file was created
+        if !std::path::Path::new(&resolv_conf_path).exists() {
+            anyhow::bail!("Failed to create resolv.conf at {}", resolv_conf_path);
         }
 
         Ok(())
     }
 
-    /// Clean up all resources
-    fn cleanup_internal(&self) -> Result<()> {
-        let mut errors = Vec::new();
+    /// Ensure DNS works in the namespace by copying resolv.conf if needed
+    fn ensure_namespace_dns(&self) -> Result<()> {
+        let namespace_name = self.namespace_name();
 
-        // Clean up namespace-specific config directory
-        let netns_etc = format!("/etc/netns/{}", self.namespace_name);
-        if std::path::Path::new(&netns_etc).exists() {
-            if let Err(e) = std::fs::remove_dir_all(&netns_etc) {
-                errors.push(format!("Failed to remove {}: {}", netns_etc, e));
-            } else {
-                debug!("Removed namespace config directory: {}", netns_etc);
-            }
-        }
-
-        // Remove namespace (this also removes veth pair)
-        if self.namespace_created {
-            let output = Command::new("ip")
-                .args(["netns", "del", &self.namespace_name])
-                .output()
-                .context("Failed to execute ip netns del")?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stderr.contains("No such file") {
-                    errors.push(format!("Failed to delete namespace: {}", stderr));
-                }
-            } else {
-                debug!("Deleted network namespace: {}", self.namespace_name);
-            }
-        }
-
-        // Try to remove host veth (in case namespace deletion failed)
-        let _ = Command::new("ip")
-            .args(["link", "del", &self.veth_host])
+        // Check if DNS is already working by testing /etc/resolv.conf in namespace
+        let check_cmd = Command::new("ip")
+            .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
             .output();
 
-        // Note: Host iptables rules are automatically cleaned up by the Drop
-        // implementation of IPTablesRule when self.host_iptables_rules is dropped
+        let needs_fix = if let Ok(output) = check_cmd {
+            if !output.status.success() {
+                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
+                true
+            } else {
+                let content = String::from_utf8_lossy(&output.stdout);
+                // Check if it's pointing to systemd-resolved or is empty
+                if content.is_empty() || content.contains("127.0.0.53") {
+                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
+                    true
+                } else if content.contains("nameserver") {
+                    info!("DNS already configured in namespace {}", namespace_name);
+                    false
+                } else {
+                    info!("No nameserver found in namespace resolv.conf, will fix");
+                    true
+                }
+            }
+        } else {
+            info!("Failed to check DNS in namespace, will attempt fix");
+            true
+        };
 
-        if !errors.is_empty() {
-            warn!("Cleanup completed with errors: {:?}", errors);
+        if !needs_fix {
+            return Ok(());
         }
+
+        // DNS not working, try to fix it by copying a working resolv.conf
+        info!(
+            "Fixing DNS in namespace {} by copying resolv.conf",
+            namespace_name
+        );
+
+        // Create a temporary resolv.conf with public DNS
+        let temp_resolv = format!("/tmp/httpjail_resolv_{}.conf", &namespace_name);
+        std::fs::write(
+            &temp_resolv,
+            "# Temporary DNS for httpjail namespace\n\
+             nameserver 8.8.8.8\n\
+             nameserver 8.8.4.4\n\
+             nameserver 1.1.1.1\n",
+        )?;
+
+        // First, try to directly write to /etc/resolv.conf in the namespace using echo
+        let write_cmd = Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                &namespace_name,
+                "sh",
+                "-c",
+                "echo -e 'nameserver 8.8.8.8\\nnameserver 8.8.4.4\\nnameserver 1.1.1.1' > /etc/resolv.conf",
+            ])
+            .output();
+
+        if let Ok(output) = write_cmd {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("Failed to write resolv.conf into namespace: {}", stderr);
+
+                // Try another approach - mount bind
+                let mount_cmd = Command::new("ip")
+                    .args([
+                        "netns",
+                        "exec",
+                        &namespace_name,
+                        "mount",
+                        "--bind",
+                        &temp_resolv,
+                        "/etc/resolv.conf",
+                    ])
+                    .output();
+
+                if let Ok(mount_output) = mount_cmd {
+                    if mount_output.status.success() {
+                        info!("Successfully bind-mounted resolv.conf in namespace");
+                    } else {
+                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
+                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
+
+                        // Last resort - try copying the file content
+                        let cp_cmd = Command::new("cp")
+                            .args([
+                                &temp_resolv,
+                                &format!(
+                                    "/proc/self/root/etc/netns/{}/resolv.conf",
+                                    namespace_name
+                                ),
+                            ])
+                            .output();
+
+                        if let Ok(cp_output) = cp_cmd
+                            && cp_output.status.success()
+                        {
+                            info!("Successfully copied resolv.conf via /proc");
+                        }
+                    }
+                }
+            } else {
+                info!("Successfully wrote resolv.conf into namespace");
+            }
+        }
+
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_resolv);
 
         Ok(())
     }
@@ -596,30 +565,33 @@ impl Jail for LinuxJail {
         // Check for root access
         Self::check_root()?;
 
+        // Fix DNS BEFORE creating namespace so bind mount works
+        // The /etc/netns/<namespace>/ directory must exist before namespace creation
+        self.fix_systemd_resolved_dns()?;
+
         // Create network namespace
         self.create_namespace()?;
 
         // Set up veth pair
         self.setup_veth_pair()?;
 
-        // Configure namespace networking
-        self.configure_namespace_networking()?;
-
-        // Configure host networking
+        // Configure host networking FIRST so the veth link is up
         self.configure_host_networking()?;
+
+        // Configure namespace networking after host side is ready
+        self.configure_namespace_networking()?;
 
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;
 
-        // Add iptables rules inside namespace
-        self.setup_namespace_iptables()?;
-
-        // Fix DNS if using systemd-resolved
-        self.fix_systemd_resolved_dns()?;
+        // Add nftables rules inside namespace
+        self.setup_namespace_nftables()?;
 
         info!(
             "Linux jail setup complete using namespace {} with HTTP proxy on port {} and HTTPS proxy on port {}",
-            self.namespace_name, self.config.http_proxy_port, self.config.https_proxy_port
+            self.namespace_name(),
+            self.config.http_proxy_port,
+            self.config.https_proxy_port
         );
         Ok(())
     }
@@ -631,7 +603,8 @@ impl Jail for LinuxJail {
 
         debug!(
             "Executing command in namespace {}: {:?}",
-            self.namespace_name, command
+            self.namespace_name(),
+            command
         );
 
         // Check if we're running as root and should drop privileges
@@ -654,7 +627,7 @@ impl Jail for LinuxJail {
         // Build command: ip netns exec <namespace> <command>
         // If we need to drop privileges, we wrap with su
         let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name]);
+        cmd.args(["netns", "exec", &self.namespace_name()]);
 
         // When we have environment variables to pass OR need to drop privileges,
         // use a shell wrapper to ensure proper environment handling
@@ -725,7 +698,7 @@ impl Jail for LinuxJail {
         }
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
-        // The jail uses iptables rules to transparently redirect traffic to the proxy,
+        // The jail uses nftables rules to transparently redirect traffic to the proxy,
         // making it work with applications that don't respect proxy environment variables.
 
         let status = cmd
@@ -736,31 +709,54 @@ impl Jail for LinuxJail {
     }
 
     fn cleanup(&self) -> Result<()> {
-        info!("Cleaning up Linux jail namespace {}", self.namespace_name);
-        self.cleanup_internal()
-    }
-}
+        // Since the jail might be in an Arc (e.g., for signal handling),
+        // we can't rely on Drop alone. We need to explicitly trigger cleanup
+        // of the managed resources by taking them out of the jail.
+        // However, since cleanup takes &self not &mut self, we can't modify the jail.
+        // The best we can do is ensure the orphan cleanup works.
+        info!("Triggering jail cleanup for {}", self.config.jail_id);
 
-impl Drop for LinuxJail {
-    fn drop(&mut self) {
-        // Best-effort cleanup on drop
-        if self.namespace_created
-            && let Err(e) = self.cleanup_internal()
-        {
-            error!("Failed to cleanup namespace on drop: {}", e);
-        }
+        // Call the static cleanup method which will clean up all resources
+        Self::cleanup_orphaned(&self.config.jail_id)?;
+
+        Ok(())
+    }
+
+    fn jail_id(&self) -> &str {
+        &self.config.jail_id
+    }
+
+    fn cleanup_orphaned(jail_id: &str) -> Result<()>
+    where
+        Self: Sized,
+    {
+        debug!("Cleaning up orphaned Linux jail: {}", jail_id);
+
+        // Create managed resources for existing system resources
+        // When these go out of scope, they will clean themselves up
+        let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
+        let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
+        let _config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
+        let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
+
+        Ok(())
     }
 }
 
 impl Clone for LinuxJail {
     fn clone(&self) -> Self {
+        // Note: We don't clone the ManagedResource fields as they represent
+        // system resources that shouldn't be duplicated
         Self {
             config: self.config.clone(),
-            namespace_name: self.namespace_name.clone(),
-            veth_host: self.veth_host.clone(),
-            veth_ns: self.veth_ns.clone(),
-            namespace_created: self.namespace_created,
-            host_iptables_rules: Vec::new(), // Don't clone the rules, new instance should manage its own
+            namespace: None,
+            veth_pair: None,
+            namespace_config: None,
+            nftables: None,
+            host_ip: self.host_ip,
+            host_cidr: self.host_cidr.clone(),
+            guest_cidr: self.guest_cidr.clone(),
+            subnet_cidr: self.subnet_cidr.clone(),
         }
     }
 }

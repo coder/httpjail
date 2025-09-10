@@ -1,0 +1,3 @@
+# See https://github.com/openai/codex/blob/main/docs/config.md
+[tools]
+web_search = true
