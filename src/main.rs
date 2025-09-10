@@ -29,10 +29,6 @@ struct Args {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     config: Option<String>,
 
-    /// Log actions without blocking
-    #[arg(long = "dry-run")]
-    dry_run: bool,
-
     /// Append requests to a log file
     #[arg(long = "request-log", value_name = "FILE")]
     request_log: Option<String>,
@@ -329,7 +325,7 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let rule_engine = RuleEngine::new(rules, args.dry_run, request_log);
+    let rule_engine = RuleEngine::new(rules, request_log);
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
@@ -543,7 +539,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, None);
+        let engine = RuleEngine::new(rules, None);
 
         // Test allow rule
         assert!(matches!(
@@ -565,19 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dry_run_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, true, None);
-
-        // In dry-run mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
     fn test_build_rules_from_config_file() {
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -592,7 +575,6 @@ mod tests {
         let args = Args {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
-            dry_run: false,
             request_log: None,
             interactive: false,
             weak: false,

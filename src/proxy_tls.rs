@@ -593,7 +593,7 @@ mod tests {
                 Rule::new(Action::Deny, r".*").unwrap(),
             ]
         };
-        Arc::new(RuleEngine::new(rules, false, None))
+        Arc::new(RuleEngine::new(rules, None))
     }
 
     /// Create a TLS client config that trusts any certificate (for testing)

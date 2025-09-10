@@ -52,17 +52,12 @@ impl Rule {
 #[derive(Clone)]
 pub struct RuleEngine {
     pub rules: Vec<Rule>,
-    pub dry_run: bool,
     pub request_log: Option<Arc<Mutex<File>>>,
 }
 
 impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, dry_run: bool, request_log: Option<Arc<Mutex<File>>>) -> Self {
-        RuleEngine {
-            rules,
-            dry_run,
-            request_log,
-        }
+    pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
+        RuleEngine { rules, request_log }
     }
 
     pub fn evaluate(&self, method: Method, url: &str) -> Action {
@@ -92,9 +87,7 @@ impl RuleEngine {
                         action = Action::Deny;
                     }
                 }
-                if !self.dry_run {
-                    break;
-                }
+                break;
             }
         }
 
@@ -116,7 +109,7 @@ impl RuleEngine {
             }
         }
 
-        if self.dry_run { Action::Allow } else { action }
+        action
     }
 }
 
@@ -153,7 +146,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, None);
+        let engine = RuleEngine::new(rules, None);
 
         // Test allow rule
         assert!(matches!(
@@ -183,7 +176,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, None);
+        let engine = RuleEngine::new(rules, None);
 
         // GET should be allowed
         assert!(matches!(
@@ -199,19 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dry_run_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, true, None);
-
-        // In dry-run mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
     fn test_request_logging() {
         use std::fs::OpenOptions;
 
@@ -221,7 +201,7 @@ mod tests {
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::new(rules, false, Some(Arc::new(Mutex::new(file))));
+        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
 
         engine.evaluate(Method::GET, "https://example.com");
 
@@ -239,7 +219,7 @@ mod tests {
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::new(rules, false, Some(Arc::new(Mutex::new(file))));
+        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
 
         engine.evaluate(Method::GET, "https://blocked.com");
 
