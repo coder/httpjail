@@ -32,10 +32,6 @@ struct Args {
     #[arg(long = "log-only")]
     log_only: bool,
 
-    /// Disable HTTPS interception
-    #[arg(long = "no-tls-intercept")]
-    no_tls_intercept: bool,
-
     /// Interactive approval mode
     #[arg(long = "interactive")]
     interactive: bool,
@@ -345,7 +341,6 @@ async fn main() -> Result<()> {
     let mut jail_config = JailConfig::new();
     jail_config.http_proxy_port = actual_http_port;
     jail_config.https_proxy_port = actual_https_port;
-    jail_config.tls_intercept = !args.no_tls_intercept;
 
     // Create and setup jail
     let mut jail = create_jail(jail_config.clone(), args.weak)?;
@@ -382,21 +377,19 @@ async fn main() -> Result<()> {
     // Set up CA certificate environment variables for common tools
     let mut extra_env = Vec::new();
 
-    if !args.no_tls_intercept {
-        match httpjail::tls::CertificateManager::get_ca_env_vars() {
-            Ok(ca_env_vars) => {
-                debug!(
-                    "Setting {} CA certificate environment variables",
-                    ca_env_vars.len()
-                );
-                extra_env = ca_env_vars;
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to set up CA certificate environment variables: {}",
-                    e
-                );
-            }
+    match httpjail::tls::CertificateManager::get_ca_env_vars() {
+        Ok(ca_env_vars) => {
+            debug!(
+                "Setting {} CA certificate environment variables",
+                ca_env_vars.len()
+            );
+            extra_env = ca_env_vars;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to set up CA certificate environment variables: {}",
+                e
+            );
         }
     }
 
@@ -514,7 +507,6 @@ mod tests {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
             log_only: false,
-            no_tls_intercept: false,
             interactive: false,
             weak: false,
             verbose: 0,
