@@ -3,9 +3,10 @@ use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::{Action, Rule, RuleEngine};
+use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -32,9 +33,9 @@ struct Args {
     #[arg(long = "dry-run")]
     dry_run: bool,
 
-    /// Monitor without filtering
-    #[arg(long = "log-only")]
-    log_only: bool,
+    /// Append requests to a log file
+    #[arg(long = "request-log", value_name = "FILE")]
+    request_log: Option<String>,
 
     /// Disable HTTPS interception
     #[arg(long = "no-tls-intercept")]
@@ -308,7 +309,18 @@ async fn main() -> Result<()> {
 
     // Build rules from command line arguments
     let rules = build_rules(&args)?;
-    let rule_engine = RuleEngine::new(rules, args.dry_run, args.log_only);
+    let request_log = if let Some(path) = &args.request_log {
+        Some(Arc::new(Mutex::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .context("Failed to open request log file")?,
+        )))
+    } else {
+        None
+    };
+    let rule_engine = RuleEngine::new(rules, args.dry_run, request_log);
 
     // Get ports from env vars (optional)
     let http_port = std::env::var("HTTPJAIL_HTTP_BIND")
@@ -468,7 +480,7 @@ mod tests {
             Rule::new(Action::Deny, r".*").unwrap(),
         ];
 
-        let engine = RuleEngine::new(rules, false, false);
+        let engine = RuleEngine::new(rules, false, None);
 
         // Test allow rule
         assert!(matches!(
@@ -493,24 +505,11 @@ mod tests {
     fn test_dry_run_mode() {
         let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
 
-        let engine = RuleEngine::new(rules, true, false);
+        let engine = RuleEngine::new(rules, true, None);
 
         // In dry-run mode, everything should be allowed
         assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
-            Action::Allow
-        ));
-    }
-
-    #[test]
-    fn test_log_only_mode() {
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
-
-        let engine = RuleEngine::new(rules, false, true);
-
-        // In log-only mode, everything should be allowed
-        assert!(matches!(
-            engine.evaluate(Method::POST, "https://example.com"),
             Action::Allow
         ));
     }
@@ -531,7 +530,7 @@ mod tests {
             rules: vec![],
             config: Some(file.path().to_str().unwrap().to_string()),
             dry_run: false,
-            log_only: false,
+            request_log: None,
             no_tls_intercept: false,
             interactive: false,
             weak: false,

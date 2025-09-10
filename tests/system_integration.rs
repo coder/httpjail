@@ -195,12 +195,19 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     assert_eq!(stdout.trim(), "403", "POST request should be denied");
 }
 
-/// Test log-only mode
-pub fn test_jail_log_only_mode<P: JailTestPlatform>() {
+/// Test request logging
+pub fn test_jail_request_log<P: JailTestPlatform>() {
     P::require_privileges();
 
+    let log_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+    let log_path = log_file.path().to_str().unwrap().to_string();
+
     let mut cmd = httpjail_cmd();
-    cmd.arg("--log-only").arg("--");
+    cmd.arg("--request-log")
+        .arg(&log_path)
+        .arg("-r")
+        .arg("allow: .*")
+        .arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
     let output = cmd.output().expect("Failed to execute httpjail");
@@ -210,18 +217,25 @@ pub fn test_jail_log_only_mode<P: JailTestPlatform>() {
     if !stderr.is_empty() {
         eprintln!("[{}] stderr: {}", P::platform_name(), stderr);
     }
-    eprintln!("[{}] stdout: {}", P::platform_name(), stdout);
 
-    // In log-only mode, all requests should be allowed
-    // Due to proxy issues, we might get partial responses or timeouts
-    // Just verify that the request wasn't explicitly blocked (403)
-    assert!(
-        !stdout.contains("403") && !stderr.contains("403") && !stdout.contains("Request blocked"),
-        "Request should not be blocked in log-only mode. Got stdout: '{}', stderr: '{}', exit code: {:?}",
-        stdout.trim(),
-        stderr.trim(),
-        output.status.code()
-    );
+    assert_eq!(stdout.trim(), "200", "GET request should be allowed");
+
+    // Run a denied request to ensure '-' is logged
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--request-log")
+        .arg(&log_path)
+        .arg("-r")
+        .arg("deny: .*")
+        .arg("--");
+    curl_http_status_args(&mut cmd, "http://example.com");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "403", "GET request should be denied");
+
+    let contents = std::fs::read_to_string(log_file.path()).expect("Failed to read request log");
+    assert!(contents.contains("+ GET http://example.com"));
+    assert!(contents.contains("- GET http://example.com"));
 }
 
 /// Test dry-run mode

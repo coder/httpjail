@@ -62,8 +62,9 @@ sudo ./target/release/httpjail --allow "httpbin\.org" -- curl http://httpbin.org
 # Test with method-specific rules
 sudo ./target/release/httpjail --allow-get ".*" -- curl -X POST http://httpbin.org/post
 
-# Test log-only mode
-sudo ./target/release/httpjail --log-only -- curl http://example.com
+# Test request logging
+sudo ./target/release/httpjail --request-log requests.log -r "allow: .*" -- curl http://example.com
+# Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 ```
 
 ### Test Organization
