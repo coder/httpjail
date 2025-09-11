@@ -13,6 +13,9 @@ cargo install httpjail
 
 ## Features
 
+> [!WARNING]
+> httpjail is experimental and offers no API or CLI compatibility guarantees.
+
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🎯 **Regex-based filtering** - Flexible allow/deny rules with regex patterns
@@ -21,9 +24,6 @@ cargo install httpjail
 - ⛔ **Default deny** - Requests are blocked unless explicitly allowed
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 - ⚡ **Zero configuration** - Works out of the box with sensible defaults
-
-> [!WARNING]
-> httpjail is experimental and offers no API or CLI compatibility guarantees.
 
 ## Quick Start
 
