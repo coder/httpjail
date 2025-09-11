@@ -24,7 +24,8 @@ fn test_httpjail_version() {
 #[test]
 fn test_httpjail_requires_command() {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    cmd.arg("-r").arg("allow: .*");
+    // original command: cmd.arg("-r").arg("exit 1;");
+    cmd.arg("--js").arg("return true;");
 
     cmd.assert()
         .failure()
@@ -32,15 +33,16 @@ fn test_httpjail_requires_command() {
 }
 
 #[test]
-fn test_httpjail_invalid_regex() {
+fn test_httpjail_invalid_js_syntax() {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
-    cmd.arg("-r")
-        .arg("allow: [invalid regex")
+    // original testing with invalid regex: cmd.arg("-r").arg("invalid[regex");
+    cmd.arg("--js")
+        .arg("return invalid syntax")
         .arg("--")
         .arg("echo")
         .arg("test");
 
-    // Should fail due to invalid regex
+    // Should fail due to invalid JS
     cmd.assert().failure();
 }
 

@@ -24,7 +24,7 @@ pub struct HttpjailCommand {
     args: Vec<String>,
     use_sudo: bool,
     weak_mode: bool,
-    rules_js: Vec<String>,
+    env: Vec<(String, String)>,
 }
 
 impl HttpjailCommand {
@@ -34,7 +34,7 @@ impl HttpjailCommand {
             args: vec![],
             use_sudo: false,
             weak_mode: false,
-            rules_js: vec![],
+            env: vec![],
         }
     }
 
@@ -50,41 +50,10 @@ impl HttpjailCommand {
         self
     }
 
-    /// Add a rule (legacy syntax) by translating to JS
-    pub fn rule(mut self, rule: &str) -> Self {
-        // Expect format: action[-method]: pattern
-        let parts: Vec<&str> = rule.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return self; // ignore invalid in tests
-        }
-        let action_part = parts[0].trim();
-        let pattern = parts[1].trim();
-
-        let mut action = "allow";
-        let mut method_guard: Option<&str> = None;
-        if let Some((a, m)) = action_part.split_once('-') {
-            action = a;
-            method_guard = Some(m);
-        } else {
-            action = action_part;
-        }
-
-        let method_expr = if let Some(m) = method_guard {
-            let m_upper = m.to_ascii_uppercase();
-            format!(" && method === '{}'", m_upper)
-        } else {
-            "".to_string()
-        };
-
-        let cond = format!("new RegExp({:?}).test(url){}", pattern, method_expr);
-        let stmt = match action {
-            "allow" => format!("if ({}) return true;", cond),
-            "deny" => format!("if ({}) return false;", cond),
-            _ => String::new(),
-        };
-        if !stmt.is_empty() {
-            self.rules_js.push(stmt);
-        }
+    /// Provide JavaScript rule code directly
+    pub fn js(mut self, code: &str) -> Self {
+        self.args.push("--js".to_string());
+        self.args.push(code.to_string());
         self
     }
 
@@ -103,6 +72,12 @@ impl HttpjailCommand {
         self
     }
 
+    /// Set an environment variable for the httpjail process
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
+    }
+
     /// Build and execute the command
     pub fn execute(mut self) -> Result<(i32, String, String), String> {
         // Ensure httpjail is built
@@ -115,14 +90,6 @@ impl HttpjailCommand {
         // Add weak mode if requested
         if self.weak_mode {
             self.args.insert(0, "--weak".to_string());
-        }
-
-        // If rules were provided, inject as --js (default deny at end)
-        if !self.rules_js.is_empty() {
-            let mut code = self.rules_js.join("\n");
-            code.push_str("\nreturn false;");
-            self.args.insert(0, code);
-            self.args.insert(0, "--js".to_string());
         }
 
         let mut cmd = if self.use_sudo {
@@ -145,11 +112,17 @@ impl HttpjailCommand {
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
+            for (key, value) in &self.env {
+                sudo_cmd.env(key, value);
+            }
             sudo_cmd
         } else {
             let mut cmd = Command::new(&httpjail_path);
             for arg in &self.args {
                 cmd.arg(arg);
+            }
+            for (key, value) in &self.env {
+                cmd.env(key, value);
             }
             cmd
         };
@@ -175,7 +148,7 @@ pub fn has_sudo() -> bool {
 
 // Common test implementations that can be used by both weak and strong mode tests
 
-/// Test that HTTPS is blocked correctly  
+/// Test that HTTPS is blocked correctly
 pub fn test_https_blocking(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -186,7 +159,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("deny: .*")
+        .js("return false;")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "3", "https://ifconfig.me"])
         .execute();
@@ -219,7 +192,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     }
 }
 
-/// Test that HTTPS is allowed with proper allow rules
+/// Test that HTTPS is allowed with proper JS rule
 pub fn test_https_allow(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -230,7 +203,7 @@ pub fn test_https_allow(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("allow: ifconfig\\.me")
+        .js("return /ifconfig\\.me/.test(host);")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
         .execute();
@@ -241,24 +214,18 @@ pub fn test_https_allow(use_sudo: bool) {
             println!("Stdout: {}", stdout);
             println!("Stderr: {}", stderr);
 
-            // For macOS native mode, TLS interception might have issues
-            // So we check that the request was at least allowed (not denied with 403)
             if use_sudo {
-                // In sudo mode, just verify it wasn't blocked
                 assert!(
                     !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
                     "Request should not be blocked when allowed"
                 );
             } else {
-                // In weak mode, curl should succeed
                 assert_eq!(
                     exit_code, 0,
                     "Expected curl to succeed in weak mode, got exit code: {}",
                     exit_code
                 );
 
-                // Should contain actual response content
-                // ifconfig.me returns an IP address
                 use std::str::FromStr;
                 assert!(
                     std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()

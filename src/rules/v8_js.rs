@@ -3,6 +3,7 @@ use super::Action;
 use super::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
+use std::sync::{Once, OnceLock};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -13,7 +14,8 @@ pub struct V8JsRuleEngine {
     js_code: String,
 }
 
-static V8_INIT: std::sync::Once = std::sync::Once::new();
+static V8_INIT: Once = Once::new();
+static V8_PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
 
 impl V8JsRuleEngine {
     /// Creates a new V8 JavaScript rule engine
@@ -27,10 +29,12 @@ impl V8JsRuleEngine {
     ///   - `host` - Host part of URL
     ///   - `path` - Path part of URL
     pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        // Initialize V8 platform (this should only be done once per process)
+        // Initialize V8 platform (only once per process), and keep the platform alive
         V8_INIT.call_once(|| {
             let platform = v8::new_default_platform(0, false).make_shared();
-            v8::V8::initialize_platform(platform);
+            v8::V8::initialize_platform(platform.clone());
+            // Store platform so it outlives all isolates
+            let _ = V8_PLATFORM.set(platform);
             v8::V8::initialize();
         });
 

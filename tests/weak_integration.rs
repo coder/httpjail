@@ -23,7 +23,7 @@ fn test_weak_mode_blocks_http_correctly() {
     // Test that HTTP to ifconfig.me is blocked in weak mode
     let result = HttpjailCommand::new()
         .weak()
-        .rule("deny: .*")
+        .js("return false;")
         .verbose(2)
         .command(vec!["curl", "--max-time", "3", "http://ifconfig.me"])
         .execute();
@@ -60,9 +60,10 @@ fn test_weak_mode_timeout_works() {
     // This test uses a command that would normally hang
     let result = HttpjailCommand::new()
         .weak()
-        .rule("allow: .*")
+        .js("return true;")
         .verbose(2)
-        .command(vec!["sh", "-c", "sleep 15"])
+        .command(vec!["bash", "-c", "sleep 60"])
+        // command that exceeds timeout
         .execute();
 
     match result {
@@ -85,15 +86,10 @@ fn test_weak_mode_allows_localhost() {
     // Test that localhost connections work (for the proxy itself)
     let result = HttpjailCommand::new()
         .weak()
-        .rule("allow: localhost")
-        .rule("allow: 127\\.0\\.0\\.1")
-        .verbose(2)
-        .command(vec![
-            "curl",
-            "--max-time",
-            "3",
-            "http://127.0.0.1:8080/test",
-        ])
+        .js("return host === 'localhost' || host === '127.0.0.1';")
+        .verbose(1)
+        .command(vec!["curl", "--max-time", "3", "http://localhost:80"])
+        // may fail but should be allowed by rules
         .execute();
 
     match result {
@@ -120,6 +116,57 @@ fn test_weak_mode_allows_localhost() {
         Err(e) => {
             panic!("Failed to execute httpjail: {}", e);
         }
+    }
+}
+
+#[test]
+fn test_weak_mode_appends_no_proxy() {
+    // Ensure existing NO_PROXY values are preserved and localhost entries appended
+    let result = HttpjailCommand::new()
+        .weak()
+        .js("return true;")
+        .env("NO_PROXY", "example.com")
+        .verbose(2)
+        .command(vec!["env"])
+        .execute();
+
+    match result {
+        Ok((exit_code, stdout, _stderr)) => {
+            assert_eq!(exit_code, 0, "env command should succeed");
+
+            let mut found_upper = false;
+            let mut found_lower = false;
+
+            for line in stdout.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    if key == "NO_PROXY" {
+                        found_upper = true;
+                        assert!(
+                            value.contains("example.com")
+                                && value.contains("localhost")
+                                && value.contains("127.0.0.1")
+                                && value.contains("::1"),
+                            "NO_PROXY missing expected entries: {}",
+                            value
+                        );
+                    } else if key == "no_proxy" {
+                        found_lower = true;
+                        assert!(
+                            value.contains("example.com")
+                                && value.contains("localhost")
+                                && value.contains("127.0.0.1")
+                                && value.contains("::1"),
+                            "no_proxy missing expected entries: {}",
+                            value
+                        );
+                    }
+                }
+            }
+
+            assert!(found_upper, "NO_PROXY variable not found");
+            assert!(found_lower, "no_proxy variable not found");
+        }
+        Err(e) => panic!("Failed to execute httpjail: {}", e),
     }
 }
 

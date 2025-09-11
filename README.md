@@ -230,25 +230,12 @@ httpjail --js "return method === 'GET' && host === 'api.github.com'" -- git pull
 # Load from file
 httpjail --js-file rules.js -- ./my-app
 
-# Complex logic with multiple conditions
+# Complex logic with multiple conditions (ternary style)
 httpjail --js "
-// Allow GitHub and safe domains
-if (host.endsWith('github.com') || host === 'api.github.com') {
-    return true;
-}
-
-// Block social media
-if (host.includes('facebook.com') || host.includes('twitter.com')) {
-    return false;
-}
-
-// Allow HTTPS API calls
-if (scheme === 'https' && path.startsWith('/api/')) {
-    return true;
-}
-
-// Default deny
-return false;
+return (host.endsWith('github.com') || host === 'api.github.com')) ? true
+     : (host.includes('facebook.com') || host.includes('twitter.com')) ? false
+     : (scheme === 'https' && path.startsWith('/api/')) ? true
+     : false;
 " -- ./my-app
 
 # Path-based filtering
