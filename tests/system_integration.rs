@@ -233,7 +233,7 @@ pub fn test_jail_request_log<P: JailTestPlatform>() {
     cmd.arg("--request-log")
         .arg(&log_path)
         .arg("--js")
-        .arg("return false;")
+        .arg("false")
         .arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
@@ -302,7 +302,7 @@ pub fn test_native_jail_blocks_https<P: JailTestPlatform>() {
     cmd.arg("-v")
         .arg("-v") // Add verbose logging
         .arg("--js")
-        .arg("if (/example\\.com/.test(host)) return false; if (/ifconfig\\.me/.test(host)) return true; return false;")
+        .arg("/ifconfig\\.me/.test(r.host) && !/example\\.com/.test(r.host)")
         .arg("--");
     curl_https_head_args(&mut cmd, "https://example.com");
 
@@ -463,7 +463,7 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     cmd.arg("-v")
         .arg("-v") // Add verbose logging
         .arg("--js")
-        .arg("if (/example\\.com/.test(host)) return false; if (/ifconfig\\.me/.test(host)) return true; return false;")
+        .arg("/ifconfig\\.me/.test(r.host) && !/example\\.com/.test(r.host)")
         .arg("--");
     curl_https_head_args(&mut cmd, "https://example.com");
 
@@ -504,8 +504,8 @@ pub fn test_jail_network_diagnostics<P: JailTestPlatform>() {
 
     // Basic connectivity check - verify network is set up
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: .*")
+    cmd.arg("--js")
+        .arg("true")
         .arg("--")
         .arg("sh")
         .arg("-c")
@@ -527,8 +527,8 @@ pub fn test_jail_dns_resolution<P: JailTestPlatform>() {
 
     // Try to resolve google.com using dig or nslookup
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: .*")
+    cmd.arg("--js")
+        .arg("true")
         .arg("--")
         .arg("sh")
         .arg("-c")
