@@ -52,7 +52,7 @@ impl PatternRuleEngine {
 
 #[async_trait]
 impl RuleEngineTrait for PatternRuleEngine {
-    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+    async fn evaluate(&self, method: Method, url: &str, _requester_ip: &str) -> EvaluationResult {
         for rule in &self.rules {
             if rule.matches(method.clone(), url) {
                 match &rule.action {

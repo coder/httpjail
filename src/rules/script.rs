@@ -15,7 +15,12 @@ impl ScriptRuleEngine {
         ScriptRuleEngine { script }
     }
 
-    async fn execute_script(&self, method: Method, url: &str) -> (bool, String) {
+    async fn execute_script(
+        &self,
+        method: Method,
+        url: &str,
+        requester_ip: &str,
+    ) -> (bool, String) {
         let parsed_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
@@ -29,8 +34,8 @@ impl ScriptRuleEngine {
         let path = parsed_url.path();
 
         debug!(
-            "Executing script for {} {} (host: {}, path: {})",
-            method, url, host, path
+            "Executing script for {} {} from {} (host: {}, path: {})",
+            method, url, requester_ip, host, path
         );
 
         // Build the command
@@ -48,6 +53,7 @@ impl ScriptRuleEngine {
             .env("HTTPJAIL_SCHEME", scheme)
             .env("HTTPJAIL_HOST", host)
             .env("HTTPJAIL_PATH", path)
+            .env("HTTPJAIL_REQUESTER_IP", requester_ip)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true); // Ensure child is killed if dropped
@@ -99,8 +105,8 @@ impl ScriptRuleEngine {
 
 #[async_trait]
 impl RuleEngineTrait for ScriptRuleEngine {
-    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
-        let (allowed, context) = self.execute_script(method.clone(), url).await;
+    async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
+        let (allowed, context) = self.execute_script(method.clone(), url, requester_ip).await;
 
         if allowed {
             debug!("ALLOW: {} {} (script allowed)", method, url);

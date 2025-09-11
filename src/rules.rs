@@ -45,7 +45,7 @@ impl EvaluationResult {
 
 #[async_trait]
 pub trait RuleEngineTrait: Send + Sync {
-    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult;
+    async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult;
 
     fn name(&self) -> &str;
 }
@@ -66,8 +66,11 @@ impl LoggingRuleEngine {
 
 #[async_trait]
 impl RuleEngineTrait for LoggingRuleEngine {
-    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
-        let result = self.engine.evaluate(method.clone(), url).await;
+    async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
+        let result = self
+            .engine
+            .evaluate(method.clone(), url, requester_ip)
+            .await;
 
         if let Some(log) = &self.request_log
             && let Ok(mut file) = log.lock()
@@ -125,11 +128,24 @@ impl RuleEngine {
     }
 
     pub async fn evaluate(&self, method: Method, url: &str) -> Action {
-        self.inner.evaluate(method, url).await.action
+        self.inner.evaluate(method, url, "127.0.0.1").await.action
     }
 
     pub async fn evaluate_with_context(&self, method: Method, url: &str) -> EvaluationResult {
-        self.inner.evaluate(method, url).await
+        self.inner.evaluate(method, url, "127.0.0.1").await
+    }
+
+    pub async fn evaluate_with_ip(&self, method: Method, url: &str, requester_ip: &str) -> Action {
+        self.inner.evaluate(method, url, requester_ip).await.action
+    }
+
+    pub async fn evaluate_with_context_and_ip(
+        &self,
+        method: Method,
+        url: &str,
+        requester_ip: &str,
+    ) -> EvaluationResult {
+        self.inner.evaluate(method, url, requester_ip).await
     }
 }
 

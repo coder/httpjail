@@ -208,6 +208,7 @@ httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- g
 - `HTTPJAIL_HOST` - Hostname from the URL
 - `HTTPJAIL_SCHEME` - URL scheme (http or https)
 - `HTTPJAIL_PATH` - Path component of the URL
+- `HTTPJAIL_REQUESTER_IP` - IP address of the client making the request
 
 **Script requirements:**
 
