@@ -292,7 +292,7 @@ mod tests {
         // Attempt to connect to portquiz.net on port 81 (non-standard HTTP port)
         // Expectation: connection is blocked by namespace egress filter
         let mut cmd = httpjail_cmd();
-        cmd.arg("-r").arg("allow: .*") // proxy allows HTTP/HTTPS, but port 81 should be blocked
+        cmd.arg("--js").arg("true") // allow all requests through proxy
             .arg("--")
             .arg("sh")
             .arg("-c")

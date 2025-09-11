@@ -139,7 +139,7 @@ fn cleanup_orphans() -> Result<()> {
     debug!("Starting direct orphan cleanup scan");
 
     // Track jail IDs we've cleaned up to avoid duplicates
-    let mut cleaned_jails = std::collections::HashSet::<String>::new();
+    let cleaned_jails = std::collections::HashSet::<String>::new();
 
     // First, scan for stale canary files
     if canary_dir.exists() {
