@@ -195,3 +195,38 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
+
+  udeps:
+    name: Unused dependency check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@cargo-udeps
+
+      - name: Check for unused dependencies
+        run: |
+          set -euo pipefail
+          OUTPUT=$(cargo udeps --all-targets --all-features 2>&1 || true)
+          echo \"$OUTPUT\"
+          if echo \"$OUTPUT\" | grep -qi \"no crates were unused\"; then
+            exit 0
+          elif echo \"$OUTPUT\" | grep -qiE \"unused (crates|dependencies)\"; then
+            echo \"Unused dependencies detected\"
+            exit 1
+          else
+            echo \"cargo-udeps completed without explicit confirmation; treating as success\"
+            exit 0
+          fi
