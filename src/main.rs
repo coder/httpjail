@@ -3,6 +3,7 @@ use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::script::ScriptRuleEngine;
+use httpjail::rules::v8_js::V8JsRuleEngine;
 use httpjail::rules::{Action, Rule, RuleEngine};
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
@@ -44,6 +45,20 @@ struct Args {
         conflicts_with = "config"
     )]
     script: Option<String>,
+
+    /// Use JavaScript (V8) for evaluating requests (experimental)
+    /// The JavaScript code receives global variables:
+    ///   url, method, host, scheme, path
+    /// Should return true to allow the request, false to block it
+    /// Example: --js "return host === 'github.com' && method === 'GET'"
+    #[arg(
+        long = "js",
+        value_name = "CODE",
+        conflicts_with = "rules",
+        conflicts_with = "script",
+        conflicts_with = "config"
+    )]
+    js: Option<String>,
 
     /// Use configuration file
     #[arg(
@@ -349,6 +364,16 @@ async fn main() -> Result<()> {
         info!("Using script-based rule evaluation: {}", script);
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)
+    } else if let Some(js_code) = &args.js {
+        info!("Using V8 JavaScript rule evaluation (experimental)");
+        let js_engine = match V8JsRuleEngine::new(js_code.clone()) {
+            Ok(engine) => Box::new(engine),
+            Err(e) => {
+                eprintln!("Failed to create V8 JavaScript engine: {}", e);
+                std::process::exit(1);
+            }
+        };
+        RuleEngine::from_trait(js_engine, request_log)
     } else {
         let rules = build_rules(&args)?;
         RuleEngine::new(rules, request_log)
@@ -555,6 +580,7 @@ mod tests {
         let args = Args {
             rules: vec![],
             script: None,
+            js: None,
             config: None,
             request_log: None,
             weak: false,
@@ -592,6 +618,7 @@ mod tests {
         let args = Args {
             rules: vec![],
             script: None,
+            js: None,
             config: Some(file.path().to_str().unwrap().to_string()),
             request_log: None,
             weak: false,

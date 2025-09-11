@@ -20,6 +20,7 @@ cargo install httpjail
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🎯 **Regex-based filtering** - Flexible allow/deny rules with regex patterns
 - 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
+- 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine (experimental)
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
 - ⛔ **Default deny** - Requests are blocked unless explicitly allowed
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
@@ -50,6 +51,11 @@ httpjail --config rules.txt -- python script.py
 httpjail --script /path/to/check.sh -- ./my-app
 # Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
 # Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
+
+# Use JavaScript for request evaluation (experimental)
+httpjail --js "return host === 'github.com'" -- git pull
+# JavaScript receives: url, method, host, scheme, path as global variables
+# Should return true to allow, false to block
 
 # Run as standalone proxy server (no command execution)
 httpjail --server -r "allow: .*"
@@ -218,6 +224,71 @@ httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- g
 
 > [!TIP]
 > Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
+
+### JavaScript (V8) Evaluation (Experimental)
+
+httpjail includes experimental support for JavaScript-based request evaluation using Google's V8 engine. This provides more flexible and powerful rule logic compared to regex patterns or shell scripts.
+
+```bash
+# Simple JavaScript rule - allow only GitHub requests
+httpjail --js "return host === 'github.com'" -- curl https://github.com
+
+# Method-specific filtering
+httpjail --js "return method === 'GET' && host === 'api.github.com'" -- git pull
+
+# Complex logic with multiple conditions
+httpjail --js "
+// Allow GitHub and safe domains
+if (host.endsWith('github.com') || host === 'api.github.com') {
+    return true;
+}
+
+// Block social media
+if (host.includes('facebook.com') || host.includes('twitter.com')) {
+    return false;
+}
+
+// Allow HTTPS API calls
+if (scheme === 'https' && path.startsWith('/api/')) {
+    return true;
+}
+
+// Default deny
+return false;
+" -- ./my-app
+
+# Path-based filtering
+httpjail --js "return path.startsWith('/api/') && scheme === 'https'" -- npm install
+```
+
+**Global variables available in JavaScript:**
+
+- `url` - Full URL being requested (string)
+- `method` - HTTP method (GET, POST, etc.)
+- `host` - Hostname from the URL
+- `scheme` - URL scheme (http or https)
+- `path` - Path portion of the URL
+
+**JavaScript evaluation rules:**
+
+- JavaScript code should return `true` to allow the request, `false` to block it
+- Code is executed in a sandboxed V8 isolate for security
+- Syntax errors are caught during startup and cause httpjail to exit
+- Runtime errors result in the request being blocked
+- Each request evaluation runs in a fresh context for thread safety
+
+**Performance considerations:**
+
+- V8 engine provides fast JavaScript execution
+- Fresh isolate creation per request ensures thread safety but adds some overhead
+- For maximum performance with complex logic, consider using compiled rules instead
+- JavaScript evaluation is generally faster than external script execution
+
+> [!WARNING]
+> JavaScript evaluation is experimental and may change in future versions. Use the `--script` option for production environments requiring stability.
+
+> [!NOTE]
+> The `--js` flag conflicts with `--script`, `--rule`, and `--config` flags. Only one evaluation method can be used at a time.
 
 ### Advanced Options
 

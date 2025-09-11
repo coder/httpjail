@@ -1,5 +1,6 @@
 pub mod pattern;
 pub mod script;
+pub mod v8_js;
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
