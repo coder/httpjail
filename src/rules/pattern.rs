@@ -1,5 +1,6 @@
 use super::{Action, EvaluationResult, RuleEngineTrait};
 use anyhow::Result;
+use async_trait::async_trait;
 use hyper::Method;
 use regex::Regex;
 use std::collections::HashSet;
@@ -49,6 +50,7 @@ impl PatternRuleEngine {
     }
 }
 
+#[async_trait]
 impl RuleEngineTrait for PatternRuleEngine {
     async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
         for rule in &self.rules {

@@ -550,8 +550,8 @@ mod tests {
     use super::*;
     use hyper::Method;
 
-    #[test]
-    fn test_build_rules_no_rules_default_deny() {
+    #[tokio::test]
+    async fn test_build_rules_no_rules_default_deny() {
         let args = Args {
             rules: vec![],
             script: None,
@@ -572,7 +572,7 @@ mod tests {
         // Rule engine should deny requests when no rules are specified
         let engine = RuleEngine::new(rules, None);
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
+            engine.evaluate(Method::GET, "https://example.com").await,
             Action::Deny
         ));
     }

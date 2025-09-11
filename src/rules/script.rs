@@ -1,4 +1,5 @@
 use super::{EvaluationResult, RuleEngineTrait};
+use async_trait::async_trait;
 use hyper::Method;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -136,6 +137,7 @@ impl ScriptRuleEngine {
     }
 }
 
+#[async_trait]
 impl RuleEngineTrait for ScriptRuleEngine {
     async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
         let (allowed, context) = self.execute_script(method.clone(), url).await;
