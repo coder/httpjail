@@ -92,7 +92,7 @@ jobs:
       - name: Setup Rust environment and install nextest
         run: |
           source ~/.cargo/env
-          
+
           # Install nextest if not already present
           if ! command -v cargo-nextest &> /dev/null; then
             cargo install cargo-nextest --locked
@@ -135,7 +135,7 @@ jobs:
 
   test-weak:
     name: Weak Mode Integration Tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
 
     steps:
       - uses: actions/checkout@v4
@@ -167,7 +167,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest-8-cores, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -188,7 +188,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
 
     steps:
       - uses: actions/checkout@v4
@@ -209,7 +209,7 @@ jobs:
 
   udeps:
     name: Unused dependency check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
 
     steps:
       - uses: actions/checkout@v4
