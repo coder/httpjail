@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ArgAction};
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
-use httpjail::rules::RuleEngine;
+use httpjail::rules::{RuleEngine, Action};
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
+use hyper::Method;
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -79,8 +81,17 @@ struct Args {
     )]
     server: bool,
 
+    /// Evaluate rule against a URL and exit (dry-run)
+    #[arg(
+        long = "test",
+        value_name = "URL",
+        conflicts_with = "server",
+        conflicts_with = "cleanup"
+    )]
+    test: Option<String>,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server"])]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
     command: Vec<String>,
 }
 
@@ -322,6 +333,23 @@ async fn main() -> Result<()> {
         };
         RuleEngine::from_trait(js_engine, request_log)
     };
+
+    // Handle test (dry-run) mode: evaluate the rule against a URL and exit
+    if let Some(test_url) = &args.test {
+        let eval = rule_engine.evaluate_with_context(Method::GET, test_url).await;
+        match eval.action {
+            Action::Allow => {
+                println!("ALLOW GET {}", test_url);
+                if let Some(ctx) = eval.context { println!("{}", ctx); }
+                std::process::exit(0);
+            }
+            Action::Deny => {
+                println!("DENY GET {}", test_url);
+                if let Some(ctx) = eval.context { println!("{}", ctx); }
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
