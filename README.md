@@ -31,14 +31,14 @@ cargo install httpjail
 
 ```bash
 # Allow only requests to github.com (JS)
-httpjail --js "return host === 'github.com'" -- your-app
+httpjail --js "r.host === 'github.com'" -- your-app
 
 # Load JS from a file
-echo "if (/^api\\.example\\.com$/.test(host) && method === 'GET') return true; return false;" > rules.js
+echo "/^api\\.example\\.com$/.test(r.host) && r.method === 'GET'" > rules.js
 httpjail --js-file rules.js -- curl https://api.example.com/health
 
 # Log requests to a file
-httpjail --request-log requests.log --js "return true" -- npm install
+httpjail --request-log requests.log --js "true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
 # Use custom script for request evaluation
@@ -47,7 +47,7 @@ httpjail --script /path/to/check.sh -- ./my-app
 # Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
 
 # Run as standalone proxy server (no command execution) and allow all
-httpjail --server --js "return true"
+httpjail --server --js "true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 # Configure your application:
 # HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443
@@ -221,42 +221,43 @@ If `--script` has spaces, it's run through `$SHELL` (default `/bin/sh`); otherwi
 httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
 
 ```bash
-# Simple JavaScript rule - allow only GitHub requests
-httpjail --js "return host === 'github.com'" -- curl https://github.com
+# Simple JavaScript expression - allow only GitHub requests
+httpjail --js "r.host === 'github.com'" -- curl https://github.com
 
 # Method-specific filtering
-httpjail --js "return method === 'GET' && host === 'api.github.com'" -- git pull
+httpjail --js "r.method === 'GET' && r.host === 'api.github.com'" -- git pull
 
 # Load from file
 httpjail --js-file rules.js -- ./my-app
 
 # Complex logic with multiple conditions (ternary style)
-httpjail --js "
-return (host.endsWith('github.com') || host === 'api.github.com')) ? true
-     : (host.includes('facebook.com') || host.includes('twitter.com')) ? false
-     : (scheme === 'https' && path.startsWith('/api/')) ? true
-     : false;
-" -- ./my-app
+httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? true : (r.host.includes('facebook.com') || r.host.includes('twitter.com')) ? false : (r.scheme === 'https' && r.path.startsWith('/api/')) ? true : false" -- ./my-app
 
 # Path-based filtering
-httpjail --js "return path.startsWith('/api/') && scheme === 'https'" -- npm install
+httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
+
+# Custom block message
+httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
 ```
 
-**Global variables available in JavaScript:**
+**JavaScript API:**
 
-- `url` - Full URL being requested (string)
-- `method` - HTTP method (GET, POST, etc.)
-- `host` - Hostname from the URL
-- `scheme` - URL scheme (http or https)
-- `path` - Path portion of the URL
+All request information is available via the `r` object:
+- `r.url` - Full URL being requested (string)
+- `r.method` - HTTP method (GET, POST, etc.)
+- `r.host` - Hostname from the URL
+- `r.scheme` - URL scheme (http or https)
+- `r.path` - Path portion of the URL
+- `r.block_message` - Optional message to set when denying (writable)
 
 **JavaScript evaluation rules:**
 
-- JavaScript code should return `true` to allow the request, `false` to block it
+- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
 - Code is executed in a sandboxed V8 isolate for security
 - Syntax errors are caught during startup and cause httpjail to exit
 - Runtime errors result in the request being blocked
 - Each request evaluation runs in a fresh context for thread safety
+- You can set `r.block_message` to provide a custom denial message
 
 **Performance considerations:**
 
@@ -271,18 +272,18 @@ httpjail --js "return path.startsWith('/api/') && scheme === 'https'" -- npm ins
 
 ```bash
 # Verbose logging
-httpjail -vvv --js "return true" -- curl https://example.com
+httpjail -vvv --js "true" -- curl https://example.com
 
 # Server mode - run as standalone proxy without executing commands
-httpjail --server --js "return true"
+httpjail --server --js "true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 
 # Server mode with custom ports (format: port or ip:port)
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "return true"
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
 # Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
 
 # Bind to specific interface
-HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "return true"
+HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "true"
 ```
 
 ### Server Mode
@@ -291,13 +292,13 @@ httpjail can run as a standalone proxy server without executing any commands. Th
 
 ```bash
 # Start server with default ports (8080 for HTTP, 8443 for HTTPS) on localhost
-httpjail --server --js "return true"
+httpjail --server --js "true"
 
 # Start server with custom ports using environment variables
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "return true"
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
 
 # Bind to all interfaces (use with caution - exposes proxy to network)
-HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server --js "return true"
+HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server --js "true"
 
 # Configure your applications to use the proxy:
 export HTTP_PROXY=http://localhost:8080

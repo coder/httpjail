@@ -23,7 +23,7 @@ fn test_weak_mode_blocks_http_correctly() {
     // Test that HTTP to ifconfig.me is blocked in weak mode
     let result = HttpjailCommand::new()
         .weak()
-        .js("return false;")
+        .js("false")
         .verbose(2)
         .command(vec!["curl", "--max-time", "3", "http://ifconfig.me"])
         .execute();
@@ -60,7 +60,7 @@ fn test_weak_mode_timeout_works() {
     // This test uses a command that would normally hang
     let result = HttpjailCommand::new()
         .weak()
-        .js("return true;")
+        .js("true")
         .verbose(2)
         .command(vec!["bash", "-c", "sleep 60"])
         // command that exceeds timeout
@@ -86,7 +86,7 @@ fn test_weak_mode_allows_localhost() {
     // Test that localhost connections work (for the proxy itself)
     let result = HttpjailCommand::new()
         .weak()
-        .js("return host === 'localhost' || host === '127.0.0.1';")
+        .js("r.host === 'localhost' || r.host === '127.0.0.1'")
         .verbose(1)
         .command(vec!["curl", "--max-time", "3", "http://localhost:80"])
         // may fail but should be allowed by rules
@@ -124,7 +124,7 @@ fn test_weak_mode_appends_no_proxy() {
     // Ensure existing NO_PROXY values are preserved and localhost entries appended
     let result = HttpjailCommand::new()
         .weak()
-        .js("return true;")
+        .js("true")
         .env("NO_PROXY", "example.com")
         .verbose(2)
         .command(vec!["env"])

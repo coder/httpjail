@@ -159,7 +159,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     }
 
     let result = cmd
-        .js("return false;")
+        .js("false")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "3", "https://ifconfig.me"])
         .execute();
@@ -203,7 +203,7 @@ pub fn test_https_allow(use_sudo: bool) {
     }
 
     let result = cmd
-        .js("return /ifconfig\\.me/.test(host);")
+        .js("/ifconfig\\.me/.test(r.host)")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
         .execute();
