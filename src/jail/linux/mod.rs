@@ -145,6 +145,14 @@ impl LinuxJail {
         (host_ip, host_cidr, guest_cidr, subnet_cidr)
     }
 
+    /// Expose the host veth IPv4 address for a given jail_id.
+    /// This allows early binding of the proxy to the precise interface IP
+    /// without falling back to 0.0.0.0.
+    pub fn compute_host_ip_for_jail_id(jail_id: &str) -> [u8; 4] {
+        let (host_ip, _host_cidr, _guest_cidr, _subnet_cidr) = Self::compute_subnet_for_jail(jail_id);
+        host_ip
+    }
+
     /// Create the network namespace using ManagedResource
     fn create_namespace(&mut self) -> Result<()> {
         self.namespace = Some(ManagedResource::<NetworkNamespace>::create(
