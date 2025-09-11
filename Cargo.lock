@@ -773,7 +773,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "httpjail"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "assert_cmd",
