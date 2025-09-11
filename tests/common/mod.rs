@@ -24,6 +24,7 @@ pub struct HttpjailCommand {
     args: Vec<String>,
     use_sudo: bool,
     weak_mode: bool,
+    env: Vec<(String, String)>,
 }
 
 impl HttpjailCommand {
@@ -33,6 +34,7 @@ impl HttpjailCommand {
             args: vec![],
             use_sudo: false,
             weak_mode: false,
+            env: vec![],
         }
     }
 
@@ -70,6 +72,12 @@ impl HttpjailCommand {
         self
     }
 
+    /// Set an environment variable for the httpjail process
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
+    }
+
     /// Build and execute the command
     pub fn execute(mut self) -> Result<(i32, String, String), String> {
         // Ensure httpjail is built
@@ -104,11 +112,17 @@ impl HttpjailCommand {
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
+            for (key, value) in &self.env {
+                sudo_cmd.env(key, value);
+            }
             sudo_cmd
         } else {
             let mut cmd = Command::new(&httpjail_path);
             for arg in &self.args {
                 cmd.arg(arg);
+            }
+            for (key, value) in &self.env {
+                cmd.env(key, value);
             }
             cmd
         };
