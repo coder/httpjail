@@ -95,9 +95,9 @@ async fn test_js_conflicts() {
 
     cmd.args(["--server", "--js", "return true", "--rule", "allow: .*"]);
 
-    cmd.assert().failure().stderr(
-        predicate::str::contains("unexpected argument '--rule' found"),
-    );
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "unexpected argument '--rule' found",
+    ));
 }
 
 /// Test JavaScript rule with method-specific logic

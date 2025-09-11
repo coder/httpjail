@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
+use httpjail::rules::RuleEngine;
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
-use httpjail::rules::RuleEngine;
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,11 +21,7 @@ struct Args {
     ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
     /// Exit code 0 allows the request, non-zero blocks it
     /// stdout becomes additional context in the 403 response
-    #[arg(
-        short = 's',
-        long = "script",
-        value_name = "PROG"
-    )]
+    #[arg(short = 's', long = "script", value_name = "PROG")]
     script: Option<String>,
 
     /// Use JavaScript (V8) for evaluating requests
@@ -406,7 +402,8 @@ async fn main() -> Result<()> {
         let jail_clone = jail.clone();
 
         // We need to use spawn_blocking since jail.execute is blocking
-        let handle = tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
+        let handle =
+            tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
 
         // Apply timeout to the blocking task
         match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {

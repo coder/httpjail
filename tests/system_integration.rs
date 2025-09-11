@@ -351,7 +351,9 @@ pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
 
     // Test allowing HTTPS to ifconfig.me
     let mut cmd = httpjail_cmd();
-    cmd.arg("--js").arg("return /ifconfig\\.me/.test(host);").arg("--");
+    cmd.arg("--js")
+        .arg("return /ifconfig\\.me/.test(host);")
+        .arg("--");
     curl_https_status_args(&mut cmd, "https://ifconfig.me");
 
     let output = cmd.output().expect("Failed to execute httpjail");

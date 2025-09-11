@@ -139,14 +139,17 @@ impl RuleEngine {
             js
         };
 
-        let engine = Box::new(v8_js::V8JsRuleEngine::new(js_code).expect("failed to build JS engine"));
+        let engine =
+            Box::new(v8_js::V8JsRuleEngine::new(js_code).expect("failed to build JS engine"));
         let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
             Box::new(LoggingRuleEngine::new(engine, request_log))
         } else {
             engine
         };
 
-        RuleEngine { inner: Arc::from(engine) }
+        RuleEngine {
+            inner: Arc::from(engine),
+        }
     }
 
     pub fn from_trait(
