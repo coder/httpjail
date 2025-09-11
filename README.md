@@ -22,11 +22,8 @@ cargo install httpjail
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 - ⚡ **Zero configuration** - Works out of the box with sensible defaults
 
-## MVP TODO
-
-- [ ] Update README to be more reflective of AI agent restrictions
-- [x] Add a `--server` mode that runs the proxy server but doesn't execute the command
-- [ ] Expand test cases to include WebSockets
+> [!WARNING]
+> httpjail is experimental and offers no API or CLI compatibility guarantees.
 
 ## Quick Start
 
@@ -205,6 +202,7 @@ httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- g
 ```
 
 **Environment variables provided to the script:**
+
 - `HTTPJAIL_URL` - Full URL being requested
 - `HTTPJAIL_METHOD` - HTTP method (GET, POST, etc.)
 - `HTTPJAIL_HOST` - Hostname from the URL
@@ -212,10 +210,14 @@ httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- g
 - `HTTPJAIL_PATH` - Path component of the URL
 
 **Script requirements:**
+
 - Exit code 0 allows the request
 - Any non-zero exit code blocks the request
 - stdout is captured and included in 403 responses as additional context
 - stderr is logged for debugging but not sent to the client
+
+> [!TIP]
+> Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
 ### Advanced Options
 
