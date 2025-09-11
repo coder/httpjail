@@ -353,7 +353,15 @@ async fn main() -> Result<()> {
     let (http_port, _http_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
     let (https_port, _https_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
 
-    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, None);
+    // For strong jail mode (not weak, not server), we need to bind to all interfaces (0.0.0.0)
+    // so the proxy is accessible from the veth interface. For weak mode or server mode,
+    // localhost is fine.
+    let bind_address = if args.weak || args.server {
+        None // defaults to 127.0.0.1
+    } else {
+        Some([0, 0, 0, 0]) // bind to all interfaces for strong jail
+    };
+    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, bind_address);
 
     // Start proxy in background if running as server; otherwise start with random ports
     let (actual_http_port, actual_https_port) = proxy.start().await?;
