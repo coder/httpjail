@@ -1,6 +1,6 @@
 use super::{EvaluationResult, RuleEngineTrait};
 use hyper::Method;
-use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -32,51 +32,106 @@ impl ScriptRuleEngine {
             method, url, host, path
         );
 
-        let output = if self.script.contains(' ') {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            Command::new(&shell)
-                .arg("-c")
-                .arg(&self.script)
-                .env("HTTPJAIL_URL", url)
-                .env("HTTPJAIL_METHOD", method.as_str())
-                .env("HTTPJAIL_SCHEME", scheme)
-                .env("HTTPJAIL_HOST", host)
-                .env("HTTPJAIL_PATH", path)
-                .output()
-        } else {
-            Command::new(&self.script)
-                .env("HTTPJAIL_URL", url)
-                .env("HTTPJAIL_METHOD", method.as_str())
-                .env("HTTPJAIL_SCHEME", scheme)
-                .env("HTTPJAIL_HOST", host)
-                .env("HTTPJAIL_PATH", path)
-                .output()
-        };
+        // Use tokio runtime to execute async command with timeout
+        let script_clone = self.script.clone();
+        let method_str = method.as_str().to_string();
+        let url_str = url.to_string();
+        let scheme_str = scheme.to_string();
+        let host_str = host.to_string();
+        let path_str = path.to_string();
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // Use spawn_blocking to avoid blocking the async runtime
+        // This is safe since execute_script is called from a sync context in evaluate()
+        let result = std::thread::spawn(move || {
+            use std::process::{Command, Stdio};
+            use std::time::Instant;
 
-                if !stderr.is_empty() {
-                    debug!("Script stderr: {}", stderr);
+            let start = Instant::now();
+            let timeout = Duration::from_secs(5);
+
+            let mut cmd = if script_clone.contains(' ') {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                let mut cmd = Command::new(&shell);
+                cmd.arg("-c").arg(&script_clone);
+                cmd
+            } else {
+                Command::new(&script_clone)
+            };
+
+            let mut child = match cmd
+                .env("HTTPJAIL_URL", &url_str)
+                .env("HTTPJAIL_METHOD", &method_str)
+                .env("HTTPJAIL_SCHEME", &scheme_str)
+                .env("HTTPJAIL_HOST", &host_str)
+                .env("HTTPJAIL_PATH", &path_str)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(e) => {
+                    warn!("Failed to spawn script: {}", e);
+                    return (false, format!("Script execution failed: {}", e));
                 }
+            };
 
-                let allowed = output.status.success();
+            // Poll for completion with timeout
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        // Process has exited
+                        let output = child.wait_with_output().unwrap_or_else(|e| {
+                            warn!("Failed to read script output: {}", e);
+                            std::process::Output {
+                                status,
+                                stdout: Vec::new(),
+                                stderr: Vec::new(),
+                            }
+                        });
 
-                debug!(
-                    "Script returned {} for {} {} (exit code: {:?})",
-                    if allowed { "ALLOW" } else { "DENY" },
-                    method,
-                    url,
-                    output.status.code()
-                );
+                        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-                (allowed, stdout)
+                        if !stderr.is_empty() {
+                            debug!("Script stderr: {}", stderr);
+                        }
+
+                        let allowed = status.success();
+
+                        debug!(
+                            "Script returned {} for {} {} (exit code: {:?})",
+                            if allowed { "ALLOW" } else { "DENY" },
+                            method_str,
+                            url_str,
+                            status.code()
+                        );
+
+                        return (allowed, stdout);
+                    }
+                    Ok(None) => {
+                        // Still running
+                        if start.elapsed() > timeout {
+                            // Timeout - kill the process
+                            let _ = child.kill();
+                            warn!("Script execution timed out after {:?}", timeout);
+                            return (false, "Script execution timed out".to_string());
+                        }
+                        // Sleep briefly before checking again
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => {
+                        warn!("Error waiting for script: {}", e);
+                        return (false, format!("Script execution error: {}", e));
+                    }
+                }
             }
-            Err(e) => {
-                warn!("Failed to execute script: {}", e);
-                (false, format!("Script execution failed: {}", e))
+        });
+
+        match result.join() {
+            Ok(res) => res,
+            Err(_) => {
+                warn!("Script execution thread panicked");
+                (false, "Script execution failed".to_string())
             }
         }
     }
@@ -113,7 +168,6 @@ mod tests {
     use super::*;
     use crate::rules::Action;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -124,9 +178,13 @@ exit 0
 "#;
         fs::write(script_file.path(), script).unwrap();
 
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(script_file.path(), perms).unwrap();
+        }
 
         let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
@@ -142,9 +200,13 @@ exit 1
 "#;
         fs::write(script_file.path(), script).unwrap();
 
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(script_file.path(), perms).unwrap();
+        }
 
         let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
@@ -161,9 +223,13 @@ exit 1
 "#;
         fs::write(script_file.path(), script).unwrap();
 
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(script_file.path(), perms).unwrap();
+        }
 
         let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
@@ -185,9 +251,13 @@ fi
 "#;
         fs::write(script_file.path(), script).unwrap();
 
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(script_file.path(), perms).unwrap();
+        }
 
         let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
 

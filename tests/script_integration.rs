@@ -2,7 +2,6 @@ use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::{Action, RuleEngineTrait};
 use hyper::Method;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use tempfile::NamedTempFile;
 
 #[test]
@@ -18,9 +17,13 @@ fi
 "#;
     fs::write(script_file.path(), script).unwrap();
 
-    let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(script_file.path(), perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(script_file.path(), perms).unwrap();
+    }
 
     let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
 
@@ -50,9 +53,13 @@ fi
 "#;
     fs::write(script_file.path(), script).unwrap();
 
-    let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(script_file.path(), perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(script_file.path(), perms).unwrap();
+    }
 
     let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
 
@@ -102,9 +109,13 @@ fi
 "#;
     fs::write(script_file.path(), script).unwrap();
 
-    let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(script_file.path(), perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(script_file.path(), perms).unwrap();
+    }
 
     let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
 
