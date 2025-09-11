@@ -527,7 +527,7 @@ mod tests {
         let args = Args {
             rules: vec![],
             config: None,
-            log_only: false,
+            request_log: None,
             interactive: false,
             weak: false,
             verbose: 0,

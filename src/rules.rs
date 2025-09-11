@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_default_deny_with_no_rules() {
-        let engine = RuleEngine::new(vec![], false);
+        let engine = RuleEngine::new(vec![], None);
 
         assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
