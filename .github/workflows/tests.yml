@@ -195,3 +195,48 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
+
+  udeps:
+    name: Unused dependency check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly for cargo-udeps)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@cargo-udeps
+
+      - name: Check for unused dependencies
+        run: |
+          set -euo pipefail
+          # Run with nightly; capture output without failing the step
+          set +e
+          cargo +nightly udeps --all-targets --all-features 2>&1 | tee udeps_output.txt
+          STATUS=$?
+          set -e
+          cat udeps_output.txt
+          # If cargo-udeps failed due to nightly requirement or other errors, surface that
+          if [ $STATUS -ne 0 ]; then
+            echo "cargo-udeps exited with status $STATUS"
+            # If unused deps are present, cargo-udeps typically exits non-zero; still explicitly check text
+            if grep -qi "unused" udeps_output.txt; then
+              echo "Unused dependencies detected"
+              exit 1
+            fi
+            exit $STATUS
+          fi
+          # Treat any mention of 'unused' as a failure signal
+          if grep -qi "unused" udeps_output.txt; then
+            echo "Unused dependencies detected"
+            exit 1
+          fi
