@@ -1,5 +1,6 @@
 use crate::proxy::{
-    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response, create_forbidden_response,
+    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
+    create_forbidden_response,
 };
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
@@ -304,7 +305,10 @@ async fn handle_connect_tunnel(
 
     // Check if this host is allowed
     let full_url = format!("https://{}", target);
-    match rule_engine.evaluate(Method::GET, &full_url) {
+    let evaluation = rule_engine
+        .evaluate_with_context(Method::GET, &full_url)
+        .await;
+    match evaluation.action {
         Action::Allow => {
             debug!("CONNECT allowed to: {}", host);
 
@@ -341,10 +345,10 @@ async fn handle_connect_tunnel(
             // Get the underlying stream back
             let mut stream = reader.into_inner();
 
-            // Send 403 Forbidden response
-            let response = create_connect_403_response();
+            // Send 403 Forbidden response with context
+            let response = create_connect_403_response_with_context(evaluation.context);
             match timeout(WRITE_TIMEOUT, async {
-                stream.write_all(response).await?;
+                stream.write_all(&response).await?;
                 stream.flush().await
             })
             .await
@@ -451,10 +455,13 @@ async fn handle_decrypted_https_request(
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let full_url = format!("https://{}{}", host, path);
 
-    info!("Proxying HTTPS request: {} {}", method, full_url);
+    debug!("Proxying HTTPS request: {} {}", method, full_url);
 
     // Evaluate rules with method
-    match rule_engine.evaluate(method.clone(), &full_url) {
+    let evaluation = rule_engine
+        .evaluate_with_context(method.clone(), &full_url)
+        .await;
+    match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
             match proxy_https_request(req, &host).await {
@@ -466,8 +473,8 @@ async fn handle_decrypted_https_request(
             }
         }
         Action::Deny => {
-            warn!("Request denied: {}", full_url);
-            create_forbidden_response()
+            debug!("Request denied: {}", full_url);
+            create_forbidden_response(evaluation.context)
         }
     }
 }

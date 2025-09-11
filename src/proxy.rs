@@ -23,11 +23,27 @@ use tracing::{debug, error, info, warn};
 
 pub const HTTPJAIL_HEADER: &str = "HTTPJAIL";
 pub const HTTPJAIL_HEADER_VALUE: &str = "true";
-pub const BLOCKED_MESSAGE: &str = "Request blocked by httpjail\n";
+pub const BLOCKED_MESSAGE: &str = "Request blocked by httpjail";
 
 /// Create a raw HTTP/1.1 403 Forbidden response for CONNECT tunnels
 pub fn create_connect_403_response() -> &'static [u8] {
     b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nRequest blocked by httpjail"
+}
+
+/// Create a raw HTTP/1.1 403 Forbidden response for CONNECT tunnels with context
+pub fn create_connect_403_response_with_context(context: Option<String>) -> Vec<u8> {
+    let message = if let Some(ctx) = context {
+        format!("{}\n{}", BLOCKED_MESSAGE, ctx)
+    } else {
+        BLOCKED_MESSAGE.to_string()
+    };
+
+    let response = format!(
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        message.len(),
+        message
+    );
+    response.into_bytes()
 }
 
 // Shared HTTP/HTTPS client for upstream requests
@@ -351,10 +367,11 @@ pub async fn handle_http_request(
         format!("http://{}{}", host, path)
     };
 
-    info!("Proxying HTTP request: {} {}", method, full_url);
+    debug!("Proxying HTTP request: {} {}", method, full_url);
 
     // Evaluate rules with method
-    match rule_engine.evaluate(method, &full_url) {
+    let evaluation = rule_engine.evaluate_with_context(method, &full_url).await;
+    match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
             match proxy_request(req, &full_url).await {
@@ -366,8 +383,8 @@ pub async fn handle_http_request(
             }
         }
         Action::Deny => {
-            warn!("Request denied: {}", full_url);
-            create_forbidden_response()
+            debug!("Request denied: {}", full_url);
+            create_forbidden_response(evaluation.context)
         }
     }
 }
@@ -427,10 +444,16 @@ async fn proxy_request(
     Ok(Response::from_parts(parts, boxed_body))
 }
 
-/// Create a 403 Forbidden error response
-pub fn create_forbidden_response()
--> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
-    create_error_response(StatusCode::FORBIDDEN, BLOCKED_MESSAGE)
+/// Create a 403 Forbidden error response with optional context
+pub fn create_forbidden_response(
+    context: Option<String>,
+) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
+    let message = if let Some(ctx) = context {
+        format!("{}\n{}", BLOCKED_MESSAGE, ctx)
+    } else {
+        BLOCKED_MESSAGE.to_string()
+    };
+    create_error_response(StatusCode::FORBIDDEN, &message)
 }
 
 pub fn create_error_response(

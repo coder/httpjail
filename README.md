@@ -13,19 +13,17 @@ cargo install httpjail
 
 ## Features
 
+> [!WARNING]
+> httpjail is experimental and offers no API or CLI compatibility guarantees.
+
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🎯 **Regex-based filtering** - Flexible allow/deny rules with regex patterns
+- 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
 - ⛔ **Default deny** - Requests are blocked unless explicitly allowed
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 - ⚡ **Zero configuration** - Works out of the box with sensible defaults
-
-## MVP TODO
-
-- [ ] Update README to be more reflective of AI agent restrictions
-- [x] Add a `--server` mode that runs the proxy server but doesn't execute the command
-- [ ] Expand test cases to include WebSockets
 
 ## Quick Start
 
@@ -47,6 +45,11 @@ httpjail -r "allow-get: api\.github\.com" -r "deny: .*" -- git pull
 
 # Use config file for complex rules
 httpjail --config rules.txt -- python script.py
+
+# Use custom script for request evaluation
+httpjail --script /path/to/check.sh -- ./my-app
+# Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+# Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
 
 # Run as standalone proxy server (no command execution)
 httpjail --server -r "allow: .*"
@@ -172,6 +175,49 @@ Use the config:
 ```bash
 httpjail --config rules.txt -- ./my-application
 ```
+
+### Script-Based Evaluation
+
+Instead of regex rules, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
+
+```bash
+# Simple script example
+cat > check_request.sh << 'EOF'
+#!/bin/bash
+# Allow only GitHub and reject everything else
+if [[ "$HTTPJAIL_HOST" == "github.com" ]]; then
+    exit 0
+else
+    echo "Access denied: $HTTPJAIL_HOST is not on the allowlist"
+    exit 1
+fi
+EOF
+chmod +x check_request.sh
+
+# Use the script
+httpjail --script ./check_request.sh -- curl https://github.com
+
+# Inline script (with spaces, executed via shell)
+httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
+```
+
+**Environment variables provided to the script:**
+
+- `HTTPJAIL_URL` - Full URL being requested
+- `HTTPJAIL_METHOD` - HTTP method (GET, POST, etc.)
+- `HTTPJAIL_HOST` - Hostname from the URL
+- `HTTPJAIL_SCHEME` - URL scheme (http or https)
+- `HTTPJAIL_PATH` - Path component of the URL
+
+**Script requirements:**
+
+- Exit code 0 allows the request
+- Any non-zero exit code blocks the request
+- stdout is captured and included in 403 responses as additional context
+- stderr is logged for debugging but not sent to the client
+
+> [!TIP]
+> Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
 ### Advanced Options
 
