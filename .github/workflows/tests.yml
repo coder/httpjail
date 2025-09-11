@@ -26,6 +26,8 @@ jobs:
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
@@ -78,6 +80,11 @@ jobs:
           if [ -d /home/ci/.cargo/git ]; then
             sudo chown -R ci:ci /home/ci/.cargo/git || true
           fi
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
 
       - name: Setup Rust environment and install nextest
         run: |
@@ -132,6 +139,8 @@ jobs:
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
@@ -160,6 +169,8 @@ jobs:
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -176,6 +187,11 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
 
       - name: Check formatting
         run: cargo fmt -- --check
