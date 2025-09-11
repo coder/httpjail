@@ -20,12 +20,12 @@ impl V8JsRuleEngine {
     ///
     /// # Arguments
     /// * `js_code` - JavaScript code that should return a boolean value
-    ///               The code has access to global variables:
-    ///               - `url` - Full URL string
-    ///               - `method` - HTTP method string
-    ///               - `scheme` - URL scheme (http/https)
-    ///               - `host` - Host part of URL
-    ///               - `path` - Path part of URL
+    ///   The code has access to global variables:
+    ///   - `url` - Full URL string
+    ///   - `method` - HTTP method string
+    ///   - `scheme` - URL scheme (http/https)
+    ///   - `host` - Host part of URL
+    ///   - `path` - Path part of URL
     pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Initialize V8 platform (this should only be done once per process)
         V8_INIT.call_once(|| {
