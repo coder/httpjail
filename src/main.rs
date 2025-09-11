@@ -136,75 +136,112 @@ fn cleanup_orphans() -> Result<()> {
     let canary_dir = PathBuf::from("/tmp/httpjail");
     let orphan_timeout = Duration::from_secs(5); // Short timeout to catch recent orphans
 
-    debug!("Starting direct orphan cleanup scan in {:?}", canary_dir);
+    debug!("Starting direct orphan cleanup scan");
 
-    // Check if directory exists
-    if !canary_dir.exists() {
-        debug!("Canary directory does not exist, nothing to clean up");
-        return Ok(());
+    // Track jail IDs we've cleaned up to avoid duplicates
+    let mut cleaned_jails = std::collections::HashSet::<String>::new();
+
+    // First, scan for stale canary files
+    if canary_dir.exists() {
+        debug!("Scanning canary directory: {:?}", canary_dir);
+        for entry in fs::read_dir(&canary_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip if not a file
+            if !path.is_file() {
+                debug!("Skipping non-file: {:?}", path);
+                continue;
+            }
+
+            // Check file age using modification time
+            let metadata = fs::metadata(&path)?;
+            let modified = metadata
+                .modified()
+                .context("Failed to get file modification time")?;
+            let age = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::from_secs(0));
+
+            debug!("Found canary file {:?} with age {:?}", path, age);
+
+            // If file is older than orphan timeout, clean it up
+            if age > orphan_timeout {
+                let jail_id = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+
+                info!(
+                    "Found orphaned jail '{}' via canary file (age: {:?}), cleaning up",
+                    jail_id, age
+                );
+
+                // Call platform-specific cleanup
+                #[cfg(target_os = "linux")]
+                {
+                    <httpjail::jail::linux::LinuxJail as httpjail::jail::Jail>::cleanup_orphaned(
+                        jail_id,
+                    )?;
+                    cleaned_jails.insert(jail_id.to_string());
+                }
+
+                #[cfg(target_os = "macos")]
+                {
+                    // On macOS, we use WeakJail which doesn't have orphaned resources to clean up
+                    // Just log that we're skipping cleanup
+                    debug!("Skipping orphan cleanup on macOS (using weak jail)");
+                }
+
+                // Remove canary file after cleanup
+                if let Err(e) = fs::remove_file(&path) {
+                    debug!("Failed to remove canary file {:?}: {}", path, e);
+                } else {
+                    debug!("Removed canary file: {:?}", path);
+                }
+            } else {
+                debug!(
+                    "Canary file {:?} is not old enough to be considered orphaned",
+                    path
+                );
+            }
+        }
+    } else {
+        debug!("Canary directory does not exist");
     }
 
-    // Scan for stale canary files
-    for entry in fs::read_dir(&canary_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    // On Linux, also scan for orphaned namespace configs directly
+    // This handles cases where canary files were deleted (e.g., /tmp cleanup)
+    #[cfg(target_os = "linux")]
+    {
+        let netns_dir = PathBuf::from("/etc/netns");
+        if netns_dir.exists() {
+            debug!("Scanning for orphaned namespace configs in {:?}", netns_dir);
+            for entry in fs::read_dir(&netns_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Skip if not a file
-        if !path.is_file() {
-            debug!("Skipping non-file: {:?}", path);
-            continue;
+                // Only process httpjail namespace configs
+                if name.starts_with("httpjail_") && !cleaned_jails.contains(name) {
+                    info!(
+                        "Found orphaned namespace config '{}' without canary file, cleaning up",
+                        name
+                    );
+
+                    <httpjail::jail::linux::LinuxJail as httpjail::jail::Jail>::cleanup_orphaned(
+                        name,
+                    )?;
+                    cleaned_jails.insert(name.to_string());
+                }
+            }
         }
+    }
 
-        // Check file age using modification time
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata
-            .modified()
-            .context("Failed to get file modification time")?;
-        let age = SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or(Duration::from_secs(0));
-
-        debug!("Found canary file {:?} with age {:?}", path, age);
-
-        // If file is older than orphan timeout, clean it up
-        if age > orphan_timeout {
-            let jail_id = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-
-            info!(
-                "Found orphaned jail '{}' (age: {:?}), cleaning up",
-                jail_id, age
-            );
-
-            // Call platform-specific cleanup
-            #[cfg(target_os = "linux")]
-            {
-                <httpjail::jail::linux::LinuxJail as httpjail::jail::Jail>::cleanup_orphaned(
-                    jail_id,
-                )?;
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                // On macOS, we use WeakJail which doesn't have orphaned resources to clean up
-                // Just log that we're skipping cleanup
-                debug!("Skipping orphan cleanup on macOS (using weak jail)");
-            }
-
-            // Remove canary file after cleanup
-            if let Err(e) = fs::remove_file(&path) {
-                debug!("Failed to remove canary file {:?}: {}", path, e);
-            } else {
-                debug!("Removed canary file: {:?}", path);
-            }
-        } else {
-            debug!(
-                "Canary file {:?} is not old enough to be considered orphaned",
-                path
-            );
-        }
+    if cleaned_jails.is_empty() {
+        debug!("No orphaned jails found");
+    } else {
+        info!("Cleaned up {} orphaned jail(s)", cleaned_jails.len());
     }
 
     Ok(())
