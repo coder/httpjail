@@ -23,7 +23,7 @@ fn test_weak_mode_blocks_http_correctly() {
     // Test that HTTP to ifconfig.me is blocked in weak mode
     let result = HttpjailCommand::new()
         .weak()
-        .rule("deny: .*")
+        .js("false")
         .verbose(2)
         .command(vec!["curl", "--max-time", "3", "http://ifconfig.me"])
         .execute();
@@ -60,9 +60,10 @@ fn test_weak_mode_timeout_works() {
     // This test uses a command that would normally hang
     let result = HttpjailCommand::new()
         .weak()
-        .rule("allow: .*")
+        .js("true")
         .verbose(2)
-        .command(vec!["sh", "-c", "sleep 15"])
+        .command(vec!["bash", "-c", "sleep 60"])
+        // command that exceeds timeout
         .execute();
 
     match result {
@@ -85,15 +86,10 @@ fn test_weak_mode_allows_localhost() {
     // Test that localhost connections work (for the proxy itself)
     let result = HttpjailCommand::new()
         .weak()
-        .rule("allow: localhost")
-        .rule("allow: 127\\.0\\.0\\.1")
-        .verbose(2)
-        .command(vec![
-            "curl",
-            "--max-time",
-            "3",
-            "http://127.0.0.1:8080/test",
-        ])
+        .js("r.host === 'localhost' || r.host === '127.0.0.1'")
+        .verbose(1)
+        .command(vec!["curl", "--max-time", "3", "http://localhost:80"])
+        // may fail but should be allowed by rules
         .execute();
 
     match result {
@@ -128,7 +124,7 @@ fn test_weak_mode_appends_no_proxy() {
     // Ensure existing NO_PROXY values are preserved and localhost entries appended
     let result = HttpjailCommand::new()
         .weak()
-        .rule("allow: .*")
+        .js("true")
         .env("NO_PROXY", "example.com")
         .verbose(2)
         .command(vec!["env"])
@@ -180,8 +176,8 @@ fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, 
 
     let mut cmd = Command::new(&httpjail_path);
     cmd.arg("--server")
-        .arg("-r")
-        .arg("allow: .*")
+        .arg("--js")
+        .arg("true")
         .arg("-vv")
         .env("HTTPJAIL_HTTP_BIND", http_port.to_string())
         .env("HTTPJAIL_HTTPS_BIND", https_port.to_string())

@@ -15,7 +15,6 @@ isolated-cleanup-tests = []
 [dependencies]
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
-regex = "1.10"
 tokio = { version = "1.35", features = ["full"] }
 hyper = { version = "1.7", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
@@ -38,6 +37,7 @@ camino = "1.1.11"
 filetime = "0.2"
 ctrlc = "3.4"
 url = "2.5"
+v8 = "129"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nix = { version = "0.27", features = ["user"] }

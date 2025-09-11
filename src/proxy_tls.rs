@@ -570,7 +570,6 @@ async fn proxy_https_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::Rule;
     use rustls::ClientConfig;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -592,15 +591,13 @@ mod tests {
     }
 
     fn create_test_rule_engine(allow_all: bool) -> Arc<RuleEngine> {
-        let rules = if allow_all {
-            vec![Rule::new(Action::Allow, r".*").unwrap()]
+        let js = if allow_all {
+            "true".to_string()
         } else {
-            vec![
-                Rule::new(Action::Allow, r"example\.com").unwrap(),
-                Rule::new(Action::Deny, r".*").unwrap(),
-            ]
+            "/example\\.com/.test(r.host)".to_string()
         };
-        Arc::new(RuleEngine::new(rules, None))
+        let engine = crate::rules::v8_js::V8JsRuleEngine::new(js).unwrap();
+        Arc::new(RuleEngine::from_trait(Box::new(engine), None))
     }
 
     /// Create a TLS client config that trusts any certificate (for testing)

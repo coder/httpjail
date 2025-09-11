@@ -1,10 +1,9 @@
-pub mod pattern;
 pub mod script;
+pub mod v8_js;
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use hyper::Method;
-pub use pattern::{PatternRuleEngine, Rule};
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -96,19 +95,6 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
-        let pattern_engine = Box::new(PatternRuleEngine::new(rules));
-        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
-            Box::new(LoggingRuleEngine::new(pattern_engine, request_log))
-        } else {
-            pattern_engine
-        };
-
-        RuleEngine {
-            inner: Arc::from(engine),
-        }
-    }
-
     pub fn from_trait(
         engine: Box<dyn RuleEngineTrait>,
         request_log: Option<Arc<Mutex<File>>>,
@@ -118,7 +104,6 @@ impl RuleEngine {
         } else {
             engine
         };
-
         RuleEngine {
             inner: Arc::from(engine),
         }
@@ -136,93 +121,19 @@ impl RuleEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::v8_js::V8JsRuleEngine;
+    use std::fs::OpenOptions;
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn test_rule_matching() {
-        let rule = Rule::new(Action::Allow, r"github\.com").unwrap();
-        assert!(rule.matches(Method::GET, "https://github.com/user/repo"));
-        assert!(rule.matches(Method::POST, "http://api.github.com/v3/repos"));
-        assert!(!rule.matches(Method::GET, "https://gitlab.com/user/repo"));
-    }
-
-    #[test]
-    fn test_rule_with_methods() {
-        let rule = Rule::new(Action::Allow, r"api\.example\.com")
-            .unwrap()
-            .with_methods(vec![Method::GET, Method::HEAD]);
-
-        assert!(rule.matches(Method::GET, "https://api.example.com/users"));
-        assert!(rule.matches(Method::HEAD, "https://api.example.com/users"));
-        assert!(!rule.matches(Method::POST, "https://api.example.com/users"));
-        assert!(!rule.matches(Method::DELETE, "https://api.example.com/users"));
-    }
-
-    #[tokio::test]
-    async fn test_rule_engine() {
-        let rules = vec![
-            Rule::new(Action::Allow, r"github\.com").unwrap(),
-            Rule::new(Action::Deny, r"telemetry").unwrap(),
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
-
-        let engine = RuleEngine::new(rules, None);
-
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://github.com/api").await,
-            Action::Allow
-        ));
-
-        assert!(matches!(
-            engine
-                .evaluate(Method::POST, "https://telemetry.example.com")
-                .await,
-            Action::Deny
-        ));
-
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com").await,
-            Action::Deny
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_method_specific_rules() {
-        let rules = vec![
-            Rule::new(Action::Allow, r"api\.example\.com")
-                .unwrap()
-                .with_methods(vec![Method::GET]),
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
-
-        let engine = RuleEngine::new(rules, None);
-
-        assert!(matches!(
-            engine
-                .evaluate(Method::GET, "https://api.example.com/data")
-                .await,
-            Action::Allow
-        ));
-
-        assert!(matches!(
-            engine
-                .evaluate(Method::POST, "https://api.example.com/data")
-                .await,
-            Action::Deny
-        ));
-    }
 
     #[tokio::test]
     async fn test_request_logging() {
-        use std::fs::OpenOptions;
-
-        let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
+        let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
         let log_file = tempfile::NamedTempFile::new().unwrap();
         let file = OpenOptions::new()
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
+        let engine = RuleEngine::from_trait(Box::new(engine), Some(Arc::new(Mutex::new(file))));
 
         engine.evaluate(Method::GET, "https://example.com").await;
 
@@ -232,29 +143,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_logging_denied() {
-        use std::fs::OpenOptions;
-
-        let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
+        let engine = V8JsRuleEngine::new("false".to_string()).unwrap();
         let log_file = tempfile::NamedTempFile::new().unwrap();
         let file = OpenOptions::new()
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
+        let engine = RuleEngine::from_trait(Box::new(engine), Some(Arc::new(Mutex::new(file))));
 
         engine.evaluate(Method::GET, "https://blocked.com").await;
 
         let contents = std::fs::read_to_string(log_file.path()).unwrap();
         assert!(contents.contains("- GET https://blocked.com"));
-    }
-
-    #[tokio::test]
-    async fn test_default_deny_with_no_rules() {
-        let engine = RuleEngine::new(vec![], None);
-
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com").await,
-            Action::Deny
-        ));
     }
 }

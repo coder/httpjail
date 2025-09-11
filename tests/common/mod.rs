@@ -50,10 +50,10 @@ impl HttpjailCommand {
         self
     }
 
-    /// Add a rule
-    pub fn rule(mut self, rule: &str) -> Self {
-        self.args.push("-r".to_string());
-        self.args.push(rule.to_string());
+    /// Provide JavaScript rule code directly
+    pub fn js(mut self, code: &str) -> Self {
+        self.args.push("--js".to_string());
+        self.args.push(code.to_string());
         self
     }
 
@@ -134,22 +134,7 @@ impl HttpjailCommand {
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
         Ok((exit_code, stdout, stderr))
-    }
-
-    /// Build the command without executing (for debugging)
-    #[allow(dead_code)]
-    pub fn build(mut self) -> Vec<String> {
-        // Always add timeout for tests
-        self.args.insert(0, "--timeout".to_string());
-        self.args.insert(1, "10".to_string());
-
-        if self.weak_mode {
-            self.args.insert(0, "--weak".to_string());
-        }
-
-        self.args
     }
 }
 
@@ -163,7 +148,7 @@ pub fn has_sudo() -> bool {
 
 // Common test implementations that can be used by both weak and strong mode tests
 
-/// Test that HTTPS is blocked correctly  
+/// Test that HTTPS is blocked correctly
 pub fn test_https_blocking(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -174,7 +159,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("deny: .*")
+        .js("false")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "3", "https://ifconfig.me"])
         .execute();
@@ -207,7 +192,7 @@ pub fn test_https_blocking(use_sudo: bool) {
     }
 }
 
-/// Test that HTTPS is allowed with proper allow rules
+/// Test that HTTPS is allowed with proper JS rule
 pub fn test_https_allow(use_sudo: bool) {
     let mut cmd = HttpjailCommand::new();
 
@@ -218,7 +203,7 @@ pub fn test_https_allow(use_sudo: bool) {
     }
 
     let result = cmd
-        .rule("allow: ifconfig\\.me")
+        .js("/ifconfig\\.me/.test(r.host)")
         .verbose(2)
         .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
         .execute();
@@ -229,24 +214,18 @@ pub fn test_https_allow(use_sudo: bool) {
             println!("Stdout: {}", stdout);
             println!("Stderr: {}", stderr);
 
-            // For macOS native mode, TLS interception might have issues
-            // So we check that the request was at least allowed (not denied with 403)
             if use_sudo {
-                // In sudo mode, just verify it wasn't blocked
                 assert!(
                     !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
                     "Request should not be blocked when allowed"
                 );
             } else {
-                // In weak mode, curl should succeed
                 assert_eq!(
                     exit_code, 0,
                     "Expected curl to succeed in weak mode, got exit code: {}",
                     exit_code
                 );
 
-                // Should contain actual response content
-                // ifconfig.me returns an IP address
                 use std::str::FromStr;
                 assert!(
                     std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()

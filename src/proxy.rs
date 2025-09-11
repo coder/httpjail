@@ -476,16 +476,14 @@ pub fn create_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::Rule;
+    use crate::rules::v8_js::V8JsRuleEngine;
 
     #[tokio::test]
     async fn test_proxy_server_creation() {
-        let rules = vec![
-            Rule::new(Action::Allow, r"github\.com").unwrap(),
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
+        let js = r"/^github\.com$/.test(r.host)";
+        let engine = V8JsRuleEngine::new(js.to_string()).unwrap();
+        let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
 
-        let rule_engine = RuleEngine::new(rules, None);
         let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine, None);
 
         assert_eq!(proxy.http_port, Some(8080));
@@ -494,9 +492,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_server_auto_port() {
-        let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
-
-        let rule_engine = RuleEngine::new(rules, None);
+        let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
+        let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
         let mut proxy = ProxyServer::new(None, None, rule_engine, None);
 
         let (http_port, https_port) = proxy.start().await.unwrap();

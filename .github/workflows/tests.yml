@@ -36,7 +36,7 @@ jobs:
         run: cargo build --verbose
 
       - name: Run unit tests
-        run: cargo nextest run --profile ci --bins --verbose
+        run: cargo nextest run --profile ci --lib --verbose
 
       - name: Run smoke tests
         run: cargo nextest run --profile ci --test smoke_test --verbose
@@ -108,7 +108,7 @@ jobs:
       - name: Run unit tests
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --bins --verbose
+          cargo nextest run --profile ci --lib --verbose
 
       - name: Run smoke tests
         run: |
