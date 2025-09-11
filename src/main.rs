@@ -357,6 +357,7 @@ async fn main() -> Result<()> {
     // For strong jail mode (not weak, not server), we need to bind to all interfaces (0.0.0.0)
     // so the proxy is accessible from the veth interface. For weak mode or server mode,
     // localhost is fine.
+    // TODO: This has security implications - see GitHub issue #31
     let bind_address = if args.weak || args.server {
         None // defaults to 127.0.0.1
     } else {
