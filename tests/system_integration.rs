@@ -128,7 +128,7 @@ pub fn test_jail_allows_matching_requests<P: JailTestPlatform>() {
     // httpjail_cmd() already sets timeout
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return /ifconfig\\.me/.test(host);")
+        .arg("/ifconfig\\.me/.test(r.host)")
         .arg("--");
     curl_http_status_args(&mut cmd, "http://ifconfig.me");
 
@@ -150,7 +150,7 @@ pub fn test_jail_denies_non_matching_requests<P: JailTestPlatform>() {
 
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return /ifconfig\\.me/.test(host);")
+        .arg("/ifconfig\\.me/.test(r.host)")
         .arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
@@ -175,7 +175,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     // Test 1: Allow GET to ifconfig.me
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return /ifconfig\\.me/.test(host) && method === 'GET';")
+        .arg("/ifconfig\\.me/.test(r.host) && r.method === 'GET'")
         .arg("--");
     curl_http_method_status_args(&mut cmd, "GET", "http://ifconfig.me");
 
@@ -192,7 +192,7 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
     // Test 2: Deny POST to same URL (ifconfig.me)
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return /ifconfig\\.me/.test(host) && method === 'GET';")
+        .arg("/ifconfig\\.me/.test(r.host) && r.method === 'GET'")
         .arg("--");
     curl_http_method_status_args(&mut cmd, "POST", "http://ifconfig.me");
 
@@ -214,7 +214,7 @@ pub fn test_jail_request_log<P: JailTestPlatform>() {
     cmd.arg("--request-log")
         .arg(&log_path)
         .arg("--js")
-        .arg("return true;")
+        .arg("true")
         .arg("--");
     curl_http_status_args(&mut cmd, "http://example.com");
 
@@ -264,7 +264,7 @@ pub fn test_jail_exit_code_propagation<P: JailTestPlatform>() {
     // Test that httpjail propagates the exit code of the child process
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return true;")
+        .arg("true")
         .arg("--")
         .arg("sh")
         .arg("-c")
@@ -352,7 +352,7 @@ pub fn test_native_jail_allows_https<P: JailTestPlatform>() {
     // Test allowing HTTPS to ifconfig.me
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return /ifconfig\\.me/.test(host);")
+        .arg("/ifconfig\\.me/.test(r.host)")
         .arg("--");
     curl_https_status_args(&mut cmd, "https://ifconfig.me");
 
@@ -411,7 +411,7 @@ pub fn test_jail_privilege_dropping<P: JailTestPlatform>() {
     // Run whoami through httpjail
     let mut cmd = httpjail_cmd();
     cmd.arg("--js")
-        .arg("return true;") // Allow all for this test
+        .arg("true") // Allow all for this test
         .arg("--")
         .arg("whoami");
 
@@ -440,11 +440,7 @@ pub fn test_jail_privilege_dropping<P: JailTestPlatform>() {
 
     // Also verify that id command shows correct user
     let mut cmd = httpjail_cmd();
-    cmd.arg("--js")
-        .arg("return true;")
-        .arg("--")
-        .arg("id")
-        .arg("-un"); // Get username from id
+    cmd.arg("--js").arg("true").arg("--").arg("id").arg("-un"); // Get username from id
 
     let output = cmd.output().expect("Failed to execute httpjail");
     let id_user = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -589,10 +585,8 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
     let child1 = std::process::Command::new(&httpjail_path)
         .arg("-v")
         .arg("-v") // Add verbose logging to fix timing issues
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("-r")
-        .arg("deny: .*")
+        .arg("--js")
+        .arg("/ifconfig\\.me/.test(r.host)")
         .arg("--")
         .arg("sh")
         .arg("-c")
@@ -609,10 +603,8 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
     let output2 = std::process::Command::new(&httpjail_path)
         .arg("-v")
         .arg("-v") // Add verbose logging to fix timing issues
-        .arg("-r")
-        .arg("allow: ifconfig\\.io")
-        .arg("-r")
-        .arg("deny: .*")
+        .arg("--js")
+        .arg("/ifconfig\\.io/.test(r.host)")
         .arg("--")
         .arg("sh")
         .arg("-c")
