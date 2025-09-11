@@ -226,4 +226,14 @@ mod tests {
         let contents = std::fs::read_to_string(log_file.path()).unwrap();
         assert!(contents.contains("- GET https://blocked.com"));
     }
+
+    #[test]
+    fn test_default_deny_with_no_rules() {
+        let engine = RuleEngine::new(vec![], None);
+
+        assert!(matches!(
+            engine.evaluate(Method::GET, "https://example.com"),
+            Action::Deny
+        ));
+    }
 }

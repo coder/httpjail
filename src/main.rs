@@ -194,10 +194,9 @@ fn build_rules(args: &Args) -> Result<Vec<Rule>> {
         rules.push(parse_rule(rule_str)?);
     }
 
-    // If no rules specified, default to allow all (for testing)
+    // If no rules specified, the rule engine will deny all requests by default
     if rules.is_empty() {
-        info!("No rules specified, defaulting to allow all");
-        rules.push(Rule::new(Action::Allow, ".*")?);
+        info!("No rules specified; unmatched requests will be denied");
     }
 
     Ok(rules)
@@ -524,36 +523,26 @@ mod tests {
     use hyper::Method;
 
     #[test]
-    fn test_rule_matching() {
-        let rule = Rule::new(Action::Allow, r"github\.com").unwrap();
-        assert!(rule.matches(Method::GET, "https://github.com/user/repo"));
-        assert!(rule.matches(Method::POST, "http://api.github.com/v3/repos"));
-        assert!(!rule.matches(Method::GET, "https://gitlab.com/user/repo"));
-    }
+    fn test_build_rules_no_rules_default_deny() {
+        let args = Args {
+            rules: vec![],
+            config: None,
+            request_log: None,
+            interactive: false,
+            weak: false,
+            verbose: 0,
+            timeout: None,
+            no_jail_cleanup: false,
+            cleanup: false,
+            server: false,
+            command: vec![],
+        };
 
-    #[test]
-    fn test_rule_engine() {
-        let rules = vec![
-            Rule::new(Action::Allow, r"github\.com").unwrap(),
-            Rule::new(Action::Deny, r"telemetry").unwrap(),
-            Rule::new(Action::Deny, r".*").unwrap(),
-        ];
+        let rules = build_rules(&args).unwrap();
+        assert!(rules.is_empty());
 
+        // Rule engine should deny requests when no rules are specified
         let engine = RuleEngine::new(rules, None);
-
-        // Test allow rule
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://github.com/api"),
-            Action::Allow
-        ));
-
-        // Test deny rule
-        assert!(matches!(
-            engine.evaluate(Method::POST, "https://telemetry.example.com"),
-            Action::Deny
-        ));
-
-        // Test default deny
         assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
             Action::Deny
