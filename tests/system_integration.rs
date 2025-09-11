@@ -410,8 +410,8 @@ pub fn test_jail_privilege_dropping<P: JailTestPlatform>() {
 
     // Run whoami through httpjail
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: .*") // Allow all for this test
+    cmd.arg("--js")
+        .arg("return true;") // Allow all for this test
         .arg("--")
         .arg("whoami");
 
@@ -440,8 +440,8 @@ pub fn test_jail_privilege_dropping<P: JailTestPlatform>() {
 
     // Also verify that id command shows correct user
     let mut cmd = httpjail_cmd();
-    cmd.arg("-r")
-        .arg("allow: .*")
+    cmd.arg("--js")
+        .arg("return true;")
         .arg("--")
         .arg("id")
         .arg("-un"); // Get username from id
@@ -466,10 +466,8 @@ pub fn test_jail_https_connect_denied<P: JailTestPlatform>() {
     let mut cmd = httpjail_cmd();
     cmd.arg("-v")
         .arg("-v") // Add verbose logging
-        .arg("-r")
-        .arg("allow: ifconfig\\.me")
-        .arg("-r")
-        .arg("deny: example\\.com")
+        .arg("--js")
+        .arg("if (/example\\.com/.test(host)) return false; if (/ifconfig\\.me/.test(host)) return true; return false;")
         .arg("--");
     curl_https_head_args(&mut cmd, "https://example.com");
 
