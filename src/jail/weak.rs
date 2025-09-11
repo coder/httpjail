@@ -56,8 +56,17 @@ impl Jail for WeakJail {
         cmd.env("https_proxy", &https_proxy);
 
         // Also set NO_PROXY for localhost to avoid proxying local connections
-        cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
-        cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+        // Preserve any existing NO_PROXY settings by appending them
+        let mut no_proxy_hosts = "localhost,127.0.0.1,::1".to_string();
+
+        if let Ok(existing) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy"))
+            && !existing.is_empty()
+        {
+            no_proxy_hosts = format!("{},{}", existing, no_proxy_hosts);
+        }
+
+        cmd.env("NO_PROXY", &no_proxy_hosts);
+        cmd.env("no_proxy", &no_proxy_hosts);
 
         // Set any extra environment variables
         for (key, value) in extra_env {

@@ -123,6 +123,57 @@ fn test_weak_mode_allows_localhost() {
     }
 }
 
+#[test]
+fn test_weak_mode_appends_no_proxy() {
+    // Ensure existing NO_PROXY values are preserved and localhost entries appended
+    let result = HttpjailCommand::new()
+        .weak()
+        .rule("allow: .*")
+        .env("NO_PROXY", "example.com")
+        .verbose(2)
+        .command(vec!["env"])
+        .execute();
+
+    match result {
+        Ok((exit_code, stdout, _stderr)) => {
+            assert_eq!(exit_code, 0, "env command should succeed");
+
+            let mut found_upper = false;
+            let mut found_lower = false;
+
+            for line in stdout.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    if key == "NO_PROXY" {
+                        found_upper = true;
+                        assert!(
+                            value.contains("example.com")
+                                && value.contains("localhost")
+                                && value.contains("127.0.0.1")
+                                && value.contains("::1"),
+                            "NO_PROXY missing expected entries: {}",
+                            value
+                        );
+                    } else if key == "no_proxy" {
+                        found_lower = true;
+                        assert!(
+                            value.contains("example.com")
+                                && value.contains("localhost")
+                                && value.contains("127.0.0.1")
+                                && value.contains("::1"),
+                            "no_proxy missing expected entries: {}",
+                            value
+                        );
+                    }
+                }
+            }
+
+            assert!(found_upper, "NO_PROXY variable not found");
+            assert!(found_lower, "no_proxy variable not found");
+        }
+        Err(e) => panic!("Failed to execute httpjail: {}", e),
+    }
+}
+
 // Simple server start function - we know the ports we're setting
 fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
     let httpjail_path = build_httpjail()?;
