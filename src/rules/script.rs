@@ -172,75 +172,90 @@ mod tests {
 
     #[test]
     fn test_script_allow() {
-        let script_file = NamedTempFile::new().unwrap();
+        let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 exit 0
 "#;
-        fs::write(script_file.path(), script).unwrap();
+        use std::io::Write;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(script_file.path(), perms).unwrap();
+            fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
 
         assert!(matches!(result.action, Action::Allow));
+        drop(script_path);
     }
 
     #[test]
     fn test_script_deny() {
-        let script_file = NamedTempFile::new().unwrap();
+        let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 exit 1
 "#;
-        fs::write(script_file.path(), script).unwrap();
+        use std::io::Write;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(script_file.path(), perms).unwrap();
+            fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
 
         assert!(matches!(result.action, Action::Deny));
+        drop(script_path);
     }
 
     #[test]
     fn test_script_with_context() {
-        let script_file = NamedTempFile::new().unwrap();
+        let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 echo "Blocked by policy"
 exit 1
 "#;
-        fs::write(script_file.path(), script).unwrap();
+        use std::io::Write;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(script_file.path(), perms).unwrap();
+            fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine.evaluate(Method::GET, "https://example.com/test");
 
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(result.context, Some("Blocked by policy".to_string()));
+        drop(script_path);
     }
 
     #[test]
     fn test_script_environment_variables() {
-        let script_file = NamedTempFile::new().unwrap();
+        let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_HOST" = "allowed.com" ]; then
     exit 0
@@ -249,17 +264,21 @@ else
     exit 1
 fi
 "#;
-        fs::write(script_file.path(), script).unwrap();
+        use std::io::Write;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(script_file.path(), perms).unwrap();
+            fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine.evaluate(Method::GET, "https://allowed.com/test");
         assert!(matches!(result.action, Action::Allow));
@@ -270,6 +289,7 @@ fi
             result.context,
             Some("Host blocked.com not allowed".to_string())
         );
+        drop(script_path);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 
 #[test]
 fn test_script_allows_github() {
-    let script_file = NamedTempFile::new().unwrap();
+    let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_HOST" = "github.com" ]; then
     exit 0
@@ -15,17 +15,22 @@ else
     exit 1
 fi
 "#;
-    fs::write(script_file.path(), script).unwrap();
+    use std::io::Write;
+    script_file.write_all(script.as_bytes()).unwrap();
+    script_file.flush().unwrap();
+
+    // Convert to TempPath to close file handle (fixes "Text file busy" on Linux)
+    let script_path = script_file.into_temp_path();
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        fs::set_permissions(&script_path, perms).unwrap();
     }
 
-    let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+    let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed request
     let result = engine.evaluate(Method::GET, "https://github.com/user/repo");
@@ -38,11 +43,14 @@ fi
         result.context,
         Some("Only github.com is allowed".to_string())
     );
+
+    // TempPath will be automatically deleted when it goes out of scope
+    drop(script_path);
 }
 
 #[test]
 fn test_script_with_method_filtering() {
-    let script_file = NamedTempFile::new().unwrap();
+    let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_METHOD" = "GET" ] || [ "$HTTPJAIL_METHOD" = "HEAD" ]; then
     exit 0
@@ -51,17 +59,22 @@ else
     exit 1
 fi
 "#;
-    fs::write(script_file.path(), script).unwrap();
+    use std::io::Write;
+    script_file.write_all(script.as_bytes()).unwrap();
+    script_file.flush().unwrap();
+
+    // Convert to TempPath to close file handle (fixes "Text file busy" on Linux)
+    let script_path = script_file.into_temp_path();
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        fs::set_permissions(&script_path, perms).unwrap();
     }
 
-    let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+    let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed methods
     let result = engine.evaluate(Method::GET, "https://example.com/api");
@@ -74,6 +87,9 @@ fi
     let result = engine.evaluate(Method::POST, "https://example.com/api");
     assert!(matches!(result.action, Action::Deny));
     assert_eq!(result.context, Some("Method POST not allowed".to_string()));
+
+    // TempPath will be automatically deleted when it goes out of scope
+    drop(script_path);
 }
 
 #[test]
@@ -92,7 +108,7 @@ fn test_inline_script_evaluation() {
 
 #[test]
 fn test_script_with_complex_logic() {
-    let script_file = NamedTempFile::new().unwrap();
+    let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 # Complex logic: allow GET to github.com, POST to api.example.com, deny everything else
 
@@ -107,17 +123,22 @@ else
     exit 1
 fi
 "#;
-    fs::write(script_file.path(), script).unwrap();
+    use std::io::Write;
+    script_file.write_all(script.as_bytes()).unwrap();
+    script_file.flush().unwrap();
+
+    // Convert to TempPath to close file handle (fixes "Text file busy" on Linux)
+    let script_path = script_file.into_temp_path();
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(script_file.path()).unwrap().permissions();
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(script_file.path(), perms).unwrap();
+        fs::set_permissions(&script_path, perms).unwrap();
     }
 
-    let engine = ScriptRuleEngine::new(script_file.path().to_str().unwrap().to_string());
+    let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed GitHub GET
     let result = engine.evaluate(Method::GET, "https://github.com/user/repo");
@@ -141,4 +162,7 @@ fi
             .unwrap()
             .contains("Request blocked by security policy")
     );
+
+    // TempPath will be automatically deleted when it goes out of scope
+    drop(script_path);
 }
