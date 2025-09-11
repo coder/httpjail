@@ -366,16 +366,12 @@ async fn main() -> Result<()> {
     } else {
         #[cfg(target_os = "linux")]
         {
-            // Compute veth host IP for jail_id
-            let host_ip = Some(httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(
+            Some(httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(
                 &jail_config.jail_id,
-            ));
-            host_ip // Return the host IP
+            ))
         }
-
-        #[cfg(not(target_os = "linux") )]
+        #[cfg(not(target_os = "linux"))]
         {
-            // Fallback bind address for non-Linux systems
             None
         }
     };

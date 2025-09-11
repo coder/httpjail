@@ -178,7 +178,7 @@ async fn bind_to_available_port(start: u16, end: u16, bind_addr: [u8; 4]) -> Res
 
     for _ in 0..16 {
         let port = rng.gen_range(start..=end);
-        match TcpListener::bind(SocketAddr::from((bind_addr, port))).await {
+        match bind_ipv4_listener(bind_addr, port).await {
             Ok(listener) => {
                 debug!("Successfully bound to port {}", port);
                 return Ok(listener);
@@ -261,11 +261,8 @@ impl ProxyServer {
     }
 
     pub async fn start(&mut self) -> Result<(u16, u16)> {
-        // Start HTTP proxy
         let http_listener = if let Some(port) = self.http_port {
-            // If port is 0, let OS choose any available port
-            // Otherwise bind to the specified port
-            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
+            bind_ipv4_listener(self.bind_address, port).await?
         } else {
             // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
@@ -307,9 +304,7 @@ impl ProxyServer {
 
         // Start HTTPS proxy
         let https_listener = if let Some(port) = self.https_port {
-            // If port is 0, let OS choose any available port
-            // Otherwise bind to the specified port
-            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
+            bind_ipv4_listener(self.bind_address, port).await?
         } else {
             // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
