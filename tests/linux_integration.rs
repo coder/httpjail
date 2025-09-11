@@ -60,7 +60,7 @@ mod tests {
         // Run httpjail
         let mut cmd = httpjail_cmd();
         cmd.arg("--js")
-            .arg("return true;")
+            .arg("true")
             .arg("--")
             .arg("echo")
             .arg("test");
@@ -141,7 +141,7 @@ mod tests {
         // 2. Run httpjail command
         let mut cmd = httpjail_cmd();
         cmd.arg("--js")
-            .arg("return true;")
+            .arg("true")
             .arg("--")
             .arg("echo")
             .arg("test");
@@ -241,7 +241,7 @@ mod tests {
         let httpjail_path = assert_cmd::cargo::cargo_bin("httpjail");
         let mut child = std::process::Command::new(&httpjail_path)
             .arg("--js")
-            .arg("return true;")
+            .arg("true")
             .arg("--")
             .arg("sleep")
             .arg("60")
