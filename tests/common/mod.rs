@@ -24,6 +24,7 @@ pub struct HttpjailCommand {
     args: Vec<String>,
     use_sudo: bool,
     weak_mode: bool,
+    rules_js: Vec<String>,
 }
 
 impl HttpjailCommand {
@@ -33,6 +34,7 @@ impl HttpjailCommand {
             args: vec![],
             use_sudo: false,
             weak_mode: false,
+            rules_js: vec![],
         }
     }
 
@@ -48,10 +50,41 @@ impl HttpjailCommand {
         self
     }
 
-    /// Add a rule
+    /// Add a rule (legacy syntax) by translating to JS
     pub fn rule(mut self, rule: &str) -> Self {
-        self.args.push("-r".to_string());
-        self.args.push(rule.to_string());
+        // Expect format: action[-method]: pattern
+        let parts: Vec<&str> = rule.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return self; // ignore invalid in tests
+        }
+        let action_part = parts[0].trim();
+        let pattern = parts[1].trim();
+
+        let mut action = "allow";
+        let mut method_guard: Option<&str> = None;
+        if let Some((a, m)) = action_part.split_once('-') {
+            action = a;
+            method_guard = Some(m);
+        } else {
+            action = action_part;
+        }
+
+        let method_expr = if let Some(m) = method_guard {
+            let m_upper = m.to_ascii_uppercase();
+            format!(" && method === '{}'", m_upper)
+        } else {
+            "".to_string()
+        };
+
+        let cond = format!("new RegExp({:?}).test(url){}", pattern, method_expr);
+        let stmt = match action {
+            "allow" => format!("if ({}) return true;", cond),
+            "deny" => format!("if ({}) return false;", cond),
+            _ => String::new(),
+        };
+        if !stmt.is_empty() {
+            self.rules_js.push(stmt);
+        }
         self
     }
 
@@ -82,6 +115,14 @@ impl HttpjailCommand {
         // Add weak mode if requested
         if self.weak_mode {
             self.args.insert(0, "--weak".to_string());
+        }
+
+        // If rules were provided, inject as --js (default deny at end)
+        if !self.rules_js.is_empty() {
+            let mut code = self.rules_js.join("\n");
+            code.push_str("\nreturn false;");
+            self.args.insert(0, code);
+            self.args.insert(0, "--js".to_string());
         }
 
         let mut cmd = if self.use_sudo {
@@ -120,22 +161,7 @@ impl HttpjailCommand {
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
         Ok((exit_code, stdout, stderr))
-    }
-
-    /// Build the command without executing (for debugging)
-    #[allow(dead_code)]
-    pub fn build(mut self) -> Vec<String> {
-        // Always add timeout for tests
-        self.args.insert(0, "--timeout".to_string());
-        self.args.insert(1, "10".to_string());
-
-        if self.weak_mode {
-            self.args.insert(0, "--weak".to_string());
-        }
-
-        self.args
     }
 }
 

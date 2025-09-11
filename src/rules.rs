@@ -5,7 +5,7 @@ pub mod v8_js;
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use hyper::Method;
-pub use pattern::{PatternRuleEngine, Rule};
+use pattern::Rule;
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -98,16 +98,55 @@ pub struct RuleEngine {
 
 impl RuleEngine {
     pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
-        let pattern_engine = Box::new(PatternRuleEngine::new(rules));
-        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
-            Box::new(LoggingRuleEngine::new(pattern_engine, request_log))
+        // Convert the existing Rule set to a single JavaScript predicate
+        // Default deny if no rules provided
+        let js_code = if rules.is_empty() {
+            "return false;".to_string()
         } else {
-            pattern_engine
+            let mut clauses = Vec::new();
+            for rule in &rules {
+                // Build a JS test using the regex on the full URL
+                let pattern = rule.pattern.as_str();
+                let url_match = format!("new RegExp({:?}).test(url)", pattern);
+
+                let method_guard = if let Some(methods) = &rule.methods {
+                    if methods.is_empty() {
+                        "true".to_string()
+                    } else {
+                        let parts: Vec<String> = methods
+                            .iter()
+                            .map(|m| format!("method === {:?}", m.as_str()))
+                            .collect();
+                        format!("({})", parts.join(" || "))
+                    }
+                } else {
+                    "true".to_string()
+                };
+
+                let cond = format!("({} && {})", url_match, method_guard);
+                let stmt = match rule.action {
+                    Action::Allow => format!("if {} return true;", cond),
+                    Action::Deny => format!("if {} return false;", cond),
+                };
+                clauses.push(stmt);
+            }
+            let mut js = String::new();
+            for c in clauses {
+                js.push_str(&c);
+                js.push('\n');
+            }
+            js.push_str("return false;");
+            js
         };
 
-        RuleEngine {
-            inner: Arc::from(engine),
-        }
+        let engine = Box::new(v8_js::V8JsRuleEngine::new(js_code).expect("failed to build JS engine"));
+        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
+            Box::new(LoggingRuleEngine::new(engine, request_log))
+        } else {
+            engine
+        };
+
+        RuleEngine { inner: Arc::from(engine) }
     }
 
     pub fn from_trait(

@@ -18,9 +18,8 @@ cargo install httpjail
 
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
-- 🎯 **Regex-based filtering** - Flexible allow/deny rules with regex patterns
 - 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
-- 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine (experimental)
+- 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
 - ⛔ **Default deny** - Requests are blocked unless explicitly allowed
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
@@ -28,37 +27,27 @@ cargo install httpjail
 
 ## Quick Start
 
-> By default, httpjail denies all network requests. Add `allow:` rules to permit traffic.
+> By default, httpjail denies all network requests. Provide a JS rule or script to allow traffic.
 
 ```bash
-# Allow only requests to github.com
-httpjail -r "allow: github\.com" -r "deny: .*" -- claude
+# Allow only requests to github.com (JS)
+httpjail --js "return host === 'github.com'" -- your-app
+
+# Load JS from a file
+echo "if (/^api\\.example\\.com$/.test(host) && method === 'GET') return true; return false;" > rules.js
+httpjail --js-file rules.js -- curl https://api.example.com/health
 
 # Log requests to a file
-httpjail --request-log requests.log -r "allow: .*" -- npm install
+httpjail --request-log requests.log --js "return true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
-
-# Block specific domains
-httpjail -r "deny: telemetry\..*" -r "allow: .*" -- ./my-app
-
-# Method-specific rules
-httpjail -r "allow-get: api\.github\.com" -r "deny: .*" -- git pull
-
-# Use config file for complex rules
-httpjail --config rules.txt -- python script.py
 
 # Use custom script for request evaluation
 httpjail --script /path/to/check.sh -- ./my-app
 # Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
 # Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
 
-# Use JavaScript for request evaluation (experimental)
-httpjail --js "return host === 'github.com'" -- git pull
-# JavaScript receives: url, method, host, scheme, path as global variables
-# Should return true to allow, false to block
-
-# Run as standalone proxy server (no command execution)
-httpjail --server -r "allow: .*"
+# Run as standalone proxy server (no command execution) and allow all
+httpjail --server --js "return true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 # Configure your application:
 # HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443
@@ -184,7 +173,7 @@ httpjail --config rules.txt -- ./my-application
 
 ### Script-Based Evaluation
 
-Instead of regex rules, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
+Instead of writing JavaScript, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
 
 ```bash
 # Simple script example
@@ -227,9 +216,9 @@ If `--script` has spaces, it's run through `$SHELL` (default `/bin/sh`); otherwi
 > [!TIP]
 > Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
-### JavaScript (V8) Evaluation (Experimental)
+### JavaScript (V8) Evaluation
 
-httpjail includes experimental support for JavaScript-based request evaluation using Google's V8 engine. This provides more flexible and powerful rule logic compared to regex patterns or shell scripts.
+httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
 
 ```bash
 # Simple JavaScript rule - allow only GitHub requests
@@ -237,6 +226,9 @@ httpjail --js "return host === 'github.com'" -- curl https://github.com
 
 # Method-specific filtering
 httpjail --js "return method === 'GET' && host === 'api.github.com'" -- git pull
+
+# Load from file
+httpjail --js-file rules.js -- ./my-app
 
 # Complex logic with multiple conditions
 httpjail --js "
@@ -283,32 +275,27 @@ httpjail --js "return path.startsWith('/api/') && scheme === 'https'" -- npm ins
 
 - V8 engine provides fast JavaScript execution
 - Fresh isolate creation per request ensures thread safety but adds some overhead
-- For maximum performance with complex logic, consider using compiled rules instead
 - JavaScript evaluation is generally faster than external script execution
 
-> [!WARNING]
-> JavaScript evaluation is experimental and may change in future versions. Use the `--script` option for production environments requiring stability.
-
 > [!NOTE]
-> The `--js` flag conflicts with `--script`, `--rule`, and `--config` flags. Only one evaluation method can be used at a time.
+> The `--js` flag conflicts with `--script` and `--js-file`. Only one evaluation method can be used at a time.
 
 ### Advanced Options
 
 ```bash
 # Verbose logging
-httpjail -vvv -r "allow: .*" -- curl https://example.com
+httpjail -vvv --js "return true" -- curl https://example.com
 
 # Server mode - run as standalone proxy without executing commands
-httpjail --server -r "allow: github\.com" -r "deny: .*"
+httpjail --server --js "return true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 
 # Server mode with custom ports (format: port or ip:port)
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "return true"
 # Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
 
 # Bind to specific interface
-HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server -r "allow: .*"
-
+HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "return true"
 ```
 
 ### Server Mode
@@ -317,16 +304,13 @@ httpjail can run as a standalone proxy server without executing any commands. Th
 
 ```bash
 # Start server with default ports (8080 for HTTP, 8443 for HTTPS) on localhost
-httpjail --server -r "allow: github\.com" -r "deny: .*"
-# Output: Server running on ports 8080 (HTTP) and 8443 (HTTPS). Press Ctrl+C to stop.
+httpjail --server --js "return true"
 
 # Start server with custom ports using environment variables
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server -r "allow: .*"
-# Output: Server running on ports 3128 (HTTP) and 3129 (HTTPS). Press Ctrl+C to stop.
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "return true"
 
 # Bind to all interfaces (use with caution - exposes proxy to network)
-HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server -r "allow: .*"
-# Output: Server running on ports 8080 (HTTP) and 8443 (HTTPS). Press Ctrl+C to stop.
+HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server --js "return true"
 
 # Configure your applications to use the proxy:
 export HTTP_PROXY=http://localhost:8080

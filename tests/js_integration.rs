@@ -90,14 +90,13 @@ async fn test_js_conflicts() {
             .or(predicate::str::contains("conflicts with")),
     );
 
-    // Test conflict with --rules
+    // Test conflict with --rules (flag removed, should error as unexpected)
     let mut cmd = Command::cargo_bin("httpjail").expect("binary exists");
 
     cmd.args(["--server", "--js", "return true", "--rule", "allow: .*"]);
 
     cmd.assert().failure().stderr(
-        predicate::str::contains("cannot be used with")
-            .or(predicate::str::contains("conflicts with")),
+        predicate::str::contains("unexpected argument '--rule' found"),
     );
 }
 

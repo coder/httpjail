@@ -4,7 +4,7 @@ use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
-use httpjail::rules::{Action, Rule, RuleEngine};
+use httpjail::rules::RuleEngine;
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,22 +16,6 @@ use tracing::{debug, info, warn};
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
-    /// Rules for filtering requests (can be specified multiple times)
-    /// Format: "action[-method]: pattern"
-    /// Examples:
-    ///   -r "allow: github\.com/.*"
-    ///   -r "deny-post: telemetry\..*"
-    ///   -r "allow-get: .*"
-    /// Actions: allow, deny
-    /// Methods (optional): get, post, put, delete, head, options, connect, trace, patch
-    #[arg(
-        short = 'r',
-        long = "rule",
-        value_name = "RULE",
-        conflicts_with = "script"
-    )]
-    rules: Vec<String>,
-
     /// Use script for evaluating requests
     /// The script receives environment variables:
     ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
@@ -40,13 +24,11 @@ struct Args {
     #[arg(
         short = 's',
         long = "script",
-        value_name = "PROG",
-        conflicts_with = "rules",
-        conflicts_with = "config"
+        value_name = "PROG"
     )]
     script: Option<String>,
 
-    /// Use JavaScript (V8) for evaluating requests (experimental)
+    /// Use JavaScript (V8) for evaluating requests
     /// The JavaScript code receives global variables:
     ///   url, method, host, scheme, path
     /// Should return true to allow the request, false to block it
@@ -54,20 +36,20 @@ struct Args {
     #[arg(
         long = "js",
         value_name = "CODE",
-        conflicts_with = "rules",
         conflicts_with = "script",
-        conflicts_with = "config"
+        conflicts_with = "js_file"
     )]
     js: Option<String>,
 
-    /// Use configuration file
+    /// Load JavaScript (V8) rule code from a file
+    /// Conflicts with --js
     #[arg(
-        short = 'c',
-        long = "config",
+        long = "js-file",
         value_name = "FILE",
-        conflicts_with = "script"
+        conflicts_with = "script",
+        conflicts_with = "js"
     )]
-    config: Option<String>,
+    js_file: Option<String>,
 
     /// Append requests to a log file
     #[arg(long = "request-log", value_name = "FILE")]
@@ -145,97 +127,6 @@ fn setup_logging(verbosity: u8) {
             .with_env_filter(format!("httpjail={}", level))
             .init();
     }
-}
-
-fn parse_rule(rule_str: &str) -> Result<Rule> {
-    use hyper::Method;
-
-    // Split on the first colon to separate action from pattern
-    let parts: Vec<&str> = rule_str.splitn(2, ':').collect();
-    if parts.len() != 2 {
-        anyhow::bail!(
-            "Invalid rule format: '{}'. Expected 'action[-method]: pattern'",
-            rule_str
-        );
-    }
-
-    let action_part = parts[0].trim();
-    let pattern = parts[1].trim();
-
-    // Parse action and optional method
-    let (action, method) = if action_part.contains('-') {
-        let action_parts: Vec<&str> = action_part.splitn(2, '-').collect();
-        let action = match action_parts[0] {
-            "allow" => Action::Allow,
-            "deny" => Action::Deny,
-            _ => anyhow::bail!(
-                "Invalid action: '{}'. Expected 'allow' or 'deny'",
-                action_parts[0]
-            ),
-        };
-
-        let method = match action_parts[1].to_lowercase().as_str() {
-            "get" => Some(Method::GET),
-            "post" => Some(Method::POST),
-            "put" => Some(Method::PUT),
-            "delete" => Some(Method::DELETE),
-            "head" => Some(Method::HEAD),
-            "options" => Some(Method::OPTIONS),
-            "connect" => Some(Method::CONNECT),
-            "trace" => Some(Method::TRACE),
-            "patch" => Some(Method::PATCH),
-            _ => anyhow::bail!("Invalid method: '{}'", action_parts[1]),
-        };
-
-        (action, method)
-    } else {
-        let action = match action_part {
-            "allow" => Action::Allow,
-            "deny" => Action::Deny,
-            _ => anyhow::bail!(
-                "Invalid action: '{}'. Expected 'allow' or 'deny'",
-                action_part
-            ),
-        };
-        (action, None)
-    };
-
-    // Create rule with optional method restriction
-    let rule = Rule::new(action, pattern)?;
-    Ok(if let Some(method) = method {
-        rule.with_methods(vec![method])
-    } else {
-        rule
-    })
-}
-
-fn build_rules(args: &Args) -> Result<Vec<Rule>> {
-    let mut rules = Vec::new();
-
-    // Load rules from config file if provided
-    if let Some(config_path) = &args.config {
-        let contents = std::fs::read_to_string(config_path)
-            .with_context(|| format!("Failed to read config file: {}", config_path))?;
-        for line in contents.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            rules.push(parse_rule(line)?);
-        }
-    }
-
-    // Parse command line rules in the exact order specified
-    for rule_str in &args.rules {
-        rules.push(parse_rule(rule_str)?);
-    }
-
-    // If no rules specified, the rule engine will deny all requests by default
-    if rules.is_empty() {
-        info!("No rules specified; unmatched requests will be denied");
-    }
-
-    Ok(rules)
 }
 
 /// Direct orphan cleanup without creating jails
@@ -347,14 +238,14 @@ async fn main() -> Result<()> {
         info!("Starting httpjail in server mode");
     }
 
-    // Build rule engine based on script or rules
+    // Build rule engine based on script or JS
     let request_log = if let Some(path) = &args.request_log {
         Some(Arc::new(Mutex::new(
             OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
-                .context("Failed to open request log file")?,
+                .with_context(|| format!("Failed to open request log file: {}", path))?,
         )))
     } else {
         None
@@ -365,7 +256,7 @@ async fn main() -> Result<()> {
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)
     } else if let Some(js_code) = &args.js {
-        info!("Using V8 JavaScript rule evaluation (experimental)");
+        info!("Using V8 JavaScript rule evaluation");
         let js_engine = match V8JsRuleEngine::new(js_code.clone()) {
             Ok(engine) => Box::new(engine),
             Err(e) => {
@@ -374,9 +265,28 @@ async fn main() -> Result<()> {
             }
         };
         RuleEngine::from_trait(js_engine, request_log)
+    } else if let Some(js_file) = &args.js_file {
+        info!("Using V8 JavaScript rule evaluation from file: {}", js_file);
+        let code = std::fs::read_to_string(js_file)
+            .with_context(|| format!("Failed to read JS file: {}", js_file))?;
+        let js_engine = match V8JsRuleEngine::new(code) {
+            Ok(engine) => Box::new(engine),
+            Err(e) => {
+                eprintln!("Failed to create V8 JavaScript engine: {}", e);
+                std::process::exit(1);
+            }
+        };
+        RuleEngine::from_trait(js_engine, request_log)
     } else {
-        let rules = build_rules(&args)?;
-        RuleEngine::new(rules, request_log)
+        info!("No rule evaluation provided; defaulting to deny-all");
+        let js_engine = match V8JsRuleEngine::new("return false;".to_string()) {
+            Ok(engine) => Box::new(engine),
+            Err(e) => {
+                eprintln!("Failed to create default V8 JavaScript engine: {}", e);
+                std::process::exit(1);
+            }
+        };
+        RuleEngine::from_trait(js_engine, request_log)
     };
 
     // Parse bind configuration from env vars
@@ -387,91 +297,50 @@ async fn main() -> Result<()> {
                 // Try to parse as ip:port
                 let ip_str = &val[..colon_pos];
                 let port_str = &val[colon_pos + 1..];
-
-                let port = port_str.parse::<u16>().ok();
-                let ip = ip_str.parse::<std::net::IpAddr>().ok();
-
-                if port.is_some() && ip.is_some() {
-                    return (port, ip);
+                match port_str.parse::<u16>() {
+                    Ok(port) => match ip_str.parse::<std::net::IpAddr>() {
+                        Ok(ip) => (Some(port), Some(ip)),
+                        Err(_) => (Some(port), None),
+                    },
+                    Err(_) => (None, None),
+                }
+            } else {
+                // Try to parse as port
+                match val.parse::<u16>() {
+                    Ok(port) => (Some(port), None),
+                    Err(_) => (None, None),
                 }
             }
-
-            // Try to parse as just a port number
-            if let Ok(port) = val.parse::<u16>() {
-                return (Some(port), None);
-            }
+        } else {
+            (None, None)
         }
-        (None, None)
     }
 
-    let (http_port_env, http_bind_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
-    let (https_port_env, https_bind_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
+    // Determine ports to bind
+    let (http_port, _http_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
+    let (https_port, _https_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
 
-    // Use env port or default to 8080/8443 in server mode
-    let http_port = http_port_env.or(if args.server { Some(8080) } else { None });
-    let https_port = https_port_env.or(if args.server { Some(8443) } else { None });
+    let http_port = http_port;
+    let https_port = https_port;
 
-    // Determine bind address based on configuration and mode
-    let bind_address = if let Some(ip) = http_bind_ip.or(https_bind_ip) {
-        // If user explicitly specified an IP, use it
-        match ip {
-            std::net::IpAddr::V4(ipv4) => Some(ipv4.octets()),
-            std::net::IpAddr::V6(_) => {
-                warn!("IPv6 addresses are not currently supported, falling back to IPv4");
-                None
-            }
-        }
-    } else if args.weak || args.server {
-        // In weak mode or server mode, bind to localhost only by default
-        None
-    } else {
-        // For jailed mode on Linux, bind to all interfaces
-        // The namespace isolation provides the security boundary
-        #[cfg(target_os = "linux")]
-        {
-            Some([0, 0, 0, 0])
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            None
-        }
-    };
+    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, None);
 
-    // Start the proxy server
-    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine.clone(), bind_address);
+    // Start proxy in background if running as server; otherwise start with random ports
     let (actual_http_port, actual_https_port) = proxy.start().await?;
 
-    info!(
-        "Proxy server started on ports {} (HTTP) and {} (HTTPS)",
-        actual_http_port, actual_https_port
-    );
-
-    // In server mode, just run the proxy server
     if args.server {
-        // Use tokio::sync::Notify for real-time shutdown signaling
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        let shutdown_notify_clone = shutdown_notify.clone();
-
-        ctrlc::set_handler(move || {
-            info!("Received interrupt signal, shutting down server...");
-            shutdown_notify_clone.notify_one();
-        })
-        .expect("Error setting signal handler");
-
         info!(
-            "Server running on ports {} (HTTP) and {} (HTTPS). Press Ctrl+C to stop.",
+            "Proxy server running on http://localhost:{} and https://localhost:{}",
             actual_http_port, actual_https_port
         );
-
-        // Wait for shutdown signal
-        shutdown_notify.notified().await;
-
-        info!("Server shutdown complete");
-        return Ok(());
+        std::future::pending::<()>().await;
+        unreachable!();
     }
 
-    // Normal mode: create jail and execute command
-    // Create jail configuration with actual bound ports
+    // Create jail canary dir early to reduce race with cleanup
+    std::fs::create_dir_all("/tmp/httpjail").ok();
+
+    // Configure and execute the target command inside a jail
     let mut jail_config = JailConfig::new();
     jail_config.http_proxy_port = actual_http_port;
     jail_config.https_proxy_port = actual_https_port;
@@ -537,8 +406,7 @@ async fn main() -> Result<()> {
         let jail_clone = jail.clone();
 
         // We need to use spawn_blocking since jail.execute is blocking
-        let handle =
-            tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
+        let handle = tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
 
         // Apply timeout to the blocking task
         match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {
@@ -568,79 +436,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hyper::Method;
-
-    #[tokio::test]
-    async fn test_build_rules_no_rules_default_deny() {
-        let args = Args {
-            rules: vec![],
-            script: None,
-            js: None,
-            config: None,
-            request_log: None,
-            weak: false,
-            verbose: 0,
-            timeout: None,
-            no_jail_cleanup: false,
-            cleanup: false,
-            server: false,
-            command: vec![],
-        };
-
-        let rules = build_rules(&args).unwrap();
-        assert!(rules.is_empty());
-
-        // Rule engine should deny requests when no rules are specified
-        let engine = RuleEngine::new(rules, None);
-        assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com").await,
-            Action::Deny
-        ));
-    }
-
-    #[test]
-    fn test_build_rules_from_config_file() {
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            "allow-get: google\\.com\n# comment\ndeny: yahoo.com\n\nallow: .*"
-        )
-        .unwrap();
-
-        let args = Args {
-            rules: vec![],
-            script: None,
-            js: None,
-            config: Some(file.path().to_str().unwrap().to_string()),
-            request_log: None,
-            weak: false,
-            verbose: 0,
-            timeout: None,
-            no_jail_cleanup: false,
-            cleanup: false,
-            server: false,
-            command: vec![],
-        };
-
-        let rules = build_rules(&args).unwrap();
-        assert_eq!(rules.len(), 3);
-
-        // First rule should be allow for GET method only
-        assert!(matches!(rules[0].action, Action::Allow));
-        assert!(rules[0].methods.as_ref().unwrap().contains(&Method::GET));
-
-        // Second rule should be deny
-        assert!(matches!(rules[1].action, Action::Deny));
-
-        // Third rule allow all
-        assert!(matches!(rules[2].action, Action::Allow));
-    }
 }
