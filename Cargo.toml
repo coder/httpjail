@@ -19,11 +19,9 @@ tokio = { version = "1.35", features = ["full"] }
 hyper = { version = "1.7", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
-tower = { version = "0.5", features = ["full"] }
 bytes = "1.5"
 tokio-rustls = "0.26"
 rustls = "0.23"
-rustls-pemfile = "2.0"
 rcgen = "0.13"
 webpki-roots = "0.26"
 lru = "0.12"
@@ -32,9 +30,6 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 chrono = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
-serde_json = "1.0"
 dirs = "6.0.0"
 hyper-rustls = "0.27.7"
 tls-parser = "0.12.2"
