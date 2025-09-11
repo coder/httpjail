@@ -1,16 +1,15 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ArgAction};
+use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
-use httpjail::rules::{RuleEngine, Action};
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
+use httpjail::rules::{Action, RuleEngine};
 use hyper::Method;
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 
 #[derive(Parser, Debug)]
@@ -336,16 +335,22 @@ async fn main() -> Result<()> {
 
     // Handle test (dry-run) mode: evaluate the rule against a URL and exit
     if let Some(test_url) = &args.test {
-        let eval = rule_engine.evaluate_with_context(Method::GET, test_url).await;
+        let eval = rule_engine
+            .evaluate_with_context(Method::GET, test_url)
+            .await;
         match eval.action {
             Action::Allow => {
                 println!("ALLOW GET {}", test_url);
-                if let Some(ctx) = eval.context { println!("{}", ctx); }
+                if let Some(ctx) = eval.context {
+                    println!("{}", ctx);
+                }
                 std::process::exit(0);
             }
             Action::Deny => {
                 println!("DENY GET {}", test_url);
-                if let Some(ctx) = eval.context { println!("{}", ctx); }
+                if let Some(ctx) = eval.context {
+                    println!("{}", ctx);
+                }
                 std::process::exit(1);
             }
         }
