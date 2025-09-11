@@ -10,11 +10,7 @@ async fn test_js_rule_basic() {
     // Start server with JavaScript rule that allows only github.com
     let mut child = Command::cargo_bin("httpjail")
         .expect("binary exists")
-        .args([
-            "--server",
-            "--js",
-            "return host === 'github.com'"
-        ])
+        .args(["--server", "--js", "return host === 'github.com'"])
         .spawn()
         .expect("Failed to start httpjail server");
 
@@ -24,7 +20,7 @@ async fn test_js_rule_basic() {
     // Test that the server started successfully
     // Note: In a full integration test, we would test actual HTTP requests
     // through the proxy, but that requires more complex setup
-    
+
     // Clean up
     child.kill().expect("Failed to kill server");
     child.wait().expect("Failed to wait for server");
@@ -33,19 +29,14 @@ async fn test_js_rule_basic() {
 /// Test JavaScript syntax error handling
 #[tokio::test]
 async fn test_js_syntax_error() {
-    let mut cmd = Command::cargo_bin("httpjail")
-        .expect("binary exists");
-    
-    cmd.args([
-        "--server",
-        "--js",
-        "return invalid syntax !!!"
-    ]);
+    let mut cmd = Command::cargo_bin("httpjail").expect("binary exists");
+
+    cmd.args(["--server", "--js", "return invalid syntax !!!"]);
 
     // Should fail with syntax error
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("Failed to create V8 JavaScript engine"));
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "Failed to create V8 JavaScript engine",
+    ));
 }
 
 /// Test JavaScript rule with complex logic
@@ -74,11 +65,7 @@ async fn test_js_complex_rule() {
     // Start server with complex JavaScript rule
     let mut child = Command::cargo_bin("httpjail")
         .expect("binary exists")
-        .args([
-            "--server",
-            "--js",
-            js_code
-        ])
+        .args(["--server", "--js", js_code])
         .spawn()
         .expect("Failed to start httpjail server");
 
@@ -91,35 +78,27 @@ async fn test_js_complex_rule() {
 }
 
 /// Test that --js conflicts with --script and --rules
-#[tokio::test] 
+#[tokio::test]
 async fn test_js_conflicts() {
     // Test conflict with --script
-    let mut cmd = Command::cargo_bin("httpjail")
-        .expect("binary exists");
-    
-    cmd.args([
-        "--server",
-        "--js", "return true",
-        "--script", "echo test"
-    ]);
+    let mut cmd = Command::cargo_bin("httpjail").expect("binary exists");
 
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot be used with").or(predicate::str::contains("conflicts with")));
+    cmd.args(["--server", "--js", "return true", "--script", "echo test"]);
+
+    cmd.assert().failure().stderr(
+        predicate::str::contains("cannot be used with")
+            .or(predicate::str::contains("conflicts with")),
+    );
 
     // Test conflict with --rules
-    let mut cmd = Command::cargo_bin("httpjail")
-        .expect("binary exists");
-    
-    cmd.args([
-        "--server",
-        "--js", "return true",
-        "--rule", "allow: .*"
-    ]);
+    let mut cmd = Command::cargo_bin("httpjail").expect("binary exists");
 
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot be used with").or(predicate::str::contains("conflicts with")));
+    cmd.args(["--server", "--js", "return true", "--rule", "allow: .*"]);
+
+    cmd.assert().failure().stderr(
+        predicate::str::contains("cannot be used with")
+            .or(predicate::str::contains("conflicts with")),
+    );
 }
 
 /// Test JavaScript rule with method-specific logic
@@ -132,11 +111,7 @@ async fn test_js_method_filtering() {
 
     let mut child = Command::cargo_bin("httpjail")
         .expect("binary exists")
-        .args([
-            "--server",
-            "--js",
-            js_code
-        ])
+        .args(["--server", "--js", js_code])
         .spawn()
         .expect("Failed to start httpjail server");
 
