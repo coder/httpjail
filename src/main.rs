@@ -366,9 +366,9 @@ async fn main() -> Result<()> {
     } else {
         #[cfg(target_os = "linux")]
         {
-            Some(httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(
-                &jail_config.jail_id,
-            ))
+            Some(
+                httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(&jail_config.jail_id),
+            )
         }
         #[cfg(not(target_os = "linux"))]
         {
