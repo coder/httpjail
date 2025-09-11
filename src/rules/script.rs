@@ -159,7 +159,7 @@ exit 0
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
 
         assert!(matches!(result.action, Action::Allow));
@@ -188,7 +188,7 @@ exit 1
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
 
         assert!(matches!(result.action, Action::Deny));
@@ -218,7 +218,7 @@ exit 1
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
 
         assert!(matches!(result.action, Action::Deny));
@@ -254,12 +254,12 @@ fi
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
-            .evaluate(Method::GET, "https://allowed.com/test")
+            .evaluate(Method::GET, "https://allowed.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         let result = engine
-            .evaluate(Method::GET, "https://blocked.com/test")
+            .evaluate(Method::GET, "https://blocked.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(
@@ -274,12 +274,12 @@ fi
         let engine = ScriptRuleEngine::new("test \"$HTTPJAIL_HOST\" = \"github.com\"".to_string());
 
         let result = engine
-            .evaluate(Method::GET, "https://github.com/test")
+            .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
