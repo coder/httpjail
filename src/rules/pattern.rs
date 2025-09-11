@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use regex::Regex;
 use std::collections::HashSet;
-use tracing::{info, warn};
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -57,7 +57,7 @@ impl RuleEngineTrait for PatternRuleEngine {
             if rule.matches(method.clone(), url) {
                 match &rule.action {
                     Action::Allow => {
-                        info!(
+                        debug!(
                             "ALLOW: {} {} (matched: {:?})",
                             method,
                             url,
@@ -67,7 +67,7 @@ impl RuleEngineTrait for PatternRuleEngine {
                             .with_context(format!("Matched pattern: {}", rule.pattern.as_str()));
                     }
                     Action::Deny => {
-                        warn!(
+                        debug!(
                             "DENY: {} {} (matched: {:?})",
                             method,
                             url,
@@ -80,7 +80,7 @@ impl RuleEngineTrait for PatternRuleEngine {
             }
         }
 
-        warn!("DENY: {} {} (no matching rules)", method, url);
+        debug!("DENY: {} {} (no matching rules)", method, url);
         EvaluationResult::deny().with_context("No matching rules".to_string())
     }
 

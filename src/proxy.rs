@@ -367,7 +367,7 @@ pub async fn handle_http_request(
         format!("http://{}{}", host, path)
     };
 
-    info!("Proxying HTTP request: {} {}", method, full_url);
+    debug!("Proxying HTTP request: {} {}", method, full_url);
 
     // Evaluate rules with method
     let evaluation = rule_engine.evaluate_with_context(method, &full_url).await;
@@ -383,7 +383,7 @@ pub async fn handle_http_request(
             }
         }
         Action::Deny => {
-            warn!("Request denied: {}", full_url);
+            debug!("Request denied: {}", full_url);
             create_forbidden_response(evaluation.context)
         }
     }

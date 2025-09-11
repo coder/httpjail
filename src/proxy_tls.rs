@@ -455,7 +455,7 @@ async fn handle_decrypted_https_request(
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let full_url = format!("https://{}{}", host, path);
 
-    info!("Proxying HTTPS request: {} {}", method, full_url);
+    debug!("Proxying HTTPS request: {} {}", method, full_url);
 
     // Evaluate rules with method
     let evaluation = rule_engine
@@ -473,7 +473,7 @@ async fn handle_decrypted_https_request(
             }
         }
         Action::Deny => {
-            warn!("Request denied: {}", full_url);
+            debug!("Request denied: {}", full_url);
             create_forbidden_response(evaluation.context)
         }
     }

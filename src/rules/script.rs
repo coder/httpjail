@@ -2,7 +2,7 @@ use super::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::debug;
 use url::Url;
 
 #[derive(Clone)]
@@ -19,7 +19,7 @@ impl ScriptRuleEngine {
         let parsed_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
-                warn!("Failed to parse URL '{}': {}", url, e);
+                debug!("Failed to parse URL '{}': {}", url, e);
                 return (false, format!("Failed to parse URL: {}", e));
             }
         };
@@ -33,105 +33,65 @@ impl ScriptRuleEngine {
             method, url, host, path
         );
 
-        // Use tokio runtime to execute async command with timeout
-        let script_clone = self.script.clone();
-        let method_str = method.as_str().to_string();
-        let url_str = url.to_string();
-        let scheme_str = scheme.to_string();
-        let host_str = host.to_string();
-        let path_str = path.to_string();
+        // Build the command
+        let mut cmd = if self.script.contains(' ') {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            let mut cmd = tokio::process::Command::new(&shell);
+            cmd.arg("-c").arg(&self.script);
+            cmd
+        } else {
+            tokio::process::Command::new(&self.script)
+        };
 
-        // Use spawn_blocking to avoid blocking the async runtime
-        let result = tokio::task::spawn_blocking(move || {
-            use std::process::{Command, Stdio};
-            use std::time::Instant;
+        cmd.env("HTTPJAIL_URL", url)
+            .env("HTTPJAIL_METHOD", method.as_str())
+            .env("HTTPJAIL_SCHEME", scheme)
+            .env("HTTPJAIL_HOST", host)
+            .env("HTTPJAIL_PATH", path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true); // Ensure child is killed if dropped
 
-            let start = Instant::now();
-            let timeout = Duration::from_secs(5);
-
-            let mut cmd = if script_clone.contains(' ') {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-                let mut cmd = Command::new(&shell);
-                cmd.arg("-c").arg(&script_clone);
-                cmd
-            } else {
-                Command::new(&script_clone)
-            };
-
-            let mut child = match cmd
-                .env("HTTPJAIL_URL", &url_str)
-                .env("HTTPJAIL_METHOD", &method_str)
-                .env("HTTPJAIL_SCHEME", &scheme_str)
-                .env("HTTPJAIL_HOST", &host_str)
-                .env("HTTPJAIL_PATH", &path_str)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(e) => {
-                    warn!("Failed to spawn script: {}", e);
-                    return (false, format!("Script execution failed: {}", e));
-                }
-            };
-
-            // Poll for completion with timeout
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        // Process has exited
-                        let output = child.wait_with_output().unwrap_or_else(|e| {
-                            warn!("Failed to read script output: {}", e);
-                            std::process::Output {
-                                status,
-                                stdout: Vec::new(),
-                                stderr: Vec::new(),
-                            }
-                        });
-
-                        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-                        if !stderr.is_empty() {
-                            debug!("Script stderr: {}", stderr);
-                        }
-
-                        let allowed = status.success();
-
-                        debug!(
-                            "Script returned {} for {} {} (exit code: {:?})",
-                            if allowed { "ALLOW" } else { "DENY" },
-                            method_str,
-                            url_str,
-                            status.code()
-                        );
-
-                        return (allowed, stdout);
-                    }
-                    Ok(None) => {
-                        // Still running
-                        if start.elapsed() > timeout {
-                            // Timeout - kill the process
-                            let _ = child.kill();
-                            warn!("Script execution timed out after {:?}", timeout);
-                            return (false, "Script execution timed out".to_string());
-                        }
-                        // Sleep briefly before checking again
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(e) => {
-                        warn!("Error waiting for script: {}", e);
-                        return (false, format!("Script execution error: {}", e));
-                    }
-                }
-            }
-        });
-
-        match result.await {
-            Ok(res) => res,
+        // Spawn the child process
+        let child = match cmd.spawn() {
+            Ok(child) => child,
             Err(e) => {
-                warn!("Script execution task failed: {}", e);
-                (false, "Script execution failed".to_string())
+                debug!("Failed to spawn script: {}", e);
+                return (false, format!("Script execution failed: {}", e));
+            }
+        };
+
+        // Wait for completion with timeout
+        let timeout = Duration::from_secs(5);
+        match tokio::time::timeout(timeout, child.wait_with_output()).await {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+                if !stderr.is_empty() {
+                    debug!("Script stderr: {}", stderr);
+                }
+
+                let allowed = output.status.success();
+
+                debug!(
+                    "Script returned {} for {} {} (exit code: {:?})",
+                    if allowed { "ALLOW" } else { "DENY" },
+                    method,
+                    url,
+                    output.status.code()
+                );
+
+                (allowed, stdout)
+            }
+            Ok(Err(e)) => {
+                debug!("Error waiting for script: {}", e);
+                (false, format!("Script execution error: {}", e))
+            }
+            Err(_) => {
+                // Timeout elapsed - process will be killed automatically due to kill_on_drop
+                debug!("Script execution timed out after {:?}", timeout);
+                (false, "Script execution timed out".to_string())
             }
         }
     }
@@ -143,14 +103,14 @@ impl RuleEngineTrait for ScriptRuleEngine {
         let (allowed, context) = self.execute_script(method.clone(), url).await;
 
         if allowed {
-            info!("ALLOW: {} {} (script allowed)", method, url);
+            debug!("ALLOW: {} {} (script allowed)", method, url);
             let mut result = EvaluationResult::allow();
             if !context.is_empty() {
                 result = result.with_context(context);
             }
             result
         } else {
-            warn!("DENY: {} {} (script denied)", method, url);
+            debug!("DENY: {} {} (script denied)", method, url);
             let mut result = EvaluationResult::deny();
             if !context.is_empty() {
                 result = result.with_context(context);

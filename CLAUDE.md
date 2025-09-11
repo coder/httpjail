@@ -51,3 +51,7 @@ on both targets.
 ## Formatting
 
 After modifying code, run `cargo fmt` to ensure consistent formatting before committing changes.
+
+## Logging
+
+In regular operation of the CLI-only jail (non-server mode), info and warn logs are not permitted as they would interfere with the underlying process output. Only use debug level logs for normal operation and error logs for actual errors. The server mode (`--server`) may use info/warn logs as appropriate since it has no underlying process.
