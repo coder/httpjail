@@ -1,12 +1,13 @@
-use anyhow::Result;
+pub mod pattern;
+pub mod script;
+
 use chrono::{SecondsFormat, Utc};
 use hyper::Method;
-use regex::Regex;
-use std::collections::HashSet;
+pub use pattern::{PatternRuleEngine, Rule};
 use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -15,92 +16,61 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone)]
-pub struct Rule {
+pub struct EvaluationResult {
     pub action: Action,
-    pub pattern: Regex,
-    pub methods: Option<HashSet<Method>>, // None means all methods
+    pub context: Option<String>,
 }
 
-impl Rule {
-    pub fn new(action: Action, pattern: &str) -> Result<Self> {
-        Ok(Rule {
-            action,
-            pattern: Regex::new(pattern)?,
-            methods: None, // Default to matching all methods
-        })
+impl EvaluationResult {
+    pub fn allow() -> Self {
+        Self {
+            action: Action::Allow,
+            context: None,
+        }
     }
 
-    pub fn with_methods(mut self, methods: Vec<Method>) -> Self {
-        self.methods = Some(methods.into_iter().collect());
+    pub fn deny() -> Self {
+        Self {
+            action: Action::Deny,
+            context: None,
+        }
+    }
+
+    pub fn with_context(mut self, context: String) -> Self {
+        self.context = Some(context);
         self
     }
+}
 
-    pub fn matches(&self, method: Method, url: &str) -> bool {
-        // Check if URL matches
-        if !self.pattern.is_match(url) {
-            return false;
-        }
+pub trait RuleEngineTrait: Send + Sync {
+    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult;
 
-        // Check if method matches (if methods are specified)
-        match &self.methods {
-            None => true, // No method filter means match all methods
-            Some(methods) => methods.contains(&method),
+    fn name(&self) -> &str;
+}
+
+pub struct LoggingRuleEngine {
+    engine: Box<dyn RuleEngineTrait>,
+    request_log: Option<Arc<Mutex<File>>>,
+}
+
+impl LoggingRuleEngine {
+    pub fn new(engine: Box<dyn RuleEngineTrait>, request_log: Option<Arc<Mutex<File>>>) -> Self {
+        Self {
+            engine,
+            request_log,
         }
     }
 }
 
-#[derive(Clone)]
-pub struct RuleEngine {
-    pub rules: Vec<Rule>,
-    pub request_log: Option<Arc<Mutex<File>>>,
-}
-
-impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
-        RuleEngine { rules, request_log }
-    }
-
-    pub fn evaluate(&self, method: Method, url: &str) -> Action {
-        let mut action = Action::Deny;
-        let mut matched = false;
-
-        for rule in &self.rules {
-            if rule.matches(method.clone(), url) {
-                matched = true;
-                match &rule.action {
-                    Action::Allow => {
-                        info!(
-                            "ALLOW: {} {} (matched: {:?})",
-                            method,
-                            url,
-                            rule.pattern.as_str()
-                        );
-                        action = Action::Allow;
-                    }
-                    Action::Deny => {
-                        warn!(
-                            "DENY: {} {} (matched: {:?})",
-                            method,
-                            url,
-                            rule.pattern.as_str()
-                        );
-                        action = Action::Deny;
-                    }
-                }
-                break;
-            }
-        }
-
-        if !matched {
-            warn!("DENY: {} {} (no matching rules)", method, url);
-            action = Action::Deny;
-        }
+impl RuleEngineTrait for LoggingRuleEngine {
+    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+        let result = self.engine.evaluate(method.clone(), url);
 
         if let Some(log) = &self.request_log
             && let Ok(mut file) = log.lock()
         {
             let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let status = match &action {
+            let status = match &result.action {
                 Action::Allow => '+',
                 Action::Deny => '-',
             };
@@ -109,7 +79,54 @@ impl RuleEngine {
             }
         }
 
-        action
+        result
+    }
+
+    fn name(&self) -> &str {
+        self.engine.name()
+    }
+}
+
+#[derive(Clone)]
+pub struct RuleEngine {
+    inner: Arc<dyn RuleEngineTrait>,
+}
+
+impl RuleEngine {
+    pub fn new(rules: Vec<Rule>, request_log: Option<Arc<Mutex<File>>>) -> Self {
+        let pattern_engine = Box::new(PatternRuleEngine::new(rules));
+        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
+            Box::new(LoggingRuleEngine::new(pattern_engine, request_log))
+        } else {
+            pattern_engine
+        };
+
+        RuleEngine {
+            inner: Arc::from(engine),
+        }
+    }
+
+    pub fn from_trait(
+        engine: Box<dyn RuleEngineTrait>,
+        request_log: Option<Arc<Mutex<File>>>,
+    ) -> Self {
+        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
+            Box::new(LoggingRuleEngine::new(engine, request_log))
+        } else {
+            engine
+        };
+
+        RuleEngine {
+            inner: Arc::from(engine),
+        }
+    }
+
+    pub fn evaluate(&self, method: Method, url: &str) -> Action {
+        self.inner.evaluate(method, url).action
+    }
+
+    pub fn evaluate_with_context(&self, method: Method, url: &str) -> EvaluationResult {
+        self.inner.evaluate(method, url)
     }
 }
 
@@ -148,19 +165,16 @@ mod tests {
 
         let engine = RuleEngine::new(rules, None);
 
-        // Test allow rule
         assert!(matches!(
             engine.evaluate(Method::GET, "https://github.com/api"),
             Action::Allow
         ));
 
-        // Test deny rule
         assert!(matches!(
             engine.evaluate(Method::POST, "https://telemetry.example.com"),
             Action::Deny
         ));
 
-        // Test default deny
         assert!(matches!(
             engine.evaluate(Method::GET, "https://example.com"),
             Action::Deny
@@ -178,13 +192,11 @@ mod tests {
 
         let engine = RuleEngine::new(rules, None);
 
-        // GET should be allowed
         assert!(matches!(
             engine.evaluate(Method::GET, "https://api.example.com/data"),
             Action::Allow
         ));
 
-        // POST should be denied (doesn't match method filter)
         assert!(matches!(
             engine.evaluate(Method::POST, "https://api.example.com/data"),
             Action::Deny

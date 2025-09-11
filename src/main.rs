@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
+use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::{Action, Rule, RuleEngine};
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
@@ -22,20 +23,40 @@ struct Args {
     ///   -r "allow-get: .*"
     /// Actions: allow, deny
     /// Methods (optional): get, post, put, delete, head, options, connect, trace, patch
-    #[arg(short = 'r', long = "rule", value_name = "RULE")]
+    #[arg(
+        short = 'r',
+        long = "rule",
+        value_name = "RULE",
+        conflicts_with = "script"
+    )]
     rules: Vec<String>,
 
+    /// Use script for evaluating requests
+    /// The script receives environment variables:
+    ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+    /// Exit code 0 allows the request, non-zero blocks it
+    /// stdout becomes additional context in the 403 response
+    #[arg(
+        short = 's',
+        long = "script",
+        value_name = "PROG",
+        conflicts_with = "rules",
+        conflicts_with = "config"
+    )]
+    script: Option<String>,
+
     /// Use configuration file
-    #[arg(short = 'c', long = "config", value_name = "FILE")]
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "FILE",
+        conflicts_with = "script"
+    )]
     config: Option<String>,
 
     /// Append requests to a log file
     #[arg(long = "request-log", value_name = "FILE")]
     request_log: Option<String>,
-
-    /// Interactive approval mode
-    #[arg(long = "interactive")]
-    interactive: bool,
 
     /// Use weak mode (environment variables only, no system isolation)
     #[arg(long = "weak")]
@@ -311,8 +332,7 @@ async fn main() -> Result<()> {
         info!("Starting httpjail in server mode");
     }
 
-    // Build rules from command line arguments
-    let rules = build_rules(&args)?;
+    // Build rule engine based on script or rules
     let request_log = if let Some(path) = &args.request_log {
         Some(Arc::new(Mutex::new(
             OpenOptions::new()
@@ -324,7 +344,15 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let rule_engine = RuleEngine::new(rules, request_log);
+
+    let rule_engine = if let Some(script) = &args.script {
+        info!("Using script-based rule evaluation: {}", script);
+        let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
+        RuleEngine::from_trait(script_engine, request_log)
+    } else {
+        let rules = build_rules(&args)?;
+        RuleEngine::new(rules, request_log)
+    };
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
@@ -526,9 +554,9 @@ mod tests {
     fn test_build_rules_no_rules_default_deny() {
         let args = Args {
             rules: vec![],
+            script: None,
             config: None,
             request_log: None,
-            interactive: false,
             weak: false,
             verbose: 0,
             timeout: None,
@@ -563,9 +591,9 @@ mod tests {
 
         let args = Args {
             rules: vec![],
+            script: None,
             config: Some(file.path().to_str().unwrap().to_string()),
             request_log: None,
-            interactive: false,
             weak: false,
             verbose: 0,
             timeout: None,
