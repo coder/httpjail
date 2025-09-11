@@ -129,46 +129,39 @@ httpjail creates an isolated network environment for the target process, interce
 
 ```bash
 # Simple allow/deny rules
-httpjail -r "allow: api\.github\.com" -r "deny: .*" -- git pull
+httpjail --js "r.host === 'api.github.com'" -- git pull
 
-# Multiple allow patterns (order matters!)
+# Multiple allow patterns using regex
 httpjail \
-  -r "allow: github\.com" \
-  -r "allow: githubusercontent\.com" \
-  -r "deny: .*" \
+  --js "/github\.com$/.test(r.host) || /githubusercontent\.com$/.test(r.host)" \
   -- npm install
 
 # Deny telemetry while allowing everything else
 httpjail \
-  -r "deny: telemetry\." \
-  -r "deny: analytics\." \
-  -r "deny: sentry\." \
-  -r "allow: .*" \
+  --js "!/telemetry\.|analytics\.|sentry\./.test(r.host)" \
   -- ./application
 
 # Method-specific rules
 httpjail \
-  -r "allow-get: api\..*\.com" \
-  -r "deny-post: telemetry\..*" \
-  -r "allow: .*" \
+  --js "(r.method === 'GET' && /api\..*\.com$/.test(r.host)) || (r.method === 'POST' && !/telemetry\./.test(r.host)) || r.method !== 'GET' && r.method !== 'POST'" \
   -- ./application
 ```
 
 ### Configuration File
 
-Create a `rules.txt` (one rule per line, `#` comments and blank lines are ignored):
+Create a `rules.js` file with your JavaScript evaluation logic:
 
-```text
-# rules.txt
-allow-get: github\.com
-deny: telemetry
-allow: .*
+```javascript
+// rules.js
+// Allow GitHub GET requests, block telemetry, allow everything else
+(r.method === 'GET' && /github\.com$/.test(r.host)) ||
+(!/telemetry/.test(r.host))
 ```
 
 Use the config:
 
 ```bash
-httpjail --config rules.txt -- ./my-application
+httpjail --js-file rules.js -- ./my-application
 ```
 
 ### Script-Based Evaluation
