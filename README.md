@@ -207,6 +207,8 @@ httpjail --script ./check_request.sh -- curl https://github.com
 httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
 ```
 
+If `--script` has spaces, it's run through `$SHELL` (default `/bin/sh`); otherwise it's executed directly.
+
 **Environment variables provided to the script:**
 
 - `HTTPJAIL_URL` - Full URL being requested
