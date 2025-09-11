@@ -592,9 +592,9 @@ mod tests {
 
     fn create_test_rule_engine(allow_all: bool) -> Arc<RuleEngine> {
         let js = if allow_all {
-            "return true;".to_string()
+            "true".to_string()
         } else {
-            "if (/example\\.com/.test(host)) return true; return false;".to_string()
+            "/example\\.com/.test(r.host)".to_string()
         };
         let engine = crate::rules::v8_js::V8JsRuleEngine::new(js).unwrap();
         Arc::new(RuleEngine::from_trait(Box::new(engine), None))

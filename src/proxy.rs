@@ -480,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_server_creation() {
-        let js = r"if (/^github\.com$/.test(host)) return true; return false;";
+        let js = r"/^github\.com$/.test(r.host)";
         let engine = V8JsRuleEngine::new(js.to_string()).unwrap();
         let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
 
@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_server_auto_port() {
-        let engine = V8JsRuleEngine::new("return true;".to_string()).unwrap();
+        let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
         let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
         let mut proxy = ProxyServer::new(None, None, rule_engine, None);
 

@@ -275,7 +275,7 @@ async fn main() -> Result<()> {
         RuleEngine::from_trait(js_engine, request_log)
     } else {
         info!("No rule evaluation provided; defaulting to deny-all");
-        let js_engine = match V8JsRuleEngine::new("return false;".to_string()) {
+        let js_engine = match V8JsRuleEngine::new("false".to_string()) {
             Ok(engine) => Box::new(engine),
             Err(e) => {
                 eprintln!("Failed to create default V8 JavaScript engine: {}", e);

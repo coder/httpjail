@@ -127,7 +127,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_logging() {
-        let engine = V8JsRuleEngine::new("return true;".to_string()).unwrap();
+        let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
         let log_file = tempfile::NamedTempFile::new().unwrap();
         let file = OpenOptions::new()
             .append(true)
@@ -143,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_logging_denied() {
-        let engine = V8JsRuleEngine::new("return false;".to_string()).unwrap();
+        let engine = V8JsRuleEngine::new("false".to_string()).unwrap();
         let log_file = tempfile::NamedTempFile::new().unwrap();
         let file = OpenOptions::new()
             .append(true)
