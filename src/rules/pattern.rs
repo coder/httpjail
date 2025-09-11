@@ -124,31 +124,28 @@ mod tests {
         let engine = PatternRuleEngine::new(rules);
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::GET, "https://github.com/api")
-        +                .evaluate(Method::GET, "https://github.com/api", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Allow
-                ));
+            engine
+                .evaluate(Method::GET, "https://github.com/api", "127.0.0.1")
+                .await
+                .action,
+            Action::Allow
+        ));
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::POST, "https://telemetry.example.com")
-        +                .evaluate(Method::POST, "https://telemetry.example.com", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Deny
-                ));
+            engine
+                .evaluate(Method::POST, "https://telemetry.example.com", "127.0.0.1",)
+                .await
+                .action,
+            Action::Deny
+        ));
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::GET, "https://example.com")
-        +                .evaluate(Method::GET, "https://example.com", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Deny
-                ));
+            engine
+                .evaluate(Method::GET, "https://example.com", "127.0.0.1")
+                .await
+                .action,
+            Action::Deny
+        ));
     }
 
     #[tokio::test]
@@ -163,22 +160,20 @@ mod tests {
         let engine = PatternRuleEngine::new(rules);
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::GET, "https://api.example.com/data")
-        +                .evaluate(Method::GET, "https://api.example.com/data", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Allow
-                ));
+            engine
+                .evaluate(Method::GET, "https://api.example.com/data", "127.0.0.1",)
+                .await
+                .action,
+            Action::Allow
+        ));
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::POST, "https://api.example.com/data")
-        +                .evaluate(Method::POST, "https://api.example.com/data", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Deny
-                ));
+            engine
+                .evaluate(Method::POST, "https://api.example.com/data", "127.0.0.1",)
+                .await
+                .action,
+            Action::Deny
+        ));
     }
 
     #[tokio::test]
@@ -186,12 +181,11 @@ mod tests {
         let engine = PatternRuleEngine::new(vec![]);
 
         assert!(matches!(
-                    engine
-        -                .evaluate(Method::GET, "https://example.com")
-        +                .evaluate(Method::GET, "https://example.com", "127.0.0.1")
-                        .await
-                        .action,
-                    Action::Deny
-                ));
+            engine
+                .evaluate(Method::GET, "https://example.com", "127.0.0.1")
+                .await
+                .action,
+            Action::Deny
+        ));
     }
 }
