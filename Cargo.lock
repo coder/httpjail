@@ -795,7 +795,6 @@ dependencies = [
  "predicates",
  "rand",
  "rcgen",
- "regex",
  "rustls",
  "serial_test",
  "tempfile",

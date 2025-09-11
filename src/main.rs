@@ -316,9 +316,6 @@ async fn main() -> Result<()> {
     let (http_port, _http_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
     let (https_port, _https_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
 
-    let http_port = http_port;
-    let https_port = https_port;
-
     let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, None);
 
     // Start proxy in background if running as server; otherwise start with random ports

@@ -2,7 +2,6 @@ use crate::proxy::{
     HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
     create_forbidden_response,
 };
-use crate::rules::v8_js::V8JsRuleEngine;
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
 use anyhow::Result;
