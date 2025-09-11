@@ -305,7 +305,9 @@ async fn handle_connect_tunnel(
 
     // Check if this host is allowed
     let full_url = format!("https://{}", target);
-    let evaluation = rule_engine.evaluate_with_context(Method::GET, &full_url);
+    let evaluation = rule_engine
+        .evaluate_with_context(Method::GET, &full_url)
+        .await;
     match evaluation.action {
         Action::Allow => {
             debug!("CONNECT allowed to: {}", host);
@@ -456,7 +458,9 @@ async fn handle_decrypted_https_request(
     info!("Proxying HTTPS request: {} {}", method, full_url);
 
     // Evaluate rules with method
-    let evaluation = rule_engine.evaluate_with_context(method.clone(), &full_url);
+    let evaluation = rule_engine
+        .evaluate_with_context(method.clone(), &full_url)
+        .await;
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);

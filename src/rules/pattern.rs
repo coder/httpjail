@@ -50,7 +50,7 @@ impl PatternRuleEngine {
 }
 
 impl RuleEngineTrait for PatternRuleEngine {
-    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
         for rule in &self.rules {
             if rule.matches(method.clone(), url) {
                 match &rule.action {
@@ -111,8 +111,8 @@ mod tests {
         assert!(!rule.matches(Method::DELETE, "https://api.example.com/users"));
     }
 
-    #[test]
-    fn test_pattern_engine() {
+    #[tokio::test]
+    async fn test_pattern_engine() {
         let rules = vec![
             Rule::new(Action::Allow, r"github\.com").unwrap(),
             Rule::new(Action::Deny, r"telemetry").unwrap(),
@@ -124,6 +124,7 @@ mod tests {
         assert!(matches!(
             engine
                 .evaluate(Method::GET, "https://github.com/api")
+                .await
                 .action,
             Action::Allow
         ));
@@ -131,18 +132,22 @@ mod tests {
         assert!(matches!(
             engine
                 .evaluate(Method::POST, "https://telemetry.example.com")
+                .await
                 .action,
             Action::Deny
         ));
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com").action,
+            engine
+                .evaluate(Method::GET, "https://example.com")
+                .await
+                .action,
             Action::Deny
         ));
     }
 
-    #[test]
-    fn test_method_specific_rules() {
+    #[tokio::test]
+    async fn test_method_specific_rules() {
         let rules = vec![
             Rule::new(Action::Allow, r"api\.example\.com")
                 .unwrap()
@@ -155,6 +160,7 @@ mod tests {
         assert!(matches!(
             engine
                 .evaluate(Method::GET, "https://api.example.com/data")
+                .await
                 .action,
             Action::Allow
         ));
@@ -162,17 +168,21 @@ mod tests {
         assert!(matches!(
             engine
                 .evaluate(Method::POST, "https://api.example.com/data")
+                .await
                 .action,
             Action::Deny
         ));
     }
 
-    #[test]
-    fn test_default_deny_with_no_rules() {
+    #[tokio::test]
+    async fn test_default_deny_with_no_rules() {
         let engine = PatternRuleEngine::new(vec![]);
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com").action,
+            engine
+                .evaluate(Method::GET, "https://example.com")
+                .await
+                .action,
             Action::Deny
         ));
     }

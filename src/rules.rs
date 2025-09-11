@@ -1,6 +1,7 @@
 pub mod pattern;
 pub mod script;
 
+use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use hyper::Method;
 pub use pattern::{PatternRuleEngine, Rule};
@@ -42,8 +43,9 @@ impl EvaluationResult {
     }
 }
 
+#[async_trait]
 pub trait RuleEngineTrait: Send + Sync {
-    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult;
+    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult;
 
     fn name(&self) -> &str;
 }
@@ -62,9 +64,10 @@ impl LoggingRuleEngine {
     }
 }
 
+#[async_trait]
 impl RuleEngineTrait for LoggingRuleEngine {
-    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
-        let result = self.engine.evaluate(method.clone(), url);
+    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+        let result = self.engine.evaluate(method.clone(), url).await;
 
         if let Some(log) = &self.request_log
             && let Ok(mut file) = log.lock()
@@ -121,12 +124,12 @@ impl RuleEngine {
         }
     }
 
-    pub fn evaluate(&self, method: Method, url: &str) -> Action {
-        self.inner.evaluate(method, url).action
+    pub async fn evaluate(&self, method: Method, url: &str) -> Action {
+        self.inner.evaluate(method, url).await.action
     }
 
-    pub fn evaluate_with_context(&self, method: Method, url: &str) -> EvaluationResult {
-        self.inner.evaluate(method, url)
+    pub async fn evaluate_with_context(&self, method: Method, url: &str) -> EvaluationResult {
+        self.inner.evaluate(method, url).await
     }
 }
 
@@ -155,8 +158,8 @@ mod tests {
         assert!(!rule.matches(Method::DELETE, "https://api.example.com/users"));
     }
 
-    #[test]
-    fn test_rule_engine() {
+    #[tokio::test]
+    async fn test_rule_engine() {
         let rules = vec![
             Rule::new(Action::Allow, r"github\.com").unwrap(),
             Rule::new(Action::Deny, r"telemetry").unwrap(),
@@ -166,23 +169,25 @@ mod tests {
         let engine = RuleEngine::new(rules, None);
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://github.com/api"),
+            engine.evaluate(Method::GET, "https://github.com/api").await,
             Action::Allow
         ));
 
         assert!(matches!(
-            engine.evaluate(Method::POST, "https://telemetry.example.com"),
+            engine
+                .evaluate(Method::POST, "https://telemetry.example.com")
+                .await,
             Action::Deny
         ));
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
+            engine.evaluate(Method::GET, "https://example.com").await,
             Action::Deny
         ));
     }
 
-    #[test]
-    fn test_method_specific_rules() {
+    #[tokio::test]
+    async fn test_method_specific_rules() {
         let rules = vec![
             Rule::new(Action::Allow, r"api\.example\.com")
                 .unwrap()
@@ -193,18 +198,22 @@ mod tests {
         let engine = RuleEngine::new(rules, None);
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://api.example.com/data"),
+            engine
+                .evaluate(Method::GET, "https://api.example.com/data")
+                .await,
             Action::Allow
         ));
 
         assert!(matches!(
-            engine.evaluate(Method::POST, "https://api.example.com/data"),
+            engine
+                .evaluate(Method::POST, "https://api.example.com/data")
+                .await,
             Action::Deny
         ));
     }
 
-    #[test]
-    fn test_request_logging() {
+    #[tokio::test]
+    async fn test_request_logging() {
         use std::fs::OpenOptions;
 
         let rules = vec![Rule::new(Action::Allow, r".*").unwrap()];
@@ -215,14 +224,14 @@ mod tests {
             .unwrap();
         let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
 
-        engine.evaluate(Method::GET, "https://example.com");
+        engine.evaluate(Method::GET, "https://example.com").await;
 
         let contents = std::fs::read_to_string(log_file.path()).unwrap();
         assert!(contents.contains("+ GET https://example.com"));
     }
 
-    #[test]
-    fn test_request_logging_denied() {
+    #[tokio::test]
+    async fn test_request_logging_denied() {
         use std::fs::OpenOptions;
 
         let rules = vec![Rule::new(Action::Deny, r".*").unwrap()];
@@ -233,18 +242,18 @@ mod tests {
             .unwrap();
         let engine = RuleEngine::new(rules, Some(Arc::new(Mutex::new(file))));
 
-        engine.evaluate(Method::GET, "https://blocked.com");
+        engine.evaluate(Method::GET, "https://blocked.com").await;
 
         let contents = std::fs::read_to_string(log_file.path()).unwrap();
         assert!(contents.contains("- GET https://blocked.com"));
     }
 
-    #[test]
-    fn test_default_deny_with_no_rules() {
+    #[tokio::test]
+    async fn test_default_deny_with_no_rules() {
         let engine = RuleEngine::new(vec![], None);
 
         assert!(matches!(
-            engine.evaluate(Method::GET, "https://example.com"),
+            engine.evaluate(Method::GET, "https://example.com").await,
             Action::Deny
         ));
     }

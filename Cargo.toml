@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "network-programming", "development-tool
 isolated-cleanup-tests = []
 
 [dependencies]
+async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 regex = "1.10"
 tokio = { version = "1.35", features = ["full"] }

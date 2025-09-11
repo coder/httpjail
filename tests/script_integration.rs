@@ -4,8 +4,8 @@ use hyper::Method;
 use std::fs;
 use tempfile::NamedTempFile;
 
-#[test]
-fn test_script_allows_github() {
+#[tokio::test]
+async fn test_script_allows_github() {
     let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_HOST" = "github.com" ]; then
@@ -33,11 +33,15 @@ fi
     let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed request
-    let result = engine.evaluate(Method::GET, "https://github.com/user/repo");
+    let result = engine
+        .evaluate(Method::GET, "https://github.com/user/repo")
+        .await;
     assert!(matches!(result.action, Action::Allow));
 
     // Test denied request with context
-    let result = engine.evaluate(Method::POST, "https://example.com/api");
+    let result = engine
+        .evaluate(Method::POST, "https://example.com/api")
+        .await;
     assert!(matches!(result.action, Action::Deny));
     assert_eq!(
         result.context,
@@ -48,8 +52,8 @@ fi
     drop(script_path);
 }
 
-#[test]
-fn test_script_with_method_filtering() {
+#[tokio::test]
+async fn test_script_with_method_filtering() {
     let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_METHOD" = "GET" ] || [ "$HTTPJAIL_METHOD" = "HEAD" ]; then
@@ -77,14 +81,20 @@ fi
     let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed methods
-    let result = engine.evaluate(Method::GET, "https://example.com/api");
+    let result = engine
+        .evaluate(Method::GET, "https://example.com/api")
+        .await;
     assert!(matches!(result.action, Action::Allow));
 
-    let result = engine.evaluate(Method::HEAD, "https://example.com/api");
+    let result = engine
+        .evaluate(Method::HEAD, "https://example.com/api")
+        .await;
     assert!(matches!(result.action, Action::Allow));
 
     // Test denied method with context
-    let result = engine.evaluate(Method::POST, "https://example.com/api");
+    let result = engine
+        .evaluate(Method::POST, "https://example.com/api")
+        .await;
     assert!(matches!(result.action, Action::Deny));
     assert_eq!(result.context, Some("Method POST not allowed".to_string()));
 
@@ -92,22 +102,26 @@ fi
     drop(script_path);
 }
 
-#[test]
-fn test_inline_script_evaluation() {
+#[tokio::test]
+async fn test_inline_script_evaluation() {
     // Test inline script (with spaces, executed via shell)
     let engine = ScriptRuleEngine::new(
         r#"[ "$HTTPJAIL_PATH" = "/api/v1/health" ] && exit 0 || exit 1"#.to_string(),
     );
 
-    let result = engine.evaluate(Method::GET, "https://example.com/api/v1/health");
+    let result = engine
+        .evaluate(Method::GET, "https://example.com/api/v1/health")
+        .await;
     assert!(matches!(result.action, Action::Allow));
 
-    let result = engine.evaluate(Method::GET, "https://example.com/api/v2/users");
+    let result = engine
+        .evaluate(Method::GET, "https://example.com/api/v2/users")
+        .await;
     assert!(matches!(result.action, Action::Deny));
 }
 
-#[test]
-fn test_script_with_complex_logic() {
+#[tokio::test]
+async fn test_script_with_complex_logic() {
     let mut script_file = NamedTempFile::new().unwrap();
     let script = r#"#!/bin/sh
 # Complex logic: allow GET to github.com, POST to api.example.com, deny everything else
@@ -141,7 +155,9 @@ fi
     let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
     // Test allowed GitHub GET
-    let result = engine.evaluate(Method::GET, "https://github.com/user/repo");
+    let result = engine
+        .evaluate(Method::GET, "https://github.com/user/repo")
+        .await;
     assert!(matches!(result.action, Action::Allow));
     assert_eq!(
         result.context,
@@ -149,12 +165,16 @@ fi
     );
 
     // Test allowed API POST
-    let result = engine.evaluate(Method::POST, "https://api.example.com/users");
+    let result = engine
+        .evaluate(Method::POST, "https://api.example.com/users")
+        .await;
     assert!(matches!(result.action, Action::Allow));
     assert_eq!(result.context, Some("API write access allowed".to_string()));
 
     // Test denied request
-    let result = engine.evaluate(Method::POST, "https://github.com/user/repo");
+    let result = engine
+        .evaluate(Method::POST, "https://github.com/user/repo")
+        .await;
     assert!(matches!(result.action, Action::Deny));
     assert!(
         result

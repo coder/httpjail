@@ -14,7 +14,7 @@ impl ScriptRuleEngine {
         ScriptRuleEngine { script }
     }
 
-    fn execute_script(&self, method: Method, url: &str) -> (bool, String) {
+    async fn execute_script(&self, method: Method, url: &str) -> (bool, String) {
         let parsed_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
@@ -41,8 +41,7 @@ impl ScriptRuleEngine {
         let path_str = path.to_string();
 
         // Use spawn_blocking to avoid blocking the async runtime
-        // This is safe since execute_script is called from a sync context in evaluate()
-        let result = std::thread::spawn(move || {
+        let result = tokio::task::spawn_blocking(move || {
             use std::process::{Command, Stdio};
             use std::time::Instant;
 
@@ -127,10 +126,10 @@ impl ScriptRuleEngine {
             }
         });
 
-        match result.join() {
+        match result.await {
             Ok(res) => res,
-            Err(_) => {
-                warn!("Script execution thread panicked");
+            Err(e) => {
+                warn!("Script execution task failed: {}", e);
                 (false, "Script execution failed".to_string())
             }
         }
@@ -138,8 +137,8 @@ impl ScriptRuleEngine {
 }
 
 impl RuleEngineTrait for ScriptRuleEngine {
-    fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
-        let (allowed, context) = self.execute_script(method.clone(), url);
+    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+        let (allowed, context) = self.execute_script(method.clone(), url).await;
 
         if allowed {
             info!("ALLOW: {} {} (script allowed)", method, url);
@@ -170,8 +169,8 @@ mod tests {
     use std::fs;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_script_allow() {
+    #[tokio::test]
+    async fn test_script_allow() {
         let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 exit 0
@@ -191,14 +190,16 @@ exit 0
         }
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-        let result = engine.evaluate(Method::GET, "https://example.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test")
+            .await;
 
         assert!(matches!(result.action, Action::Allow));
         drop(script_path);
     }
 
-    #[test]
-    fn test_script_deny() {
+    #[tokio::test]
+    async fn test_script_deny() {
         let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 exit 1
@@ -218,14 +219,16 @@ exit 1
         }
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-        let result = engine.evaluate(Method::GET, "https://example.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test")
+            .await;
 
         assert!(matches!(result.action, Action::Deny));
         drop(script_path);
     }
 
-    #[test]
-    fn test_script_with_context() {
+    #[tokio::test]
+    async fn test_script_with_context() {
         let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 echo "Blocked by policy"
@@ -246,15 +249,17 @@ exit 1
         }
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-        let result = engine.evaluate(Method::GET, "https://example.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test")
+            .await;
 
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(result.context, Some("Blocked by policy".to_string()));
         drop(script_path);
     }
 
-    #[test]
-    fn test_script_environment_variables() {
+    #[tokio::test]
+    async fn test_script_environment_variables() {
         let mut script_file = NamedTempFile::new().unwrap();
         let script = r#"#!/bin/sh
 if [ "$HTTPJAIL_HOST" = "allowed.com" ]; then
@@ -280,10 +285,14 @@ fi
 
         let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
-        let result = engine.evaluate(Method::GET, "https://allowed.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://allowed.com/test")
+            .await;
         assert!(matches!(result.action, Action::Allow));
 
-        let result = engine.evaluate(Method::GET, "https://blocked.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://blocked.com/test")
+            .await;
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(
             result.context,
@@ -292,14 +301,18 @@ fi
         drop(script_path);
     }
 
-    #[test]
-    fn test_inline_script() {
+    #[tokio::test]
+    async fn test_inline_script() {
         let engine = ScriptRuleEngine::new("test \"$HTTPJAIL_HOST\" = \"github.com\"".to_string());
 
-        let result = engine.evaluate(Method::GET, "https://github.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://github.com/test")
+            .await;
         assert!(matches!(result.action, Action::Allow));
 
-        let result = engine.evaluate(Method::GET, "https://example.com/test");
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test")
+            .await;
         assert!(matches!(result.action, Action::Deny));
     }
 }
