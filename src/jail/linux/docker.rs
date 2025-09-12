@@ -14,6 +14,7 @@ struct DockerNetwork {
 
 /// Docker routing nftables resource that gets cleaned up on drop
 struct DockerRoutingTable {
+    #[allow(dead_code)]
     jail_id: String,
     table_name: String,
 }
