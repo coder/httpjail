@@ -9,10 +9,11 @@ static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
-            let output = Command::new("cargo")
-                .args(["build", "--bin", "httpjail"])
+            let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let output = Command::new(cargo_bin)
+                .args(["build", "-vv", "--bin", "httpjail"])
                 .output()
-                .map_err(|e| format!("Failed to execute 'cargo build --bin httpjail': {}", e))?;
+                .map_err(|e| format!("Failed to execute 'cargo build -vv --bin httpjail': {}", e))?;
 
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
