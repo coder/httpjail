@@ -17,19 +17,9 @@ use tracing::{debug, info, warn};
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
-    /// Use script for evaluating requests
-    /// The script receives environment variables:
-    ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-    /// Exit code 0 allows the request, non-zero blocks it
-    /// stdout becomes additional context in the 403 response
     #[arg(short = 's', long = "script", value_name = "PROG")]
     script: Option<String>,
 
-    /// Use JavaScript (V8) for evaluating requests
-    /// The JavaScript code receives global variables:
-    ///   url, method, host, scheme, path
-    /// Should return true to allow the request, false to block it
-    /// Example: --js "return host === 'github.com' && method === 'GET'"
     #[arg(
         long = "js",
         value_name = "CODE",
@@ -38,8 +28,6 @@ struct Args {
     )]
     js: Option<String>,
 
-    /// Load JavaScript (V8) rule code from a file
-    /// Conflicts with --js
     #[arg(
         long = "js-file",
         value_name = "FILE",
@@ -48,31 +36,24 @@ struct Args {
     )]
     js_file: Option<String>,
 
-    /// Append requests to a log file
     #[arg(long = "request-log", value_name = "FILE")]
     request_log: Option<String>,
 
-    /// Use weak mode (environment variables only, no system isolation)
     #[arg(long = "weak")]
     weak: bool,
 
-    /// Increase verbosity (-vvv for max)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     verbose: u8,
 
-    /// Timeout for command execution in seconds
     #[arg(long = "timeout")]
     timeout: Option<u64>,
 
-    /// Skip jail cleanup (hidden flag for testing)
     #[arg(long = "no-jail-cleanup", hide = true)]
     no_jail_cleanup: bool,
 
-    /// Clean up orphaned jails and exit (for debugging)
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
-    /// Run as standalone proxy server (without executing a command)
     #[arg(
         long = "server",
         conflicts_with = "cleanup",
@@ -81,15 +62,18 @@ struct Args {
     server: bool,
 
     /// Evaluate rule against a URL and exit (dry-run)
+    /// Forms:
+    ///   URL             (defaults to GET)
+    ///   METHOD URL      (e.g., "POST https://example.com")
     #[arg(
         long = "test",
-        value_name = "URL",
+        value_name = "[METHOD] URL",
+        num_args = 1..=2,
         conflicts_with = "server",
         conflicts_with = "cleanup"
     )]
-    test: Option<String>,
+    test: Option<Vec<String>>,
 
-    /// Command and arguments to execute
     #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
     command: Vec<String>,
 }
@@ -334,20 +318,43 @@ async fn main() -> Result<()> {
     };
 
     // Handle test (dry-run) mode: evaluate the rule against a URL and exit
-    if let Some(test_url) = &args.test {
+    if let Some(test_vals) = &args.test {
+        let (method, url) = if test_vals.len() == 1 {
+            let s = &test_vals[0];
+            let mut parts = s.split_whitespace();
+            match (parts.next(), parts.next()) {
+                (Some(maybe_method), Some(url_rest)) => {
+                    let method = maybe_method
+                        .parse::<Method>()
+                        .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
+                        .unwrap_or(Method::GET);
+                    (method, url_rest.to_string())
+                }
+                _ => (Method::GET, s.clone()),
+            }
+        } else {
+            let maybe_method = &test_vals[0];
+            let url = &test_vals[1];
+            let method = maybe_method
+                .parse::<Method>()
+                .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
+                .unwrap_or(Method::GET);
+            (method, url.clone())
+        };
+
         let eval = rule_engine
-            .evaluate_with_context(Method::GET, test_url)
+            .evaluate_with_context(method.clone(), &url)
             .await;
         match eval.action {
             Action::Allow => {
-                println!("ALLOW GET {}", test_url);
+                println!("ALLOW {} {}", method, url);
                 if let Some(ctx) = eval.context {
                     println!("{}", ctx);
                 }
                 std::process::exit(0);
             }
             Action::Deny => {
-                println!("DENY GET {}", test_url);
+                println!("DENY {} {}", method, url);
                 if let Some(ctx) = eval.context {
                     println!("{}", ctx);
                 }
