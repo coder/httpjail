@@ -13,6 +13,7 @@ struct DockerNetwork {
 }
 
 impl DockerNetwork {
+    #[allow(dead_code)]
     fn new(jail_id: &str) -> Result<Self> {
         let network_name = format!("httpjail_{}", jail_id);
         Ok(Self { network_name })
@@ -262,7 +263,6 @@ impl DockerLinux {
 
         if let Some(network) = docker_network.inner() {
             let bridge_name = network.get_bridge_name()?;
-            let subnet = DockerNetwork::compute_docker_subnet(&self.config.jail_id);
 
             // Get the jail's veth host IP
             let host_ip = LinuxJail::compute_host_ip_for_jail_id(&self.config.jail_id);
