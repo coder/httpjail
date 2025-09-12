@@ -9,18 +9,38 @@ static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
-            // Build the binary once per process
+            // Check if the binary already exists
+            let binary_path = "target/debug/httpjail";
+            if std::path::Path::new(binary_path).exists() {
+                return Ok(binary_path.to_string());
+            }
+
+            // Binary doesn't exist, try to build it
+            eprintln!("httpjail binary not found at {}, attempting to build...", binary_path);
+
             let output = Command::new("cargo")
                 .args(["build", "--bin", "httpjail"])
                 .output()
-                .map_err(|e| format!("Failed to build httpjail: {}", e));
+                .map_err(|e| {
+                    format!(
+                        "Failed to execute 'cargo build --bin httpjail': {}. \n\
+                        Make sure cargo is in PATH or build the binary manually with 'cargo build --bin httpjail'",
+                        e
+                    )
+                });
 
             match output {
-                Ok(output) if output.status.success() => Ok("target/debug/httpjail".to_string()),
-                Ok(output) => Err(format!(
-                    "Build failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )),
+                Ok(output) if output.status.success() => {
+                    eprintln!("Successfully built httpjail binary");
+                    Ok(binary_path.to_string())
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    Err(format!(
+                        "Failed to build httpjail binary. Build output:\n{}",
+                        stderr
+                    ))
+                }
                 Err(e) => Err(e),
             }
         })
@@ -135,9 +155,15 @@ impl HttpjailCommand {
             cmd
         };
 
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to execute httpjail: {}", e))?;
+        let output = cmd.output().map_err(|e| {
+            format!(
+                "Failed to execute httpjail at '{}': {}. \n\
+                    Current directory: {:?}",
+                httpjail_path,
+                e,
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown"))
+            )
+        })?;
 
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -198,54 +224,54 @@ pub fn test_https_blocking(use_sudo: bool) {
             panic!("Failed to execute httpjail: {}", e);
         }
     }
-}
 
-/// Test that HTTPS is allowed with proper JS rule
-pub fn test_https_allow(use_sudo: bool) {
-    let mut cmd = HttpjailCommand::new();
+    /// Test that HTTPS is allowed with proper JS rule
+    pub fn test_https_allow(use_sudo: bool) {
+        let mut cmd = HttpjailCommand::new();
 
-    if use_sudo {
-        cmd = cmd.sudo();
-    } else {
-        cmd = cmd.weak();
-    }
-
-    let result = cmd
-        .js("/ifconfig\\.me/.test(r.host)")
-        .verbose(2)
-        .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
-        .execute();
-
-    match result {
-        Ok((exit_code, stdout, stderr)) => {
-            println!("HTTPS allow test - Exit code: {}", exit_code);
-            println!("Stdout: {}", stdout);
-            println!("Stderr: {}", stderr);
-
-            if use_sudo {
-                assert!(
-                    !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
-                    "Request should not be blocked when allowed"
-                );
-            } else {
-                assert_eq!(
-                    exit_code, 0,
-                    "Expected curl to succeed in weak mode, got exit code: {}",
-                    exit_code
-                );
-
-                use std::str::FromStr;
-                assert!(
-                    std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
-                        || std::net::Ipv6Addr::from_str(stdout.trim()).is_ok()
-                        || !stdout.trim().is_empty(),
-                    "Expected to see valid response content, got: '{}'",
-                    stdout
-                );
-            }
+        if use_sudo {
+            cmd = cmd.sudo();
+        } else {
+            cmd = cmd.weak();
         }
-        Err(e) => {
-            panic!("Failed to execute httpjail: {}", e);
+
+        let result = cmd
+            .js("/ifconfig\\.me/.test(r.host)")
+            .verbose(2)
+            .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
+            .execute();
+
+        match result {
+            Ok((exit_code, stdout, stderr)) => {
+                println!("HTTPS allow test - Exit code: {}", exit_code);
+                println!("Stdout: {}", stdout);
+                println!("Stderr: {}", stderr);
+
+                if use_sudo {
+                    assert!(
+                        !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
+                        "Request should not be blocked when allowed"
+                    );
+                } else {
+                    assert_eq!(
+                        exit_code, 0,
+                        "Expected curl to succeed in weak mode, got exit code: {}",
+                        exit_code
+                    );
+
+                    use std::str::FromStr;
+                    assert!(
+                        std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
+                            || std::net::Ipv6Addr::from_str(stdout.trim()).is_ok()
+                            || !stdout.trim().is_empty(),
+                        "Expected to see valid response content, got: '{}'",
+                        stdout
+                    );
+                }
+            }
+            Err(e) => {
+                panic!("Failed to execute httpjail: {}", e);
+            }
         }
     }
 }
