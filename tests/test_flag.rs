@@ -1,4 +1,4 @@
-// <--- Begin of necessary code edit 
+// <--- Begin of necessary code edit
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
@@ -76,4 +76,4 @@ fn test_httpjail_test_flag_default_get() {
         .stdout(predicate::str::contains("ALLOW GET https://example.com"));
 }
 
-// <--- End of necessary code edit 
+// <--- End of necessary code edit
