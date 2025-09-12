@@ -81,14 +81,6 @@ struct Args {
     server: bool,
 
     /// Evaluate rule against a URL and exit (dry-run)
-    /// Format: [METHOD] URL
-    /// If METHOD is provided, it must be separated from URL by a space.
-    /// Valid methods: GET, POST, PUT, DELETE, HEAD, OPTIONS, CONNECT, PATCH, TRACE
-    /// If METHOD is not provided, defaults to GET.
-    /// Examples:
-    ///   --test "https://example.com"              (defaults to GET)
-    ///   --test "POST https://api.example.com"
-    ///   --test "DELETE https://example.com/resource"
     #[arg(
         long = "test",
         value_name = "[METHOD] URL",
