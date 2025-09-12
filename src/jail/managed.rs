@@ -4,34 +4,42 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
 use crate::jail::get_canary_dir;
 
 /// Manages jail lifecycle and cleanup with automatic cleanup on drop
-pub struct ManagedJail<J: crate::jail::Jail> {
+pub struct ManagedJail<J: Jail> {
     jail: J,
-    jail_id: String,
+    
+    // Lifecycle management fields
+    canary_dir: PathBuf,
     canary_path: PathBuf,
-    no_cleanup: bool,
+    heartbeat_interval: Duration,
+    orphan_timeout: Duration,
+    enable_heartbeat: bool,
+    
+    // Heartbeat control
+    stop_heartbeat: Arc<AtomicBool>,
+    heartbeat_handle: Option<JoinHandle<()>>,
 }
 
-impl<J: crate::jail::Jail> ManagedJail<J> {
-    pub fn new(mut jail: J, config: &JailConfig, no_cleanup: bool) -> Result<Self> {
-        let jail_id = config.jail_id.clone();
-
-        // Create canary file to track jail lifetime
+impl<J: Jail> ManagedJail<J> {
+    pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
         let canary_dir = get_canary_dir();
-        std::fs::create_dir_all(&canary_dir).ok();
         let canary_path = canary_dir.join(&config.jail_id);
-
+        
         Ok(Self {
             jail,
-            jail_id,
+            canary_dir,
             canary_path,
-            no_cleanup,
+            heartbeat_interval: Duration::from_secs(config.heartbeat_interval_secs),
+            orphan_timeout: Duration::from_secs(config.orphan_timeout_secs),
+            enable_heartbeat: config.enable_heartbeat,
+            stop_heartbeat: Arc::new(AtomicBool::new(false)),
+            heartbeat_handle: None,
         })
     }
 
