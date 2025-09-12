@@ -31,8 +31,27 @@ pub fn build_httpjail() -> Result<String, String> {
 
             match output {
                 Ok(output) if output.status.success() => {
-                    eprintln!("Successfully built httpjail binary");
-                    Ok(binary_path.to_string())
+                    // Verify the binary actually exists after build
+                    if std::path::Path::new(binary_path).exists() {
+                        eprintln!("Successfully built httpjail binary at {}", binary_path);
+                        Ok(binary_path.to_string())
+                    } else {
+                        Err(format!(
+                            "Build command succeeded but binary not found at {}. \n\
+                            Current directory: {:?}\n\
+                            Contents of target/debug: {:?}",
+                            binary_path,
+                            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
+                            std::fs::read_dir("target/debug")
+                                .map(|entries| {
+                                    entries
+                                        .filter_map(|e| e.ok())
+                                        .filter_map(|e| e.file_name().into_string().ok())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        ))
+                    }
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
