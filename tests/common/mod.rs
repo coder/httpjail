@@ -9,14 +9,32 @@ static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
+            // First check if HTTPJAIL_BIN is set (e.g., by CI)
+            if let Ok(bin_path) = std::env::var("HTTPJAIL_BIN") {
+                if std::path::Path::new(&bin_path).exists() {
+                    eprintln!("Using httpjail binary from HTTPJAIL_BIN: {}", bin_path);
+                    return Ok(bin_path);
+                }
+            }
+
+            // Determine the target directory
+            let target_dir = std::env::var("CARGO_TARGET_DIR")
+                .unwrap_or_else(|_| "target".to_string());
+
             // Check if the binary already exists
-            let binary_path = "target/debug/httpjail";
-            if std::path::Path::new(binary_path).exists() {
-                return Ok(binary_path.to_string());
+            let binary_path = format!("{}/debug/httpjail", target_dir);
+            if std::path::Path::new(&binary_path).exists() {
+                return Ok(binary_path);
+            }
+
+            // Also check the default location in case CARGO_TARGET_DIR is not set
+            let default_path = "target/debug/httpjail";
+            if std::path::Path::new(default_path).exists() {
+                return Ok(default_path.to_string());
             }
 
             // Binary doesn't exist, try to build it
-            eprintln!("httpjail binary not found at {}, attempting to build...", binary_path);
+            eprintln!("httpjail binary not found at {} or {}, attempting to build...", binary_path, default_path);
 
             let output = Command::new("cargo")
                 .args(["build", "--bin", "httpjail"])
@@ -31,17 +49,35 @@ pub fn build_httpjail() -> Result<String, String> {
 
             match output {
                 Ok(output) if output.status.success() => {
-                    // Verify the binary actually exists after build
-                    if std::path::Path::new(binary_path).exists() {
+                    // Check both possible locations after build
+                    if std::path::Path::new(&binary_path).exists() {
                         eprintln!("Successfully built httpjail binary at {}", binary_path);
-                        Ok(binary_path.to_string())
+                        Ok(binary_path)
+                    } else if std::path::Path::new(default_path).exists() {
+                        eprintln!("Successfully built httpjail binary at {}", default_path);
+                        Ok(default_path.to_string())
                     } else {
+                        // If still not found, provide diagnostic information
+                        let target_debug = format!("{}/debug", target_dir);
                         Err(format!(
-                            "Build command succeeded but binary not found at {}. \n\
+                            "Build command succeeded but binary not found at {} or {}. \n\
                             Current directory: {:?}\n\
+                            CARGO_TARGET_DIR: {:?}\n\
+                            Contents of {}: {:?}\n\
                             Contents of target/debug: {:?}",
                             binary_path,
+                            default_path,
                             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
+                            std::env::var("CARGO_TARGET_DIR").ok(),
+                            target_debug,
+                            std::fs::read_dir(&target_debug)
+                                .map(|entries| {
+                                    entries
+                                        .filter_map(|e| e.ok())
+                                        .filter_map(|e| e.file_name().into_string().ok())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default(),
                             std::fs::read_dir("target/debug")
                                 .map(|entries| {
                                     entries

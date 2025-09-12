@@ -35,8 +35,20 @@ jobs:
       - name: Build httpjail binary
         run: |
           cargo build --bin httpjail
-          echo "Binary built at: $(pwd)/target/debug/httpjail"
-          ls -la target/debug/httpjail || echo "Binary not found!"
+          # Find and export the actual binary location
+          if [ -f "target/debug/httpjail" ]; then
+            export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+          elif [ -f "${CARGO_TARGET_DIR}/debug/httpjail" ]; then
+            export HTTPJAIL_BIN="${CARGO_TARGET_DIR}/debug/httpjail"
+          else
+            echo "Error: httpjail binary not found after build!"
+            find . -name httpjail -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "Binary built at: ${HTTPJAIL_BIN}"
+          ls -la "${HTTPJAIL_BIN}" || echo "Binary not found!"
+          # Export for subsequent steps
+          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
       - name: Run all tests
         run: cargo nextest run --profile ci
@@ -96,8 +108,20 @@ jobs:
         run: |
           source ~/.cargo/env
           cargo build --bin httpjail
-          echo "Binary built at: $(pwd)/target/debug/httpjail"
-          ls -la target/debug/httpjail || echo "Binary not found!"
+          # Find and export the actual binary location
+          if [ -f "target/debug/httpjail" ]; then
+            export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+          elif [ -f "${CARGO_TARGET_DIR}/debug/httpjail" ]; then
+            export HTTPJAIL_BIN="${CARGO_TARGET_DIR}/debug/httpjail"
+          else
+            echo "Error: httpjail binary not found after build!"
+            find . -name httpjail -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "Binary built at: ${HTTPJAIL_BIN}"
+          ls -la "${HTTPJAIL_BIN}" || echo "Binary not found!"
+          # Export for subsequent steps
+          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
       - name: Run all tests (non-root)
         run: |
