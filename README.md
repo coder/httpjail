@@ -237,6 +237,7 @@ All request information is available via the `r` object:
 - `r.host` - Hostname from the URL
 - `r.scheme` - URL scheme (http or https)
 - `r.path` - Path portion of the URL
+- `r.requester_ip` - IP address of the client making the request
 - `r.block_message` - Optional message to set when denying (writable)
 
 **JavaScript evaluation rules:**
