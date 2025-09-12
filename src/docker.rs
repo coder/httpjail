@@ -2,8 +2,31 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use tracing::{debug, info, warn};
+
+/// A wrapper around Child that kills the process on drop
+struct NamespaceHolder {
+    child: Child,
+    namespace_name: String,
+}
+
+impl NamespaceHolder {
+    fn new(child: Child, namespace_name: String) -> Self {
+        Self {
+            child,
+            namespace_name,
+        }
+    }
+}
+
+impl Drop for NamespaceHolder {
+    fn drop(&mut self) {
+        debug!("Cleaning up namespace holder for {}", self.namespace_name);
+        self.child.kill().ok();
+        self.child.wait().ok();
+    }
+}
 
 /// Execute Docker container with httpjail network isolation
 ///
@@ -22,7 +45,8 @@ pub async fn execute_docker_run(
     let namespace_name = format!("httpjail_{}", jail_id);
 
     // Ensure the namespace is accessible to Docker
-    ensure_namespace_mounted(&namespace_name)?;
+    // The holder will automatically clean up when dropped
+    let _namespace_holder = ensure_namespace_mounted(&namespace_name)?;
 
     // Build and execute the docker command
     let mut cmd = build_docker_command(&namespace_name, docker_args, extra_env)?;
@@ -38,95 +62,46 @@ pub async fn execute_docker_run(
         .status()
         .context("Failed to execute docker run command")?;
 
-    // Clean up the namespace mount point if we created it
-    cleanup_namespace_mount(&namespace_name);
+    // The namespace holder will be automatically cleaned up on drop
 
     Ok(status)
 }
 
-/// Ensure the network namespace is mounted and accessible to Docker
+/// Ensure there's a process in the namespace so Docker can use it
+/// Returns a holder that keeps the process alive
 #[cfg(target_os = "linux")]
-fn ensure_namespace_mounted(namespace_name: &str) -> Result<()> {
-    // Ensure /var/run/netns directory exists
-    let netns_dir = Path::new("/var/run/netns");
-    if !netns_dir.exists() {
-        std::fs::create_dir_all(netns_dir).context("Failed to create /var/run/netns directory")?;
-    }
-
-    // Check if namespace is already accessible
-    let output = Command::new("ip")
-        .args(["netns", "list"])
-        .output()
-        .context("Failed to list network namespaces")?;
-
-    let namespaces = String::from_utf8_lossy(&output.stdout);
-    if namespaces.contains(namespace_name) {
-        debug!("Namespace {} already mounted", namespace_name);
-        return Ok(());
-    }
-
-    // Mount the namespace for Docker access
-    mount_namespace(namespace_name)?;
-
-    Ok(())
-}
-
-/// Mount the namespace to /var/run/netns for Docker access
-#[cfg(target_os = "linux")]
-fn mount_namespace(namespace_name: &str) -> Result<()> {
-    debug!("Mounting namespace {} to /var/run/netns", namespace_name);
-
-    let namespace_path = format!("/var/run/netns/{}", namespace_name);
-
-    // Create the mount point file
-    std::fs::File::create(&namespace_path).context("Failed to create namespace mount point")?;
-
-    // Find the PID of any process already running in the namespace
-    // httpjail keeps a process alive in the namespace, so we can use that
-    let output = Command::new("ip")
-        .args(["netns", "pids", namespace_name])
-        .output()
-        .context("Failed to get PIDs in namespace")?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "Failed to get PIDs from namespace: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let pids_str = String::from_utf8_lossy(&output.stdout);
-    let first_pid = pids_str
-        .lines()
-        .next()
-        .and_then(|line| line.trim().parse::<u32>().ok())
-        .context("No process found in namespace")?;
-
-    let proc_ns = format!("/proc/{}/ns/net", first_pid);
-
-    // Verify the namespace file exists
-    if !Path::new(&proc_ns).exists() {
-        anyhow::bail!("Namespace file {} does not exist", proc_ns);
-    }
-
-    // Bind mount the namespace
-    let mount_status = Command::new("mount")
-        .args(["--bind", &proc_ns, &namespace_path])
-        .status()
-        .context("Failed to bind mount namespace")?;
-
-    if !mount_status.success() {
-        // Clean up the mount point if mount failed
-        std::fs::remove_file(&namespace_path).ok();
-        anyhow::bail!("Failed to bind mount namespace");
-    }
-
+fn ensure_namespace_mounted(namespace_name: &str) -> Result<Option<NamespaceHolder>> {
+    // The namespace should already exist from the strong jail setup
+    // We just need to ensure there's a process in it for Docker
     debug!(
-        "Mounted namespace at {} using PID {}",
-        namespace_path, first_pid
+        "Starting holder process in namespace {} for Docker",
+        namespace_name
     );
 
-    Ok(())
+    // Start a minimal process in the namespace that will keep it alive
+    // We use sleep infinity which uses minimal resources
+    let namespace_holder = Command::new("ip")
+        .args([
+            "netns",
+            "exec",
+            namespace_name,
+            "sh",
+            "-c",
+            "exec sleep infinity",
+        ])
+        .spawn()
+        .context("Failed to spawn holder process in namespace")?;
+
+    let holder_pid = namespace_holder.id();
+    debug!(
+        "Started holder process {} in namespace {}",
+        holder_pid, namespace_name
+    );
+
+    Ok(Some(NamespaceHolder::new(
+        namespace_holder,
+        namespace_name.to_string(),
+    )))
 }
 
 /// Build the docker command with network namespace and environment variables
@@ -184,18 +159,6 @@ fn filter_network_args(docker_args: &[String]) -> Vec<String> {
     }
 
     modified_args
-}
-
-/// Clean up the namespace mount point
-#[cfg(target_os = "linux")]
-fn cleanup_namespace_mount(namespace_name: &str) {
-    let namespace_path = format!("/var/run/netns/{}", namespace_name);
-
-    if Path::new(&namespace_path).exists() {
-        Command::new("umount").arg(&namespace_path).status().ok();
-        std::fs::remove_file(&namespace_path).ok();
-        debug!("Cleaned up namespace mount at {}", namespace_path);
-    }
 }
 
 /// Stub implementation for non-Linux platforms
