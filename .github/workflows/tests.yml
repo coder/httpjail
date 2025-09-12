@@ -94,7 +94,7 @@ jobs:
       - name: Run weak mode integration tests (Linux)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci weak_integration
+          cargo nextest run --profile ci --test weak_integration
 
       - name: Run Linux jail integration tests (sudo)
         run: |
