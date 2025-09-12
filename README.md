@@ -51,6 +51,9 @@ httpjail --server --js "true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 # Configure your application:
 # HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443
+
+# Run Docker containers with network isolation (Linux only)
+httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest sh -c "apk add curl && curl https://api.github.com"
 ```
 
 ## Architecture Overview
