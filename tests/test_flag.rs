@@ -1,3 +1,5 @@
+// <--- Begin of necessary code edit
+
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
@@ -74,3 +76,5 @@ fn test_httpjail_test_flag_default_get() {
         .success()
         .stdout(predicate::str::contains("ALLOW GET https://example.com"));
 }
+
+// <--- End of necessary code edit
