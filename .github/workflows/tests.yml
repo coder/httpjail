@@ -91,6 +91,11 @@ jobs:
       - name: Install dependencies for weak mode (curl)
         run: sudo apt-get update && sudo apt-get install -y curl
 
+      - name: Build httpjail binary for weak tests
+        run: |
+          source ~/.cargo/env
+          cargo build --bin httpjail
+
       - name: Run weak mode integration tests (Linux)
         run: |
           source ~/.cargo/env
