@@ -71,16 +71,49 @@ In regular operation of the CLI-only jail (non-server mode), info and warn logs 
 
 The Linux CI tests run on a self-hosted runner (`ci-1`) in GCP. Only Coder employees can directly SSH into this instance for debugging.
 
-To debug CI failures on Linux:
-```bash
-gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail
-```
-
 The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. **IMPORTANT: Never modify files in this directory directly as it will interfere with running CI jobs.**
 
-### Testing Local Changes on CI
+### CI Helper Scripts
 
-When testing local changes on the CI instance, always work in a fresh directory named after your branch:
+Helper scripts are provided in `./scripts/` to simplify CI operations:
+
+```bash
+# SSH into CI-1 instance
+./scripts/ci-ssh.sh
+
+# Sync local changes to CI (without committing)
+./scripts/ci-sync.sh [branch-name]
+
+# Build on CI
+./scripts/ci-build.sh [branch-name] [profile]  # profile: debug, release, or fast
+
+# Run tests on CI
+./scripts/ci-test.sh [branch-name] [test-filter]
+
+# Run httpjail directly on CI
+./scripts/ci-run.sh [branch-name] [httpjail-args...]
+```
+
+#### Example Workflow
+
+```bash
+# Sync and build your changes
+./scripts/ci-sync.sh
+./scripts/ci-build.sh
+
+# Run specific tests
+./scripts/ci-test.sh docker-run docker_run
+
+# Quick test with httpjail
+./scripts/ci-run.sh docker-run --js 'true' -- echo hello
+
+# Interactive debugging
+./scripts/ci-ssh.sh
+```
+
+### Manual Testing on CI
+
+If you prefer manual commands or need more control:
 
 ```bash
 # Set up a fresh workspace for your branch
@@ -100,9 +133,8 @@ gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-ce
 gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
   cd /tmp/httpjail-$BRANCH_NAME
   export CARGO_HOME=/home/ci/.cargo
-  export CARGO_TARGET_DIR=/home/ci/.cargo/shared-target
   /home/ci/.cargo/bin/cargo build --profile fast
-  sudo /home/ci/.cargo/shared-target/fast/httpjail --help
+  sudo ./target/fast/httpjail --help
 "
 ```
 
