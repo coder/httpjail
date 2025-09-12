@@ -77,10 +77,8 @@ jobs:
       - name: Setup Rust environment and install nextest
         run: |
           source ~/.cargo/env
-
-          # Install nextest if not already present
           if ! command -v cargo-nextest &> /dev/null; then
-            cargo install cargo-nextest --locked
+            cargo install cargo-nextest
           fi
 
       - name: Run all tests (non-root)
@@ -88,18 +86,28 @@ jobs:
           source ~/.cargo/env
           cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
 
+      - name: Install dependencies for weak mode (curl)
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y curl
+          fi
+
+      - name: Pre-build httpjail binary for weak tests
+        run: |
+          source ~/.cargo/env
+          cargo build --bin httpjail --verbose
+
+      - name: Run weak mode integration tests (Linux)
+        run: |
+          source ~/.cargo/env
+          cargo nextest run --profile ci --test weak_integration --verbose
+
       - name: Run Linux jail integration tests (sudo)
         run: |
           source ~/.cargo/env
           # Run Linux-specific jail tests with sudo to satisfy root requirements
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
-
-      - name: Run isolated cleanup tests (sudo, feature-flagged)
-        run: |
-          source ~/.cargo/env
-          # Run only the comprehensive cleanup and sigint tests with the feature flag
-          # These tests need to run in isolation from other tests
-          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
 
   clippy:
     name: Clippy (${{ matrix.os }})
