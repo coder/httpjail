@@ -121,28 +121,24 @@ impl Default for JailConfig {
 /// Create a platform-specific jail implementation wrapped with lifecycle management
 pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
     use self::weak::WeakJail;
-
+    
     // Always use weak jail on macOS due to PF limitations
     // (PF translation rules cannot match on user/group)
     #[cfg(target_os = "macos")]
     {
-        use self::managed::ManagedJail;
         let _ = weak_mode; // Suppress unused warning on macOS
-        Ok(Box::new(ManagedJail::new(
-            WeakJail::new(config.clone())?,
-            &config,
-        )?))
+        // WeakJail doesn't need lifecycle management since it creates no system resources
+        Ok(Box::new(WeakJail::new(config)?))
     }
 
     #[cfg(target_os = "linux")]
     {
         use self::linux::LinuxJail;
         if weak_mode {
-            Ok(Box::new(self::managed::ManagedJail::new(
-                WeakJail::new(config.clone())?,
-                &config,
-            )?))
+            // WeakJail doesn't need lifecycle management since it creates no system resources
+            Ok(Box::new(WeakJail::new(config)?))
         } else {
+            // LinuxJail creates system resources (namespaces, iptables) that need cleanup
             Ok(Box::new(self::managed::ManagedJail::new(
                 LinuxJail::new(config.clone())?,
                 &config,
