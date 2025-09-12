@@ -29,6 +29,16 @@ When testing behavior outside of the strong jailing, use `--weak` for an environ
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.
 
+### Integration Tests
+
+The integration tests use the `HTTPJAIL_BIN` environment variable to determine which binary to test.
+Always set this to the most up-to-date binary before running tests:
+
+```bash
+export HTTPJAIL_BIN=/path/to/httpjail
+cargo test --test linux_integration
+```
+
 ## Cargo Cache
 
 Occasionally you will encounter permissions issues due to running the tests under sudo. In these cases,

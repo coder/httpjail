@@ -25,6 +25,17 @@ impl Drop for NamespaceHolder {
         debug!("Cleaning up namespace holder for {}", self.namespace_name);
         self.child.kill().ok();
         self.child.wait().ok();
+
+        // Clean up the Docker namespace mount if it exists
+        let docker_ns_path = format!("/var/run/docker/netns/{}", self.namespace_name);
+        if Path::new(&docker_ns_path).exists() {
+            Command::new("umount").arg(&docker_ns_path).status().ok();
+            std::fs::remove_file(&docker_ns_path).ok();
+            debug!(
+                "Cleaned up Docker namespace mount for {}",
+                self.namespace_name
+            );
+        }
     }
 }
 
@@ -67,16 +78,13 @@ pub async fn execute_docker_run(
     Ok(status)
 }
 
-/// Ensure there's a process in the namespace so Docker can use it
+/// Ensure there's a process in the namespace and it's visible to Docker
 /// Returns a holder that keeps the process alive
 #[cfg(target_os = "linux")]
 fn ensure_namespace_mounted(namespace_name: &str) -> Result<Option<NamespaceHolder>> {
     // The namespace should already exist from the strong jail setup
-    // We just need to ensure there's a process in it for Docker
-    debug!(
-        "Starting holder process in namespace {} for Docker",
-        namespace_name
-    );
+    // We need to ensure there's a process in it and make it visible to Docker
+    debug!("Setting up namespace {} for Docker", namespace_name);
 
     // Start a minimal process in the namespace that will keep it alive
     // We use sleep infinity which uses minimal resources
@@ -98,6 +106,41 @@ fn ensure_namespace_mounted(namespace_name: &str) -> Result<Option<NamespaceHold
         holder_pid, namespace_name
     );
 
+    // Docker looks for namespaces in /var/run/docker/netns, not /var/run/netns
+    // We need to make our namespace visible there
+    let docker_netns_dir = Path::new("/var/run/docker/netns");
+    if !docker_netns_dir.exists() {
+        std::fs::create_dir_all(docker_netns_dir)
+            .context("Failed to create Docker netns directory")?;
+    }
+
+    let docker_ns_path = format!("/var/run/docker/netns/{}", namespace_name);
+    let system_ns_path = format!("/var/run/netns/{}", namespace_name);
+
+    // Create a bind mount from the system namespace to Docker's directory
+    if !Path::new(&docker_ns_path).exists() {
+        // Create the target file
+        std::fs::File::create(&docker_ns_path)
+            .context("Failed to create Docker namespace mount point")?;
+
+        // Bind mount the existing namespace to Docker's directory
+        let mount_status = Command::new("mount")
+            .args(["--bind", &system_ns_path, &docker_ns_path])
+            .status()
+            .context("Failed to bind mount namespace to Docker directory")?;
+
+        if !mount_status.success() {
+            // Clean up on failure
+            std::fs::remove_file(&docker_ns_path).ok();
+            anyhow::bail!("Failed to make namespace visible to Docker");
+        }
+
+        debug!(
+            "Made namespace {} visible to Docker at {}",
+            namespace_name, docker_ns_path
+        );
+    }
+
     Ok(Some(NamespaceHolder::new(
         namespace_holder,
         namespace_name.to_string(),
@@ -118,10 +161,10 @@ fn build_docker_command(
     let mut cmd = Command::new("docker");
     cmd.arg("run");
 
-    // Add our network namespace
+    // Add our network namespace (using Docker's netns directory)
     cmd.args([
         "--network",
-        &format!("ns:/var/run/netns/{}", namespace_name),
+        &format!("ns:/var/run/docker/netns/{}", namespace_name),
     ]);
 
     // Add CA certificate environment variables
