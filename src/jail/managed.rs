@@ -2,10 +2,13 @@ use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, SystemTime};
-use tracing::{debug, info};
+use tracing::{debug, error, info, warn};
 
-use crate::jail::{JailConfig, JailError, get_canary_dir};
+use crate::jail::get_canary_dir;
 
 /// Manages jail lifecycle and cleanup with automatic cleanup on drop
 pub struct ManagedJail<J: crate::jail::Jail> {
@@ -16,14 +19,11 @@ pub struct ManagedJail<J: crate::jail::Jail> {
 }
 
 impl<J: crate::jail::Jail> ManagedJail<J> {
-    pub fn new(mut jail: J, config: &JailConfig, no_cleanup: bool) -> Result<Self, JailError> {
+    pub fn new(mut jail: J, config: &JailConfig, no_cleanup: bool) -> Result<Self> {
         let jail_id = config.jail_id.clone();
 
         // Create canary file to track jail lifetime
--        let canary_dir = dirs::data_local_dir()
--            .unwrap_or_else(|| PathBuf::from("/var/lib"))
--            .join("httpjail");
-+        let canary_dir = get_canary_dir();
+        let canary_dir = get_canary_dir();
         std::fs::create_dir_all(&canary_dir).ok();
         let canary_path = canary_dir.join(&config.jail_id);
 
