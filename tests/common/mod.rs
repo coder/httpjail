@@ -28,16 +28,29 @@ pub fn build_httpjail() -> Result<String, String> {
             let bin_path = format!("{}/debug/httpjail", target_dir);
 
             if std::path::Path::new(&bin_path).exists() {
-                Ok(bin_path)
-            } else {
-                Err(format!(
-                    "Built binary not found at {} (CARGO_TARGET_DIR={:?})\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
-                    bin_path,
-                    std::env::var("CARGO_TARGET_DIR").ok(),
-                    stdout,
-                    stderr
-                ))
+                return Ok(bin_path);
             }
+
+            // Simple fallback: look for target/<triple>/debug/httpjail (one level deep)
+            if let Ok(entries) = std::fs::read_dir(&target_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let candidate = p.join("debug/httpjail");
+                        if candidate.exists() {
+                            return Ok(candidate.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+
+            Err(format!(
+                "Built binary not found at {} (CARGO_TARGET_DIR={:?})\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
+                format!("{}/debug/httpjail", target_dir),
+                std::env::var("CARGO_TARGET_DIR").ok(),
+                stdout,
+                stderr
+            ))
         })
         .clone()
 }
