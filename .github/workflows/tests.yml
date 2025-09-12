@@ -86,7 +86,6 @@ jobs:
       - name: Run all tests (non-root)
         run: |
           source ~/.cargo/env
-          cargo build --bin httpjail
           cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
 
       - name: Install dependencies for weak mode (curl)
