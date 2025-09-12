@@ -9,29 +9,33 @@ static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
-            let status = Command::new("cargo")
+            let output = Command::new("cargo")
                 .args(["build", "--bin", "httpjail"])
-                .status()
+                .output()
                 .map_err(|e| format!("Failed to execute 'cargo build --bin httpjail': {}", e))?;
 
-            if !status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if !output.status.success() {
                 return Err(format!(
-                    "cargo build failed with status {:?}",
-                    status.code()
+                    "cargo build failed with status {:?}\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
+                    output.status.code(), stdout, stderr
                 ));
             }
 
-            let target_dir =
-                std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+            let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
             let bin_path = format!("{}/debug/httpjail", target_dir);
 
             if std::path::Path::new(&bin_path).exists() {
                 Ok(bin_path)
             } else {
                 Err(format!(
-                    "Built binary not found at {} (CARGO_TARGET_DIR={:?})",
+                    "Built binary not found at {} (CARGO_TARGET_DIR={:?})\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
                     bin_path,
-                    std::env::var("CARGO_TARGET_DIR").ok()
+                    std::env::var("CARGO_TARGET_DIR").ok(),
+                    stdout,
+                    stderr
                 ))
             }
         })
