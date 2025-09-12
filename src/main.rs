@@ -461,14 +461,12 @@ async fn main() -> Result<()> {
             info!("Received interrupt signal, cleaning up...");
             shutdown_clone.store(true, Ordering::SeqCst);
 
-            // Cleanup jail unless testing flag is set
-            if !no_cleanup {
-                if let Err(e) = jail_for_signal.cleanup() {
-                    warn!("Failed to cleanup jail on signal: {}", e);
-                }
+            // Attempt cleanup only if no_cleanup is false
+            if !no_cleanup && let Err(e) = jail_for_signal.cleanup() {
+                warn!("Failed to cleanup jail on signal: {}", e);
             }
 
-            // Exit with signal termination status
+            // Always exit with signal termination status
             std::process::exit(130); // 128 + SIGINT(2)
         }
     })
