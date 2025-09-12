@@ -66,6 +66,7 @@ fn test_httpjail_test_flag_with_method_deny() {
 
 #[test]
 fn test_httpjail_test_flag_default_get() {
+    // When no method is specified, it should default to GET
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
     cmd.arg("--js")
         .arg("r.method === 'GET'")

@@ -25,6 +25,11 @@ struct Args {
     #[arg(long = "sh", value_name = "PROG")]
     sh: Option<String>,
 
+    /// Use JavaScript (V8) for evaluating requests
+    /// The JavaScript code receives global variables:
+    ///   url, method, host, scheme, path
+    /// Should return true to allow the request, false to block it
+    /// Example: --js "return host === 'github.com' && method === 'GET'"
     #[arg(
         long = "js",
         value_name = "CODE",
@@ -33,6 +38,8 @@ struct Args {
     )]
     js: Option<String>,
 
+    /// Load JavaScript (V8) rule code from a file
+    /// Conflicts with --js
     #[arg(
         long = "js-file",
         value_name = "FILE",
@@ -41,24 +48,31 @@ struct Args {
     )]
     js_file: Option<String>,
 
+    /// Append requests to a log file
     #[arg(long = "request-log", value_name = "FILE")]
     request_log: Option<String>,
 
+    /// Use weak mode (environment variables only, no system isolation)
     #[arg(long = "weak")]
     weak: bool,
 
+    /// Increase verbosity (-vvv for max)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     verbose: u8,
 
+    /// Timeout for command execution in seconds
     #[arg(long = "timeout")]
     timeout: Option<u64>,
 
+    /// Skip jail cleanup (hidden flag for testing)
     #[arg(long = "no-jail-cleanup", hide = true)]
     no_jail_cleanup: bool,
 
+    /// Clean up orphaned jails and exit (for debugging)
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
+    /// Run as standalone proxy server (without executing a command)
     #[arg(
         long = "server",
         conflicts_with = "cleanup",
@@ -122,7 +136,7 @@ fn setup_logging(verbosity: u8) {
     }
 }
 
-// Direct orphan cleanup without creating jails
+/// Direct orphan cleanup without creating jails
 fn cleanup_orphans() -> Result<()> {
     use anyhow::Context;
     use std::fs;
