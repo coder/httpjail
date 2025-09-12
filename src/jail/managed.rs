@@ -9,11 +9,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
-/// A jail with lifecycle management (heartbeat and orphan cleanup)
+use crate::jail::get_canary_dir;
+
+/// Manages jail lifecycle and cleanup with automatic cleanup on drop
 pub struct ManagedJail<J: Jail> {
     jail: J,
 
-    // Lifecycle management fields (inlined from JailLifecycleManager)
+    // Lifecycle management fields
     canary_dir: PathBuf,
     canary_path: PathBuf,
     heartbeat_interval: Duration,
@@ -26,9 +28,8 @@ pub struct ManagedJail<J: Jail> {
 }
 
 impl<J: Jail> ManagedJail<J> {
-    /// Create a new managed jail
     pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
-        let canary_dir = PathBuf::from("/tmp/httpjail");
+        let canary_dir = get_canary_dir();
         let canary_path = canary_dir.join(&config.jail_id);
 
         Ok(Self {
