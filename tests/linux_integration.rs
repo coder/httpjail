@@ -59,8 +59,8 @@ mod tests {
 
         // Run httpjail
         let mut cmd = httpjail_cmd();
-        cmd.arg("-r")
-            .arg("allow: .*")
+        cmd.arg("--js")
+            .arg("true")
             .arg("--")
             .arg("echo")
             .arg("test");
@@ -140,8 +140,8 @@ mod tests {
 
         // 2. Run httpjail command
         let mut cmd = httpjail_cmd();
-        cmd.arg("-r")
-            .arg("allow: .*")
+        cmd.arg("--js")
+            .arg("true")
             .arg("--")
             .arg("echo")
             .arg("test");
@@ -240,8 +240,8 @@ mod tests {
         // Start httpjail with a long-running command using std::process::Command directly
         let httpjail_path = assert_cmd::cargo::cargo_bin("httpjail");
         let mut child = std::process::Command::new(&httpjail_path)
-            .arg("-r")
-            .arg("allow: .*")
+            .arg("--js")
+            .arg("true")
             .arg("--")
             .arg("sleep")
             .arg("60")
@@ -292,7 +292,7 @@ mod tests {
         // Attempt to connect to portquiz.net on port 81 (non-standard HTTP port)
         // Expectation: connection is blocked by namespace egress filter
         let mut cmd = httpjail_cmd();
-        cmd.arg("-r").arg("allow: .*") // proxy allows HTTP/HTTPS, but port 81 should be blocked
+        cmd.arg("--js").arg("true") // allow all requests through proxy
             .arg("--")
             .arg("sh")
             .arg("-c")

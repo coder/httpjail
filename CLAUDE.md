@@ -55,3 +55,17 @@ After modifying code, run `cargo fmt` to ensure consistent formatting before com
 ## Logging
 
 In regular operation of the CLI-only jail (non-server mode), info and warn logs are not permitted as they would interfere with the underlying process output. Only use debug level logs for normal operation and error logs for actual errors. The server mode (`--server`) may use info/warn logs as appropriate since it has no underlying process.
+
+## CI Debugging
+
+The Linux CI tests run on a self-hosted runner (`ci-1`) in GCP. Only Coder employees can directly SSH into this instance for debugging.
+
+To debug CI failures on Linux:
+```bash
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail
+```
+
+The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. Tests run as the `ci` user, not root. When building manually:
+```bash
+su - ci -c 'cd /home/ci/actions-runner/_work/httpjail/httpjail && cargo test'
+```
