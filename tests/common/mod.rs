@@ -24,11 +24,17 @@ pub fn build_httpjail() -> Result<String, String> {
                 ));
             }
 
-            let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
-            let bin_path = format!("{}/debug/httpjail", target_dir);
+            // Resolve target directory absolute path relative to the package root
+            let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let target_env = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+            let target_dir = {
+                let p = std::path::PathBuf::from(&target_env);
+                if p.is_absolute() { p } else { manifest_dir.join(p) }
+            };
 
-            if std::path::Path::new(&bin_path).exists() {
-                return Ok(bin_path);
+            let bin_path = target_dir.join("debug/httpjail");
+            if bin_path.exists() {
+                return Ok(bin_path.to_string_lossy().into_owned());
             }
 
             // Simple fallback: look for target/<triple>/debug/httpjail (one level deep)
@@ -45,8 +51,8 @@ pub fn build_httpjail() -> Result<String, String> {
             }
 
             Err(format!(
-                "Built binary not found at {} (CARGO_TARGET_DIR={:?})\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
-                format!("{}/debug/httpjail", target_dir),
+                "Built binary not found under {} (CARGO_TARGET_DIR={:?})\n--- cargo stdout ---\n{}\n--- cargo stderr ---\n{}",
+                target_dir.display(),
                 std::env::var("CARGO_TARGET_DIR").ok(),
                 stdout,
                 stderr
