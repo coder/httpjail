@@ -119,7 +119,11 @@ impl Default for JailConfig {
 }
 
 /// Create a platform-specific jail implementation wrapped with lifecycle management
-pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
+pub fn create_jail(
+    config: JailConfig,
+    weak_mode: bool,
+    docker_mode: bool,
+) -> Result<Box<dyn Jail>> {
     use self::weak::WeakJail;
 
     // Always use weak jail on macOS due to PF limitations
@@ -127,6 +131,7 @@ pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>>
     #[cfg(target_os = "macos")]
     {
         let _ = weak_mode; // Suppress unused warning on macOS
+        let _ = docker_mode; // Docker mode not supported on macOS
         // WeakJail doesn't need lifecycle management since it creates no system resources
         Ok(Box::new(WeakJail::new(config)?))
     }
@@ -134,9 +139,17 @@ pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>>
     #[cfg(target_os = "linux")]
     {
         use self::linux::LinuxJail;
+        use self::linux::docker::DockerLinux;
+
         if weak_mode {
             // WeakJail doesn't need lifecycle management since it creates no system resources
             Ok(Box::new(WeakJail::new(config)?))
+        } else if docker_mode {
+            // DockerLinux wraps LinuxJail with Docker-specific execution
+            Ok(Box::new(self::managed::ManagedJail::new(
+                DockerLinux::new(config.clone())?,
+                &config,
+            )?))
         } else {
             // LinuxJail creates system resources (namespaces, iptables) that need cleanup
             Ok(Box::new(self::managed::ManagedJail::new(

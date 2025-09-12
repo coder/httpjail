@@ -464,7 +464,7 @@ async fn main() -> Result<()> {
     jail_config.https_proxy_port = actual_https_port;
 
     // Create and setup jail
-    let mut jail = create_jail(jail_config.clone(), args.weak)?;
+    let mut jail = create_jail(jail_config.clone(), args.weak, args.docker_run)?;
 
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
@@ -515,11 +515,7 @@ async fn main() -> Result<()> {
     }
 
     // Execute command in jail with extra environment variables
-    let status = if args.docker_run {
-        // Handle Docker container execution
-        httpjail::docker::execute_docker_run(&jail_config.jail_id, &args.command, &extra_env)
-            .await?
-    } else if let Some(timeout_secs) = args.timeout {
+    let status = if let Some(timeout_secs) = args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
 
         // Use tokio to handle timeout
