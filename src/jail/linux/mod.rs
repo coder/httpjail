@@ -1,7 +1,8 @@
 mod nftables;
 mod resources;
 
-use super::{Jail, JailConfig};
+use super::Jail;
+use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
@@ -500,9 +501,8 @@ nameserver 8.8.4.4\n",
             .join(format!("httpjail_resolv_{}.conf", &namespace_name))
             .to_string_lossy()
             .to_string();
-        std::fs::write(&temp_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n").map_err(|e| {
-            JailError::DnsSetup(format!("Failed to create temp resolv.conf: {}", e))
-        })?;
+        std::fs::write(&temp_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
 
         // First, try to directly write to /etc/resolv.conf in the namespace using echo
         let write_cmd = Command::new("ip")

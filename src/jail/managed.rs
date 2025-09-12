@@ -2,6 +2,7 @@ use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
