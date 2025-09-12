@@ -12,6 +12,52 @@ struct DockerNetwork {
     network_name: String,
 }
 
+/// Docker routing nftables resource that gets cleaned up on drop
+struct DockerRoutingTable {
+    jail_id: String,
+    table_name: String,
+}
+
+impl SystemResource for DockerRoutingTable {
+    fn create(jail_id: &str) -> Result<Self> {
+        let table_name = format!("httpjail_docker_{}", jail_id);
+        Ok(Self {
+            jail_id: jail_id.to_string(),
+            table_name,
+        })
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        debug!("Cleaning up Docker routing table: {}", self.table_name);
+
+        let output = Command::new("nft")
+            .args(["delete", "table", "ip", &self.table_name])
+            .output()
+            .context("Failed to delete Docker routing table")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
+                warn!("Failed to delete Docker routing table: {}", stderr);
+            } else {
+                debug!("Docker routing table {} already removed", self.table_name);
+            }
+        } else {
+            info!("Removed Docker routing table {}", self.table_name);
+        }
+
+        Ok(())
+    }
+
+    fn for_existing(jail_id: &str) -> Self {
+        let table_name = format!("httpjail_docker_{}", jail_id);
+        Self {
+            jail_id: jail_id.to_string(),
+            table_name,
+        }
+    }
+}
+
 impl DockerNetwork {
     #[allow(dead_code)]
     fn new(jail_id: &str) -> Result<Self> {
@@ -139,6 +185,8 @@ pub struct DockerLinux {
     config: JailConfig,
     /// The Docker network resource
     docker_network: Option<ManagedResource<DockerNetwork>>,
+    /// The Docker routing table resource
+    docker_routing: Option<ManagedResource<DockerRoutingTable>>,
 }
 
 impl DockerLinux {
@@ -149,6 +197,7 @@ impl DockerLinux {
             inner_jail,
             config,
             docker_network: None,
+            docker_routing: None,
         })
     }
 
@@ -255,7 +304,7 @@ impl DockerLinux {
     }
 
     /// Setup nftables rules to route Docker network traffic to jail
-    fn setup_docker_routing(&self) -> Result<()> {
+    fn setup_docker_routing(&mut self) -> Result<()> {
         let docker_network = self
             .docker_network
             .as_ref()
@@ -327,27 +376,12 @@ impl DockerLinux {
             }
 
             info!("Docker routing rules applied successfully");
-        }
 
-        Ok(())
-    }
-
-    /// Cleanup Docker routing rules
-    fn cleanup_docker_routing(&self) -> Result<()> {
-        let table_name = format!("httpjail_docker_{}", self.config.jail_id);
-
-        let output = Command::new("nft")
-            .args(["delete", "table", "ip", &table_name])
-            .output()
-            .context("Failed to delete Docker routing table")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.contains("No such file or directory") {
-                warn!("Failed to delete Docker routing table: {}", stderr);
-            }
-        } else {
-            debug!("Cleaned up Docker routing table {}", table_name);
+            // Store the routing table as a managed resource for cleanup
+            // Note: We create the resource AFTER applying the rules
+            self.docker_routing = Some(ManagedResource::<DockerRoutingTable>::create(
+                &self.config.jail_id,
+            )?);
         }
 
         Ok(())
@@ -388,10 +422,7 @@ impl Jail for DockerLinux {
     }
 
     fn cleanup(&self) -> Result<()> {
-        // Cleanup Docker routing first
-        self.cleanup_docker_routing().ok();
-
-        // Docker network will be cleaned up automatically via ManagedResource drop
+        // Docker network and routing will be cleaned up automatically via ManagedResource drop
 
         // Delegate to inner jail for cleanup
         self.inner_jail.cleanup()
@@ -406,25 +437,9 @@ impl Jail for DockerLinux {
         Self: Sized,
     {
         // Clean up Docker-specific resources first
-
-        // Clean up orphaned Docker network
+        // These will be automatically cleaned up when they go out of scope
         let _docker_network = ManagedResource::<DockerNetwork>::for_existing(jail_id);
-
-        // Clean up orphaned Docker routing table
-        let table_name = format!("httpjail_docker_{}", jail_id);
-        let output = Command::new("nft")
-            .args(["delete", "table", "ip", &table_name])
-            .output()
-            .context("Failed to delete Docker routing table")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
-                warn!("Failed to delete orphaned Docker routing table: {}", stderr);
-            }
-        } else {
-            debug!("Cleaned up orphaned Docker routing table {}", table_name);
-        }
+        let _docker_routing = ManagedResource::<DockerRoutingTable>::for_existing(jail_id);
 
         // Then delegate to LinuxJail for standard orphan cleanup
         LinuxJail::cleanup_orphaned(jail_id)
@@ -437,6 +452,7 @@ impl Clone for DockerLinux {
             inner_jail: self.inner_jail.clone(),
             config: self.config.clone(),
             docker_network: None,
+            docker_routing: None,
         }
     }
 }
