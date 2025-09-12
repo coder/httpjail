@@ -62,7 +62,7 @@ impl ScriptRuleEngine {
         };
 
         // Wait for completion with timeout
-        let timeout = Duration::from_secs(5);
+        let timeout = Duration::from_secs(30);
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
