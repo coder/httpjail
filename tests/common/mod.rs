@@ -10,11 +10,11 @@ pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
             // First check if HTTPJAIL_BIN is set (e.g., by CI)
-            if let Ok(bin_path) = std::env::var("HTTPJAIL_BIN") {
-                if std::path::Path::new(&bin_path).exists() {
-                    eprintln!("Using httpjail binary from HTTPJAIL_BIN: {}", bin_path);
-                    return Ok(bin_path);
-                }
+            if let Ok(bin_path) = std::env::var("HTTPJAIL_BIN")
+                && std::path::Path::new(&bin_path).exists()
+            {
+                eprintln!("Using httpjail binary from HTTPJAIL_BIN: {}", bin_path);
+                return Ok(bin_path);
             }
 
             // Determine the target directory
