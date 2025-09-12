@@ -30,10 +30,16 @@ jobs:
           shared-key: ${{ runner.os }}
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Build httpjail binary
+        run: |
+          cargo build --bin httpjail
+          echo "Binary built at: $(pwd)/target/debug/httpjail"
+          ls -la target/debug/httpjail || echo "Binary not found!"
 
       - name: Run all tests
-        run: cargo nextest run --profile ci --verbose
+        run: cargo nextest run --profile ci
 
   test-linux:
     name: Linux Tests
@@ -81,7 +87,17 @@ jobs:
           cargo install cargo-nextest || true
 
       - name: Fix target directory permissions from previous runs
-        run: sudo chown -R $(whoami):$(whoami) target/ || true
+        run: |
+          if [ -d target ]; then
+            sudo chown -R ci:ci target || true
+          fi
+
+      - name: Build httpjail binary
+        run: |
+          source ~/.cargo/env
+          cargo build --bin httpjail
+          echo "Binary built at: $(pwd)/target/debug/httpjail"
+          ls -la target/debug/httpjail || echo "Binary not found!"
 
       - name: Run all tests (non-root)
         run: |
@@ -90,11 +106,6 @@ jobs:
 
       - name: Install dependencies for weak mode (curl)
         run: sudo apt-get update && sudo apt-get install -y curl
-
-      - name: Build httpjail binary for weak tests
-        run: |
-          source ~/.cargo/env
-          cargo build --bin httpjail
 
       - name: Run weak mode integration tests (Linux)
         run: |
