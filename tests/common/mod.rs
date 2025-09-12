@@ -4,14 +4,13 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 fn resolve_cargo_path() -> String {
-    // 1) Explicit CARGO env var
-    if let Ok(p) = std::env::var("CARGO") {
-        if !p.is_empty() && std::path::Path::new(&p).exists() {
-            return p;
-        }
+    if let Ok(p) = std::env::var("CARGO")
+        && !p.is_empty()
+        && std::path::Path::new(&p).exists()
+    {
+        return p;
     }
 
-    // 2) CARGO_HOME/bin/cargo
     if let Ok(ch) = std::env::var("CARGO_HOME") {
         let p = format!("{}/bin/cargo", ch);
         if std::path::Path::new(&p).exists() {
@@ -19,7 +18,6 @@ fn resolve_cargo_path() -> String {
         }
     }
 
-    // 3) HOME/.cargo/bin/cargo
     if let Ok(h) = std::env::var("HOME") {
         let p = format!("{}/.cargo/bin/cargo", h);
         if std::path::Path::new(&p).exists() {
@@ -27,7 +25,6 @@ fn resolve_cargo_path() -> String {
         }
     }
 
-    // 4) If running under sudo, try the invoking user's cargo
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         let p = format!("/home/{}/.cargo/bin/cargo", sudo_user);
         if std::path::Path::new(&p).exists() {
@@ -35,8 +32,26 @@ fn resolve_cargo_path() -> String {
         }
     }
 
-    // 5) Fallback to PATH lookup
     "cargo".to_string()
+}
+
+fn find_httpjail_in_target_dir(base: &std::path::Path) -> Option<String> {
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for entry in read.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if name == "httpjail" && path.is_file() {
+                        return Some(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
@@ -48,7 +63,7 @@ pub fn build_httpjail() -> Result<String, String> {
             // Always build to avoid accidentally using a stale binary
             let cargo = resolve_cargo_path();
             let output = Command::new(&cargo)
-                .args(["build", "--bin", "httpjail"])
+                .args(["build", "--bin", "httpjail", "--message-format", "json"])
                 .output()
                 .map_err(|e| {
                     format!(
@@ -60,53 +75,43 @@ pub fn build_httpjail() -> Result<String, String> {
 
             match output {
                 Ok(output) if output.status.success() => {
-                    // Determine the target directory
-                    let target_dir =
-                        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
-
-                    // Prefer CARGO_TARGET_DIR if set, otherwise default location
-                    let candidate_paths = [
-                        format!("{}/debug/httpjail", target_dir),
-                        "target/debug/httpjail".to_string(),
-                    ];
-
-                    for p in candidate_paths.iter() {
-                        if std::path::Path::new(p).exists() {
-                            eprintln!("Successfully built httpjail binary at {}", p);
-                            return Ok(p.clone());
+                    // Try to parse the executable path from cargo JSON messages
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                            let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+                            if reason == "compiler-artifact" {
+                                if let Some(exec) = v.get("executable").and_then(|e| e.as_str()) {
+                                    if !exec.is_empty() && std::path::Path::new(exec).exists() {
+                                        eprintln!("Successfully built httpjail binary at {}", exec);
+                                        return Ok(exec.to_string());
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    // If still not found, provide diagnostic information
-                    let target_debug = format!("{}/debug", target_dir);
+                    // Fallback: search target directory recursively
+                    let target_dir =
+                        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+                    let base = std::path::Path::new(&target_dir);
+                    if let Some(found) = find_httpjail_in_target_dir(base) {
+                        eprintln!("Successfully found httpjail binary at {}", found);
+                        return Ok(found);
+                    }
+
+                    // Provide diagnostics
                     Err(format!(
-                        "Build command succeeded but binary not found at expected locations. \n\
-                        Tried: {:?}.\n\
+                        "Build succeeded but could not locate httpjail executable.\n\
                         Current directory: {:?}\n\
                         CARGO_TARGET_DIR: {:?}\n\
-                        Contents of {}: {:?}\n\
-                        Contents of target/debug: {:?}",
-                        candidate_paths,
+                        Searched under: {:?}\n\
+                        Raw cargo stdout (truncated):\n{}",
                         std::env::current_dir()
                             .unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
                         std::env::var("CARGO_TARGET_DIR").ok(),
-                        target_debug,
-                        std::fs::read_dir(&target_debug)
-                            .map(|entries| {
-                                entries
-                                    .filter_map(|e| e.ok())
-                                    .filter_map(|e| e.file_name().into_string().ok())
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default(),
-                        std::fs::read_dir("target/debug")
-                            .map(|entries| {
-                                entries
-                                    .filter_map(|e| e.ok())
-                                    .filter_map(|e| e.file_name().into_string().ok())
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
+                        base,
+                        stdout.lines().take(50).collect::<Vec<_>>().join("\n")
                     ))
                 }
                 Ok(output) => {
