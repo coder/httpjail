@@ -81,9 +81,17 @@ struct Args {
     server: bool,
 
     /// Evaluate rule against a URL and exit (dry-run)
+    /// Format: [METHOD] URL
+    /// If METHOD is provided, it must be separated from URL by a space.
+    /// Valid methods: GET, POST, PUT, DELETE, HEAD, OPTIONS, CONNECT, PATCH, TRACE
+    /// If METHOD is not provided, defaults to GET.
+    /// Examples:
+    ///   --test "https://example.com"              (defaults to GET)
+    ///   --test "POST https://api.example.com"
+    ///   --test "DELETE https://example.com/resource"
     #[arg(
         long = "test",
-        value_name = "URL",
+        value_name = "[METHOD] URL",
         conflicts_with = "server",
         conflicts_with = "cleanup"
     )]
@@ -334,20 +342,47 @@ async fn main() -> Result<()> {
     };
 
     // Handle test (dry-run) mode: evaluate the rule against a URL and exit
-    if let Some(test_url) = &args.test {
+    if let Some(test_arg) = &args.test {
+        // Parse the test argument: if it contains two words, the first is the method
+        let (method, url) = if let Some(space_pos) = test_arg.find(' ') {
+            let method_str = &test_arg[..space_pos];
+            let url = &test_arg[space_pos + 1..].trim();
+
+            // Parse the method string
+            let method = match method_str.to_uppercase().as_str() {
+                "GET" => Method::GET,
+                "POST" => Method::POST,
+                "PUT" => Method::PUT,
+                "DELETE" => Method::DELETE,
+                "HEAD" => Method::HEAD,
+                "OPTIONS" => Method::OPTIONS,
+                "CONNECT" => Method::CONNECT,
+                "PATCH" => Method::PATCH,
+                "TRACE" => Method::TRACE,
+                _ => {
+                    eprintln!("Invalid HTTP method: {}", method_str);
+                    std::process::exit(1);
+                }
+            };
+            (method, url.to_string())
+        } else {
+            // Single word: default to GET
+            (Method::GET, test_arg.clone())
+        };
+
         let eval = rule_engine
-            .evaluate_with_context(Method::GET, test_url)
+            .evaluate_with_context(method.clone(), &url)
             .await;
         match eval.action {
             Action::Allow => {
-                println!("ALLOW GET {}", test_url);
+                println!("ALLOW {} {}", method, url);
                 if let Some(ctx) = eval.context {
                     println!("{}", ctx);
                 }
                 std::process::exit(0);
             }
             Action::Deny => {
-                println!("DENY GET {}", test_url);
+                println!("DENY {} {}", method, url);
                 if let Some(ctx) = eval.context {
                     println!("{}", ctx);
                 }
