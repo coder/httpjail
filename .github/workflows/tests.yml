@@ -96,12 +96,12 @@ jobs:
       - name: Pre-build httpjail binary for weak tests
         run: |
           source ~/.cargo/env
-          cargo build --bin httpjail --verbose
+          CARGO_TARGET_DIR=\"$GITHUB_WORKSPACE/target\" cargo build --bin httpjail --verbose
 
       - name: Run weak mode integration tests (Linux)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --test weak_integration --verbose
+          CARGO_TARGET_DIR=\"$GITHUB_WORKSPACE/target\" cargo nextest run --profile ci --test weak_integration --verbose
 
       - name: Run Linux jail integration tests (sudo)
         run: |
