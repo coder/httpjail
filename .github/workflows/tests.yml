@@ -38,17 +38,25 @@ jobs:
           # Find and export the actual binary location
           if [ -f "target/debug/httpjail" ]; then
             export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+            echo "Binary found at: ${HTTPJAIL_BIN}"
+            ls -la "${HTTPJAIL_BIN}"
+            echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
           elif [ -f "${CARGO_TARGET_DIR}/debug/httpjail" ]; then
             export HTTPJAIL_BIN="${CARGO_TARGET_DIR}/debug/httpjail"
+            echo "Binary found at: ${HTTPJAIL_BIN}"
+            ls -la "${HTTPJAIL_BIN}"
+            echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
           else
             echo "Error: httpjail binary not found after build!"
+            echo "Current directory: $(pwd)"
+            echo "Looking for httpjail binary..."
             find . -name httpjail -type f 2>/dev/null || true
+            echo "Contents of target directory:"
+            ls -la target/ 2>/dev/null || echo "target/ does not exist"
+            echo "Contents of target/debug directory:"
+            ls -la target/debug/ 2>/dev/null || echo "target/debug/ does not exist"
             exit 1
           fi
-          echo "Binary built at: ${HTTPJAIL_BIN}"
-          ls -la "${HTTPJAIL_BIN}" || echo "Binary not found!"
-          # Export for subsequent steps
-          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
       - name: Run all tests
         run: cargo nextest run --profile ci
@@ -111,17 +119,25 @@ jobs:
           # Find and export the actual binary location
           if [ -f "target/debug/httpjail" ]; then
             export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+            echo "Binary found at: ${HTTPJAIL_BIN}"
+            ls -la "${HTTPJAIL_BIN}"
+            echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
           elif [ -f "${CARGO_TARGET_DIR}/debug/httpjail" ]; then
             export HTTPJAIL_BIN="${CARGO_TARGET_DIR}/debug/httpjail"
+            echo "Binary found at: ${HTTPJAIL_BIN}"
+            ls -la "${HTTPJAIL_BIN}"
+            echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
           else
             echo "Error: httpjail binary not found after build!"
+            echo "Current directory: $(pwd)"
+            echo "Looking for httpjail binary..."
             find . -name httpjail -type f 2>/dev/null || true
+            echo "Contents of target directory:"
+            ls -la target/ 2>/dev/null || echo "target/ does not exist"
+            echo "Contents of target/debug directory:"
+            ls -la target/debug/ 2>/dev/null || echo "target/debug/ does not exist"
             exit 1
           fi
-          echo "Binary built at: ${HTTPJAIL_BIN}"
-          ls -la "${HTTPJAIL_BIN}" || echo "Binary not found!"
-          # Export for subsequent steps
-          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
       - name: Run all tests (non-root)
         run: |
