@@ -122,7 +122,7 @@ fn setup_logging(verbosity: u8) {
     }
 }
 
-/// Direct orphan cleanup without creating jails
+// Direct orphan cleanup without creating jails
 fn cleanup_orphans() -> Result<()> {
     use anyhow::Context;
     use std::fs;
