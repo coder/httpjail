@@ -32,23 +32,8 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run unit tests
-        run: cargo nextest run --profile ci --lib --verbose
-
-      - name: Run smoke tests
-        run: cargo nextest run --profile ci --test smoke_test --verbose
-
-      - name: Run script integration tests
-        run: cargo nextest run --profile ci --test script_integration --verbose
-
-      - name: Run weak mode integration tests
-        run: |
-          # On macOS, we only support weak mode due to PF limitations
-          # (PF translation rules cannot match on user/group)
-          cargo nextest run --profile ci --test weak_integration --verbose
+      - name: Run all tests
+        run: cargo nextest run --profile ci --verbose
 
   test-linux:
     name: Linux Tests
@@ -98,69 +83,23 @@ jobs:
             cargo install cargo-nextest --locked
           fi
 
-      - name: Build
+      - name: Run all tests (non-root)
         run: |
           source ~/.cargo/env
-          # Use incremental compilation for faster builds
-          export CARGO_INCREMENTAL=1
-          cargo build --verbose
+          cargo nextest run --profile ci --verbose
 
-      - name: Run unit tests
+      - name: Run Linux jail integration tests (sudo)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --lib --verbose
-
-      - name: Run smoke tests
-        run: |
-          source ~/.cargo/env
-          cargo nextest run --profile ci --test smoke_test --verbose
-
-      - name: Run script integration tests
-        run: |
-          source ~/.cargo/env
-          cargo nextest run --profile ci --test script_integration --verbose
-
-      - name: Run Linux jail integration tests
-        run: |
-          source ~/.cargo/env
-          # Run all tests without CI workarounds since this is a self-hosted runner
+          # Run Linux-specific jail tests with sudo to satisfy root requirements
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
-      - name: Run isolated cleanup tests
+      - name: Run isolated cleanup tests (sudo, feature-flagged)
         run: |
           source ~/.cargo/env
           # Run only the comprehensive cleanup and sigint tests with the feature flag
           # These tests need to run in isolation from other tests
           sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
-
-  test-weak:
-    name: Weak Mode Integration Tests (Linux)
-    runs-on: ubuntu-latest-8-cores
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run script integration tests
-        run: cargo nextest run --profile ci --test script_integration --verbose
-
-      - name: Run weak mode integration tests
-        run: cargo nextest run --profile ci --test weak_integration --verbose
 
   clippy:
     name: Clippy (${{ matrix.os }})
