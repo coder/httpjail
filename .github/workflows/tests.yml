@@ -86,7 +86,7 @@ jobs:
       - name: Run all tests (non-root)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --verbose
+          cargo nextest run --profile ci --verbose -E 'not (test(binary == "linux_integration"))'
 
       - name: Run Linux jail integration tests (sudo)
         run: |
