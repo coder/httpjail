@@ -14,14 +14,14 @@ use crate::jail::get_canary_dir;
 /// Manages jail lifecycle and cleanup with automatic cleanup on drop
 pub struct ManagedJail<J: Jail> {
     jail: J,
-    
+
     // Lifecycle management fields
     canary_dir: PathBuf,
     canary_path: PathBuf,
     heartbeat_interval: Duration,
     orphan_timeout: Duration,
     enable_heartbeat: bool,
-    
+
     // Heartbeat control
     stop_heartbeat: Arc<AtomicBool>,
     heartbeat_handle: Option<JoinHandle<()>>,
@@ -31,7 +31,7 @@ impl<J: Jail> ManagedJail<J> {
     pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
         let canary_dir = get_canary_dir();
         let canary_path = canary_dir.join(&config.jail_id);
-        
+
         Ok(Self {
             jail,
             canary_dir,

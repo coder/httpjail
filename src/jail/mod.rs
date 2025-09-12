@@ -121,7 +121,7 @@ impl Default for JailConfig {
 /// Create a platform-specific jail implementation wrapped with lifecycle management
 pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>> {
     use self::weak::WeakJail;
-    
+
     // Always use weak jail on macOS due to PF limitations
     // (PF translation rules cannot match on user/group)
     #[cfg(target_os = "macos")]
