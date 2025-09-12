@@ -277,12 +277,12 @@ impl DockerLinux {
             cmd.arg("-v").arg(format!("{}:{}:ro", cert_path, cert_path));
 
             // Also mount the parent directory if it exists (for SSL_CERT_DIR)
-            if let Some(parent) = std::path::Path::new(&cert_path).parent() {
-                if parent.exists() {
-                    let parent_str = parent.to_string_lossy();
-                    cmd.arg("-v")
-                        .arg(format!("{}:{}:ro", parent_str, parent_str));
-                }
+            if let Some(parent) = std::path::Path::new(&cert_path).parent()
+                && parent.exists()
+            {
+                let parent_str = parent.to_string_lossy();
+                cmd.arg("-v")
+                    .arg(format!("{}:{}:ro", parent_str, parent_str));
             }
         }
 
