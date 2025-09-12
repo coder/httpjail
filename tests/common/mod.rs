@@ -1,106 +1,6 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
 use std::process::Command;
-use std::sync::OnceLock;
-
-static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
-
-/// Build httpjail binary and return the path
-pub fn build_httpjail() -> Result<String, String> {
-    BUILD_RESULT
-        .get_or_init(|| {
-            // First check if HTTPJAIL_BIN is set (e.g., by CI)
-            if let Ok(bin_path) = std::env::var("HTTPJAIL_BIN")
-                && std::path::Path::new(&bin_path).exists()
-            {
-                eprintln!("Using httpjail binary from HTTPJAIL_BIN: {}", bin_path);
-                return Ok(bin_path);
-            }
-
-            // Determine the target directory
-            let target_dir = std::env::var("CARGO_TARGET_DIR")
-                .unwrap_or_else(|_| "target".to_string());
-
-            // Check if the binary already exists
-            let binary_path = format!("{}/debug/httpjail", target_dir);
-            if std::path::Path::new(&binary_path).exists() {
-                return Ok(binary_path);
-            }
-
-            // Also check the default location in case CARGO_TARGET_DIR is not set
-            let default_path = "target/debug/httpjail";
-            if std::path::Path::new(default_path).exists() {
-                return Ok(default_path.to_string());
-            }
-
-            // Binary doesn't exist, try to build it
-            eprintln!("httpjail binary not found at {} or {}, attempting to build...", binary_path, default_path);
-
-            let output = Command::new("cargo")
-                .args(["build", "--bin", "httpjail"])
-                .output()
-                .map_err(|e| {
-                    format!(
-                        "Failed to execute 'cargo build --bin httpjail': {}. \n\
-                        Make sure cargo is in PATH or build the binary manually with 'cargo build --bin httpjail'",
-                        e
-                    )
-                });
-
-            match output {
-                Ok(output) if output.status.success() => {
-                    // Check both possible locations after build
-                    if std::path::Path::new(&binary_path).exists() {
-                        eprintln!("Successfully built httpjail binary at {}", binary_path);
-                        Ok(binary_path)
-                    } else if std::path::Path::new(default_path).exists() {
-                        eprintln!("Successfully built httpjail binary at {}", default_path);
-                        Ok(default_path.to_string())
-                    } else {
-                        // If still not found, provide diagnostic information
-                        let target_debug = format!("{}/debug", target_dir);
-                        Err(format!(
-                            "Build command succeeded but binary not found at {} or {}. \n\
-                            Current directory: {:?}\n\
-                            CARGO_TARGET_DIR: {:?}\n\
-                            Contents of {}: {:?}\n\
-                            Contents of target/debug: {:?}",
-                            binary_path,
-                            default_path,
-                            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
-                            std::env::var("CARGO_TARGET_DIR").ok(),
-                            target_debug,
-                            std::fs::read_dir(&target_debug)
-                                .map(|entries| {
-                                    entries
-                                        .filter_map(|e| e.ok())
-                                        .filter_map(|e| e.file_name().into_string().ok())
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default(),
-                            std::fs::read_dir("target/debug")
-                                .map(|entries| {
-                                    entries
-                                        .filter_map(|e| e.ok())
-                                        .filter_map(|e| e.file_name().into_string().ok())
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default()
-                        ))
-                    }
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(format!(
-                        "Failed to build httpjail binary. Build output:\n{}",
-                        stderr
-                    ))
-                }
-                Err(e) => Err(e),
-            }
-        })
-        .clone()
-}
 
 /// Construct httpjail command with standard test settings
 pub struct HttpjailCommand {
@@ -163,8 +63,8 @@ impl HttpjailCommand {
 
     /// Build and execute the command
     pub fn execute(mut self) -> Result<(i32, String, String), String> {
-        // Ensure httpjail is built
-        let httpjail_path = build_httpjail()?;
+        // Use the binary path produced by the same Cargo test build
+        let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
 
         // Always add timeout for tests (15 seconds default for CI environment)
         self.args.insert(0, "--timeout".to_string());
@@ -185,13 +85,13 @@ impl HttpjailCommand {
                     "SUDO_ASKPASS",
                     format!(
                         "{}/askpass_macos.sh",
-                        std::env::current_dir().unwrap().display()
+                        std::env::current_dir().unwrap().to_string_lossy()
                     ),
                 );
             }
 
             sudo_cmd.arg("-E"); // Preserve environment
-            sudo_cmd.arg(&httpjail_path);
+            sudo_cmd.arg(httpjail_path);
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
@@ -200,7 +100,7 @@ impl HttpjailCommand {
             }
             sudo_cmd
         } else {
-            let mut cmd = Command::new(&httpjail_path);
+            let mut cmd = Command::new(httpjail_path);
             for arg in &self.args {
                 cmd.arg(arg);
             }

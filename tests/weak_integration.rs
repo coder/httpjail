@@ -1,6 +1,6 @@
 mod common;
 
-use common::{HttpjailCommand, build_httpjail, test_https_allow, test_https_blocking};
+use common::{HttpjailCommand, test_https_allow, test_https_blocking};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::thread;
@@ -172,9 +172,9 @@ fn test_weak_mode_appends_no_proxy() {
 
 // Simple server start function - we know the ports we're setting
 fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
-    let httpjail_path = build_httpjail()?;
+    let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
 
-    let mut cmd = Command::new(&httpjail_path);
+    let mut cmd = Command::new(httpjail_path);
     cmd.arg("--server")
         .arg("--js")
         .arg("true")
