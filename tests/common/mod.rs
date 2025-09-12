@@ -224,54 +224,54 @@ pub fn test_https_blocking(use_sudo: bool) {
             panic!("Failed to execute httpjail: {}", e);
         }
     }
+}
 
-    /// Test that HTTPS is allowed with proper JS rule
-    pub fn test_https_allow(use_sudo: bool) {
-        let mut cmd = HttpjailCommand::new();
+/// Test that HTTPS is allowed with proper JS rule
+pub fn test_https_allow(use_sudo: bool) {
+    let mut cmd = HttpjailCommand::new();
 
-        if use_sudo {
-            cmd = cmd.sudo();
-        } else {
-            cmd = cmd.weak();
+    if use_sudo {
+        cmd = cmd.sudo();
+    } else {
+        cmd = cmd.weak();
+    }
+
+    let result = cmd
+        .js("/ifconfig\\.me/.test(r.host)")
+        .verbose(2)
+        .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
+        .execute();
+
+    match result {
+        Ok((exit_code, stdout, stderr)) => {
+            println!("HTTPS allow test - Exit code: {}", exit_code);
+            println!("Stdout: {}", stdout);
+            println!("Stderr: {}", stderr);
+
+            if use_sudo {
+                assert!(
+                    !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
+                    "Request should not be blocked when allowed"
+                );
+            } else {
+                assert_eq!(
+                    exit_code, 0,
+                    "Expected curl to succeed in weak mode, got exit code: {}",
+                    exit_code
+                );
+
+                use std::str::FromStr;
+                assert!(
+                    std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
+                        || std::net::Ipv6Addr::from_str(stdout.trim()).is_ok()
+                        || !stdout.trim().is_empty(),
+                    "Expected to see valid response content, got: '{}'",
+                    stdout
+                );
+            }
         }
-
-        let result = cmd
-            .js("/ifconfig\\.me/.test(r.host)")
-            .verbose(2)
-            .command(vec!["curl", "-k", "--max-time", "8", "https://ifconfig.me"])
-            .execute();
-
-        match result {
-            Ok((exit_code, stdout, stderr)) => {
-                println!("HTTPS allow test - Exit code: {}", exit_code);
-                println!("Stdout: {}", stdout);
-                println!("Stderr: {}", stderr);
-
-                if use_sudo {
-                    assert!(
-                        !stderr.contains("403 Forbidden") && !stderr.contains("Request blocked"),
-                        "Request should not be blocked when allowed"
-                    );
-                } else {
-                    assert_eq!(
-                        exit_code, 0,
-                        "Expected curl to succeed in weak mode, got exit code: {}",
-                        exit_code
-                    );
-
-                    use std::str::FromStr;
-                    assert!(
-                        std::net::Ipv4Addr::from_str(stdout.trim()).is_ok()
-                            || std::net::Ipv6Addr::from_str(stdout.trim()).is_ok()
-                            || !stdout.trim().is_empty(),
-                        "Expected to see valid response content, got: '{}'",
-                        stdout
-                    );
-                }
-            }
-            Err(e) => {
-                panic!("Failed to execute httpjail: {}", e);
-            }
+        Err(e) => {
+            panic!("Failed to execute httpjail: {}", e);
         }
     }
 }
