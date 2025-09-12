@@ -1,33 +1,30 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
 use std::process::Command;
-use std::sync::Once;
+use std::sync::OnceLock;
 
-static BUILD_ONCE: Once = Once::new();
-static mut BUILD_RESULT: Option<Result<String, String>> = None;
+static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 
 /// Build httpjail binary and return the path
 pub fn build_httpjail() -> Result<String, String> {
-    unsafe {
-        BUILD_ONCE.call_once(|| {
+    BUILD_RESULT
+        .get_or_init(|| {
             // Build the binary once per process
             let output = Command::new("cargo")
                 .args(["build", "--bin", "httpjail"])
                 .output()
                 .map_err(|e| format!("Failed to build httpjail: {}", e));
 
-            BUILD_RESULT = Some(match output {
+            match output {
                 Ok(output) if output.status.success() => Ok("target/debug/httpjail".to_string()),
                 Ok(output) => Err(format!(
                     "Build failed: {}",
                     String::from_utf8_lossy(&output.stderr)
                 )),
                 Err(e) => Err(e),
-            });
-        });
-
-        BUILD_RESULT.as_ref().unwrap().clone()
-    }
+            }
+        })
+        .clone()
 }
 
 /// Construct httpjail command with standard test settings
