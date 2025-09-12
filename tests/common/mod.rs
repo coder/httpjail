@@ -3,6 +3,42 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
+fn resolve_cargo_path() -> String {
+    // 1) Explicit CARGO env var
+    if let Ok(p) = std::env::var("CARGO") {
+        if !p.is_empty() && std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+
+    // 2) CARGO_HOME/bin/cargo
+    if let Ok(ch) = std::env::var("CARGO_HOME") {
+        let p = format!("{}/bin/cargo", ch);
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+
+    // 3) HOME/.cargo/bin/cargo
+    if let Ok(h) = std::env::var("HOME") {
+        let p = format!("{}/.cargo/bin/cargo", h);
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+
+    // 4) If running under sudo, try the invoking user's cargo
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        let p = format!("/home/{}/.cargo/bin/cargo", sudo_user);
+        if std::path::Path::new(&p).exists() {
+            return p;
+        }
+    }
+
+    // 5) Fallback to PATH lookup
+    "cargo".to_string()
+}
+
 static BUILD_RESULT: OnceLock<Result<String, String>> = OnceLock::new();
 
 /// Build httpjail binary and return the path
@@ -10,22 +46,23 @@ pub fn build_httpjail() -> Result<String, String> {
     BUILD_RESULT
         .get_or_init(|| {
             // Always build to avoid accidentally using a stale binary
-            let output = Command::new("cargo")
+            let cargo = resolve_cargo_path();
+            let output = Command::new(&cargo)
                 .args(["build", "--bin", "httpjail"])
                 .output()
                 .map_err(|e| {
                     format!(
-                        "Failed to execute 'cargo build --bin httpjail': {}. \n\
-                        Make sure cargo is in PATH or build the binary manually with 'cargo build --bin httpjail'",
-                        e
+                        "Failed to execute '{} build --bin httpjail': {}. \n\
+                        Ensure cargo is installed and accessible.",
+                        cargo, e
                     )
                 });
 
             match output {
                 Ok(output) if output.status.success() => {
                     // Determine the target directory
-                    let target_dir = std::env::var("CARGO_TARGET_DIR")
-                        .unwrap_or_else(|_| "target".to_string());
+                    let target_dir =
+                        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
 
                     // Prefer CARGO_TARGET_DIR if set, otherwise default location
                     let candidate_paths = [
@@ -50,7 +87,8 @@ pub fn build_httpjail() -> Result<String, String> {
                         Contents of {}: {:?}\n\
                         Contents of target/debug: {:?}",
                         candidate_paths,
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("unknown")),
                         std::env::var("CARGO_TARGET_DIR").ok(),
                         target_debug,
                         std::fs::read_dir(&target_debug)
