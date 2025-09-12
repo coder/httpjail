@@ -260,9 +260,30 @@ impl DockerLinux {
         // Use our isolated Docker network
         cmd.args(["--network", &network_name]);
 
-        // Add CA certificate environment variables
+        // Add CA certificate environment variables and bind mount the CA certificate
+        let mut ca_cert_path = None;
         for (key, value) in extra_env {
             cmd.arg("-e").arg(format!("{}={}", key, value));
+
+            // Track the CA certificate path for bind mounting
+            if key == "SSL_CERT_FILE" && ca_cert_path.is_none() {
+                ca_cert_path = Some(value.clone());
+            }
+        }
+
+        // Bind mount the CA certificate if we have one
+        if let Some(cert_path) = ca_cert_path {
+            // Mount the CA certificate to the same path in the container (read-only)
+            cmd.arg("-v").arg(format!("{}:{}:ro", cert_path, cert_path));
+
+            // Also mount the parent directory if it exists (for SSL_CERT_DIR)
+            if let Some(parent) = std::path::Path::new(&cert_path).parent() {
+                if parent.exists() {
+                    let parent_str = parent.to_string_lossy();
+                    cmd.arg("-v")
+                        .arg(format!("{}:{}:ro", parent_str, parent_str));
+                }
+            }
         }
 
         // Add user's docker options

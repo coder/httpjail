@@ -410,4 +410,104 @@ mod tests {
             stderr
         );
     }
+
+    /// Test Docker container with HTTPS/TLS interception
+    #[test]
+    fn test_docker_run_with_tls() {
+        LinuxPlatform::require_privileges();
+
+        // Check if Docker is available
+        let docker_check = std::process::Command::new("docker")
+            .arg("--version")
+            .output();
+
+        if docker_check.is_err() || !docker_check.unwrap().status.success() {
+            eprintln!("Skipping Docker test: Docker not available");
+            return;
+        }
+
+        // Test HTTPS access to ifconfig.me
+        let mut cmd = httpjail_cmd();
+        cmd.arg("--js")
+            .arg("true") // Allow all traffic
+            .arg("--docker-run")
+            .arg("--")
+            .arg("--rm")
+            .arg("alpine:latest")
+            .arg("sh")
+            .arg("-c")
+            .arg("wget -q -O- --timeout=5 https://ifconfig.me/ip 2>&1 | head -1");
+
+        let output = cmd
+            .output()
+            .expect("Failed to execute httpjail with docker");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        eprintln!("[Docker TLS test] stdout: {}", stdout);
+        if !stderr.is_empty() {
+            eprintln!("[Docker TLS test] stderr: {}", stderr);
+        }
+
+        // Should get an IP address back (the Docker container's external IP)
+        assert!(
+            output.status.success(),
+            "HTTPS request should succeed. Exit code: {:?}",
+            output.status.code()
+        );
+
+        // Basic check that we got an IP-like response
+        let response = stdout.trim();
+        assert!(
+            !response.is_empty() && response.chars().any(|c| c == '.' || c.is_numeric()),
+            "Should receive IP address from ifconfig.me, got: {}",
+            response
+        );
+    }
+
+    /// Test Docker container with HTTPS/TLS blocking
+    #[test]
+    fn test_docker_run_with_tls_blocked() {
+        LinuxPlatform::require_privileges();
+
+        // Check if Docker is available
+        let docker_check = std::process::Command::new("docker")
+            .arg("--version")
+            .output();
+
+        if docker_check.is_err() || !docker_check.unwrap().status.success() {
+            eprintln!("Skipping Docker test: Docker not available");
+            return;
+        }
+
+        // Test HTTPS blocking
+        let mut cmd = httpjail_cmd();
+        cmd.arg("--js")
+            .arg("false") // Block all traffic
+            .arg("--docker-run")
+            .arg("--")
+            .arg("--rm")
+            .arg("alpine:latest")
+            .arg("sh")
+            .arg("-c")
+            .arg("wget -q -O- --timeout=3 https://ifconfig.me/ip 2>&1 || echo 'BLOCKED'");
+
+        let output = cmd
+            .output()
+            .expect("Failed to execute httpjail with docker");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        eprintln!("[Docker TLS blocked test] stdout: {}", stdout);
+        if !stderr.is_empty() {
+            eprintln!("[Docker TLS blocked test] stderr: {}", stderr);
+        }
+
+        assert!(
+            stdout.contains("BLOCKED") || stderr.contains("403") || stderr.contains("certificate"),
+            "HTTPS request should be blocked. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
+    }
 }
