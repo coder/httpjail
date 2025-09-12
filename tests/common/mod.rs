@@ -1,9 +1,30 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
 use std::process::Command;
+use std::time::Duration;
 
 /// Build httpjail binary and return the path
 pub fn build_httpjail() -> Result<String, String> {
+    // First check if Cargo has already built and provided the binary path
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_httpjail") {
+        if std::path::Path::new(&path).exists() {
+            return Ok(path);
+        }
+    }
+    
+    // Check if the debug binary already exists
+    let debug_path = "target/debug/httpjail";
+    if std::path::Path::new(debug_path).exists() {
+        return Ok(debug_path.to_string());
+    }
+    
+    // Check if the release binary already exists
+    let release_path = "target/release/httpjail";
+    if std::path::Path::new(release_path).exists() {
+        return Ok(release_path.to_string());
+    }
+    
+    // Otherwise build it ourselves in debug mode
     let output = Command::new("cargo")
         .args(["build", "--bin", "httpjail"])
         .output()
@@ -16,7 +37,7 @@ pub fn build_httpjail() -> Result<String, String> {
         ));
     }
 
-    Ok("target/debug/httpjail".to_string())
+    Ok(debug_path.to_string())
 }
 
 /// Construct httpjail command with standard test settings
