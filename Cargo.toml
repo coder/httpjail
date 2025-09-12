@@ -1,6 +1,6 @@
 [package]
 name = "httpjail"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 license = "CC0-1.0"
 description = "Monitor and restrict HTTP/HTTPS requests from processes"
@@ -52,3 +52,9 @@ tempfile = "3.8"
 assert_cmd = "2.0"
 predicates = "3.0"
 serial_test = "3.0"
+
+[profile.fast]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16

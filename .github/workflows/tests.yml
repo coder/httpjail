@@ -32,14 +32,6 @@ jobs:
       - name: Install nextest
         run: cargo install cargo-nextest --locked
 
-      - name: Build httpjail binary
-        run: |
-          cargo build --bin httpjail --target-dir target
-          export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
-          echo "Binary built at: ${HTTPJAIL_BIN}"
-          ls -la "${HTTPJAIL_BIN}"
-          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
-
       - name: Run all tests
         run: cargo nextest run --profile ci
 
@@ -93,15 +85,6 @@ jobs:
           if [ -d target ]; then
             sudo chown -R ci:ci target || true
           fi
-
-      - name: Build httpjail binary
-        run: |
-          source ~/.cargo/env
-          cargo build --bin httpjail --target-dir target
-          export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
-          echo "Binary built at: ${HTTPJAIL_BIN}"
-          ls -la "${HTTPJAIL_BIN}"
-          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
       - name: Run all tests (non-root)
         run: |

@@ -10,6 +10,17 @@ protocol), we must establish a timeout for the operation.
 
 Timeouts must not preclude long-running connections such as GRPC or WebSocket.
 
+## Building
+
+For faster builds during development and debugging, use the `fast` profile:
+
+```bash
+cargo build --profile fast
+```
+
+This profile inherits from release mode but uses lower optimization levels and disables LTO
+for significantly faster build times while still providing reasonable performance.
+
 ## Testing
 
 When writing tests, prefer pure rust solutions over shell script wrappers.
@@ -17,6 +28,16 @@ When writing tests, prefer pure rust solutions over shell script wrappers.
 When testing behavior outside of the strong jailing, use `--weak` for an environment-only
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.
+
+### Integration Tests
+
+The integration tests use the `HTTPJAIL_BIN` environment variable to determine which binary to test.
+Always set this to the most up-to-date binary before running tests:
+
+```bash
+export HTTPJAIL_BIN=/path/to/httpjail
+cargo test --test linux_integration
+```
 
 ## Cargo Cache
 
@@ -60,12 +81,43 @@ In regular operation of the CLI-only jail (non-server mode), info and warn logs 
 
 The Linux CI tests run on a self-hosted runner (`ci-1`) in GCP. Only Coder employees can directly SSH into this instance for debugging.
 
-To debug CI failures on Linux:
+The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. **IMPORTANT: Never modify files in this directory directly as it will interfere with running CI jobs.**
+
+### CI Helper Scripts
+
 ```bash
-gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail
+# SSH into CI-1 instance (interactive or with commands)
+./scripts/ci-ssh.sh                          # Interactive shell
+./scripts/ci-ssh.sh "ls /tmp/httpjail-*"    # Run command
+
+# SCP files to/from CI-1
+./scripts/ci-scp.sh src/ /tmp/httpjail-docker-run/     # Upload
+./scripts/ci-scp.sh root@ci-1:/path/to/file ./         # Download
 ```
 
-The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. Tests run as the `ci` user, not root. When building manually:
+### Manual Testing on CI
+
 ```bash
-su - ci -c 'cd /home/ci/actions-runner/_work/httpjail/httpjail && cargo test'
+# Set up a fresh workspace for your branch
+BRANCH_NAME="your-branch-name"
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+  rm -rf /tmp/httpjail-$BRANCH_NAME
+  git clone https://github.com/coder/httpjail /tmp/httpjail-$BRANCH_NAME
+  cd /tmp/httpjail-$BRANCH_NAME
+  git checkout $BRANCH_NAME
+"
+
+# Sync local changes to the test workspace
+gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
+gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
+
+# Build and test in the isolated workspace (using shared cargo cache)
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+  cd /tmp/httpjail-$BRANCH_NAME
+  export CARGO_HOME=/home/ci/.cargo
+  /home/ci/.cargo/bin/cargo build --profile fast
+  sudo ./target/fast/httpjail --help
+"
 ```
+
+This ensures you don't interfere with active CI jobs and provides a clean environment for testing.

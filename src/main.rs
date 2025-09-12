@@ -90,8 +90,19 @@ struct Args {
     )]
     test: Option<Vec<String>>,
 
+    /// Run a Docker container with httpjail network isolation
+    /// All arguments after -- are passed to docker run
+    #[arg(
+        long = "docker-run",
+        conflicts_with = "server",
+        conflicts_with = "cleanup",
+        conflicts_with = "test",
+        conflicts_with = "weak"
+    )]
+    docker_run: bool,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test", "docker_run"])]
     command: Vec<String>,
 }
 
@@ -453,7 +464,7 @@ async fn main() -> Result<()> {
     jail_config.https_proxy_port = actual_https_port;
 
     // Create and setup jail
-    let mut jail = create_jail(jail_config.clone(), args.weak)?;
+    let mut jail = create_jail(jail_config.clone(), args.weak, args.docker_run)?;
 
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;

@@ -51,6 +51,9 @@ httpjail --server --js "true"
 # Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
 # Configure your application:
 # HTTP_PROXY=http://localhost:8080 HTTPS_PROXY=http://localhost:8443
+
+# Run Docker containers with network isolation (Linux only)
+httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest wget -qO- https://api.github.com
 ```
 
 ## Architecture Overview
@@ -123,39 +126,15 @@ httpjail creates an isolated network environment for the target process, interce
 - macOS 10.15+ (Catalina or later)
 - No special permissions required (runs in weak mode)
 
-## Usage Examples
-
-### Basic Usage
-
-```bash
-# Simple allow/deny rules
-httpjail --js "r.host === 'api.github.com'" -- git pull
-
-# Multiple allow patterns using regex
-httpjail \
-  --js "/github\.com$/.test(r.host) || /githubusercontent\.com$/.test(r.host)" \
-  -- npm install
-
-# Deny telemetry while allowing everything else
-httpjail \
-  --js "!/telemetry\.|analytics\.|sentry\./.test(r.host)" \
-  -- ./application
-
-# Method-specific rules
-httpjail \
-  --js "(r.method === 'GET' && /api\..*\.com$/.test(r.host)) || (r.method === 'POST' && !/telemetry\./.test(r.host)) || r.method !== 'GET' && r.method !== 'POST'" \
-  -- ./application
-```
-
-### Configuration File
+## Configuration File
 
 Create a `rules.js` file with your JavaScript evaluation logic:
 
 ```javascript
 // rules.js
 // Allow GitHub GET requests, block telemetry, allow everything else
-(r.method === 'GET' && /github\.com$/.test(r.host)) ||
-(!/telemetry/.test(r.host))
+(r.method === "GET" && /github\.com$/.test(r.host)) ||
+  !/telemetry/.test(r.host);
 ```
 
 Use the config:
@@ -164,7 +143,61 @@ Use the config:
 httpjail --js-file rules.js -- ./my-application
 ```
 
-### Script-Based Evaluation
+## JavaScript (V8) Evaluation
+
+httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
+
+```bash
+# Simple JavaScript expression - allow only GitHub requests
+httpjail --js "r.host === 'github.com'" -- curl https://github.com
+
+# Method-specific filtering
+httpjail --js "r.method === 'GET' && r.host === 'api.github.com'" -- git pull
+
+# Load from file
+httpjail --js-file rules.js -- ./my-app
+
+# Complex logic with multiple conditions (ternary style)
+httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? true : (r.host.includes('facebook.com') || r.host.includes('twitter.com')) ? false : (r.scheme === 'https' && r.path.startsWith('/api/')) ? true : false" -- ./my-app
+
+# Path-based filtering
+httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
+
+# Custom block message
+httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
+```
+
+**JavaScript API:**
+
+All request information is available via the `r` object:
+
+- `r.url` - Full URL being requested (string)
+- `r.method` - HTTP method (GET, POST, etc.)
+- `r.host` - Hostname from the URL
+- `r.scheme` - URL scheme (http or https)
+- `r.path` - Path portion of the URL
+- `r.requester_ip` - IP address of the client making the request
+- `r.block_message` - Optional message to set when denying (writable)
+
+**JavaScript evaluation rules:**
+
+- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
+- Code is executed in a sandboxed V8 isolate for security
+- Syntax errors are caught during startup and cause httpjail to exit
+- Runtime errors result in the request being blocked
+- Each request evaluation runs in a fresh context for thread safety
+- You can set `r.block_message` to provide a custom denial message
+
+**Performance considerations:**
+
+- V8 engine provides fast JavaScript execution
+- Fresh isolate creation per request ensures thread safety but adds some overhead
+- JavaScript evaluation is generally faster than external script execution
+
+> [!NOTE]
+> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
+
+## Script-Based Evaluation
 
 Instead of writing JavaScript, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
 
@@ -205,61 +238,7 @@ If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
 > [!TIP]
 > Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
-### JavaScript (V8) Evaluation
-
-httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
-
-```bash
-# Simple JavaScript expression - allow only GitHub requests
-httpjail --js "r.host === 'github.com'" -- curl https://github.com
-
-# Method-specific filtering
-httpjail --js "r.method === 'GET' && r.host === 'api.github.com'" -- git pull
-
-# Load from file
-httpjail --js-file rules.js -- ./my-app
-
-# Complex logic with multiple conditions (ternary style)
-httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? true : (r.host.includes('facebook.com') || r.host.includes('twitter.com')) ? false : (r.scheme === 'https' && r.path.startsWith('/api/')) ? true : false" -- ./my-app
-
-# Path-based filtering
-httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
-
-# Custom block message
-httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
-```
-
-**JavaScript API:**
-
-All request information is available via the `r` object:
-- `r.url` - Full URL being requested (string)
-- `r.method` - HTTP method (GET, POST, etc.)
-- `r.host` - Hostname from the URL
-- `r.scheme` - URL scheme (http or https)
-- `r.path` - Path portion of the URL
-- `r.requester_ip` - IP address of the client making the request
-- `r.block_message` - Optional message to set when denying (writable)
-
-**JavaScript evaluation rules:**
-
-- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
-- Code is executed in a sandboxed V8 isolate for security
-- Syntax errors are caught during startup and cause httpjail to exit
-- Runtime errors result in the request being blocked
-- Each request evaluation runs in a fresh context for thread safety
-- You can set `r.block_message` to provide a custom denial message
-
-**Performance considerations:**
-
-- V8 engine provides fast JavaScript execution
-- Fresh isolate creation per request ensures thread safety but adds some overhead
-- JavaScript evaluation is generally faster than external script execution
-
-> [!NOTE]
-> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
-
-### Advanced Options
-
+## Advanced Options
 ```bash
 # Verbose logging
 httpjail -vvv --js "true" -- curl https://example.com
@@ -276,7 +255,7 @@ HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
 HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "true"
 ```
 
-### Server Mode
+## Server Mode
 
 httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance. The server binds to localhost (127.0.0.1) only for security.
 
