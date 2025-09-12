@@ -14,6 +14,15 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::Rng;
+
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+
+#[cfg(target_os = "linux")]
+use socket2::{Domain, Protocol, Socket, Type};
+
+#[cfg(target_os = "linux")]
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -171,7 +180,7 @@ async fn bind_to_available_port(start: u16, end: u16, bind_addr: [u8; 4]) -> Res
 
     for _ in 0..16 {
         let port = rng.gen_range(start..=end);
-        match TcpListener::bind(SocketAddr::from((bind_addr, port))).await {
+        match bind_ipv4_listener(bind_addr, port).await {
             Ok(listener) => {
                 debug!("Successfully bound to port {}", port);
                 return Ok(listener);
@@ -184,6 +193,47 @@ async fn bind_to_available_port(start: u16, end: u16, bind_addr: [u8; 4]) -> Res
         start,
         end
     )
+}
+
+async fn bind_ipv4_listener(bind_addr: [u8; 4], port: u16) -> Result<TcpListener> {
+    #[cfg(target_os = "linux")]
+    {
+        // Setup a raw socket to set IP_FREEBIND for specific non-loopback addresses
+        let ip = Ipv4Addr::from(bind_addr);
+        let is_specific_non_loopback =
+            ip != Ipv4Addr::new(127, 0, 0, 1) && ip != Ipv4Addr::new(0, 0, 0, 0);
+        if is_specific_non_loopback {
+            let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            // Enabling FREEBIND for non-local address binding before interface configuration
+            unsafe {
+                let yes: libc::c_int = 1;
+                let ret = libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::IPPROTO_IP,
+                    libc::IP_FREEBIND,
+                    &yes as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&yes) as libc::socklen_t,
+                );
+                if ret != 0 {
+                    warn!(
+                        "Failed to set IP_FREEBIND on socket: errno={} (continuing)",
+                        ret
+                    );
+                }
+            }
+
+            sock.set_nonblocking(true)?;
+            let addr = SocketAddr::from((ip, port));
+            sock.bind(&addr.into())?;
+            sock.listen(1024)?; // OS default backlog
+            let std_listener: std::net::TcpListener = sock.into();
+            std_listener.set_nonblocking(true)?;
+            return Ok(TcpListener::from_std(std_listener)?);
+        }
+    }
+    // Fallback: normal async bind if the conditions aren't met
+    let listener = TcpListener::bind(SocketAddr::from((bind_addr, port))).await?;
+    Ok(listener)
 }
 
 pub struct ProxyServer {
@@ -217,11 +267,8 @@ impl ProxyServer {
     }
 
     pub async fn start(&mut self) -> Result<(u16, u16)> {
-        // Start HTTP proxy
         let http_listener = if let Some(port) = self.http_port {
-            // If port is 0, let OS choose any available port
-            // Otherwise bind to the specified port
-            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
+            bind_ipv4_listener(self.bind_address, port).await?
         } else {
             // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
@@ -263,9 +310,7 @@ impl ProxyServer {
 
         // Start HTTPS proxy
         let https_listener = if let Some(port) = self.https_port {
-            // If port is 0, let OS choose any available port
-            // Otherwise bind to the specified port
-            TcpListener::bind(SocketAddr::from((self.bind_address, port))).await?
+            bind_ipv4_listener(self.bind_address, port).await?
         } else {
             // No port specified, find available port in 8000-8999 range
             let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;

@@ -17,13 +17,18 @@ use tracing::{debug, info, warn};
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
-    #[arg(short = 's', long = "script", value_name = "PROG")]
-    script: Option<String>,
+    /// Use script for evaluating requests
+    /// The script receives environment variables:
+    ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+    /// Exit code 0 allows the request, non-zero blocks it
+    /// stdout becomes additional context in the 403 response
+    #[arg(long = "sh", value_name = "PROG")]
+    sh: Option<String>,
 
     #[arg(
         long = "js",
         value_name = "CODE",
-        conflicts_with = "script",
+        conflicts_with = "sh",
         conflicts_with = "js_file"
     )]
     js: Option<String>,
@@ -31,7 +36,7 @@ struct Args {
     #[arg(
         long = "js-file",
         value_name = "FILE",
-        conflicts_with = "script",
+        conflicts_with = "sh",
         conflicts_with = "js"
     )]
     js_file: Option<String>,
@@ -62,9 +67,6 @@ struct Args {
     server: bool,
 
     /// Evaluate rule against a URL and exit (dry-run)
-    /// Forms:
-    ///   URL             (defaults to GET)
-    ///   METHOD URL      (e.g., "POST https://example.com")
     #[arg(
         long = "test",
         value_name = "[METHOD] URL",
@@ -74,6 +76,7 @@ struct Args {
     )]
     test: Option<Vec<String>>,
 
+    /// Command and arguments to execute
     #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
     command: Vec<String>,
 }
@@ -266,6 +269,9 @@ async fn main() -> Result<()> {
         info!("Starting httpjail in server mode");
     }
 
+    // Initialize jail configuration early to allow computing the host IP
+    let mut jail_config = JailConfig::new();
+
     // Build rule engine based on script or JS
     let request_log = if let Some(path) = &args.request_log {
         Some(Arc::new(Mutex::new(
@@ -279,7 +285,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    let rule_engine = if let Some(script) = &args.script {
+    let rule_engine = if let Some(script) = &args.sh {
         info!("Using script-based rule evaluation: {}", script);
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)
@@ -398,11 +404,21 @@ async fn main() -> Result<()> {
     // so the proxy is accessible from the veth interface. For weak mode or server mode,
     // localhost is fine.
     // TODO: This has security implications - see GitHub issue #31
-    let bind_address = if args.weak || args.server {
-        None // defaults to 127.0.0.1
+    let bind_address: Option<[u8; 4]> = if args.weak || args.server {
+        None
     } else {
-        Some([0, 0, 0, 0]) // bind to all interfaces for strong jail
+        #[cfg(target_os = "linux")]
+        {
+            Some(
+                httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(&jail_config.jail_id),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
     };
+
     let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, bind_address);
 
     // Start proxy in background if running as server; otherwise start with random ports
@@ -421,7 +437,6 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all("/tmp/httpjail").ok();
 
     // Configure and execute the target command inside a jail
-    let mut jail_config = JailConfig::new();
     jail_config.http_proxy_port = actual_http_port;
     jail_config.https_proxy_port = actual_https_port;
 
@@ -447,8 +462,10 @@ async fn main() -> Result<()> {
             shutdown_clone.store(true, Ordering::SeqCst);
 
             // Cleanup jail unless testing flag is set
-            if !no_cleanup && let Err(e) = jail_for_signal.cleanup() {
-                warn!("Failed to cleanup jail on signal: {}", e);
+            if !no_cleanup {
+                if let Err(e) = jail_for_signal.cleanup() {
+                    warn!("Failed to cleanup jail on signal: {}", e);
+                }
             }
 
             // Exit with signal termination status
