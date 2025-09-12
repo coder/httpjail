@@ -77,9 +77,11 @@ jobs:
       - name: Setup Rust environment and install nextest
         run: |
           source ~/.cargo/env
-          if ! command -v cargo-nextest &> /dev/null; then
-            cargo install cargo-nextest
-          fi
+          rustup default stable
+          cargo install cargo-nextest || true
+
+      - name: Fix target directory permissions from previous runs
+        run: sudo chown -R $(whoami):$(whoami) target/ || true
 
       - name: Run all tests (non-root)
         run: |
@@ -87,19 +89,12 @@ jobs:
           cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
 
       - name: Install dependencies for weak mode (curl)
-        run: |
-          if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y curl
-          fi
-
-      - name: Set local CARGO_TARGET_DIR for weak tests
-        run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target" >> "$GITHUB_ENV"
+        run: sudo apt-get update && sudo apt-get install -y curl
 
       - name: Run weak mode integration tests (Linux)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --test weak_integration --verbose
+          cargo nextest run --profile ci weak_integration
 
       - name: Run Linux jail integration tests (sudo)
         run: |
