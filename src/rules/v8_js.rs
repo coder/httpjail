@@ -63,7 +63,12 @@ impl V8JsRuleEngine {
     }
 
     /// Evaluate the JavaScript rule against the given request
-    fn execute_js_rule(&self, method: &Method, url: &str, requester_ip: &str) -> (bool, Option<String>) {
+    fn execute_js_rule(
+        &self,
+        method: &Method,
+        url: &str,
+        requester_ip: &str,
+    ) -> (bool, Option<String>) {
         let parsed_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
