@@ -140,6 +140,7 @@ fn setup_logging(verbosity: u8) {
 fn cleanup_orphans() -> Result<()> {
     use anyhow::Context;
     use std::fs;
+    #[cfg(target_os = "linux")]
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
     use tracing::{debug, info};
