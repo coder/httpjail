@@ -344,10 +344,8 @@ async fn main() -> Result<()> {
             let mut parts = s.split_whitespace();
             match (parts.next(), parts.next()) {
                 (Some(maybe_method), Some(url_rest)) => {
-                    let method = maybe_method
-                        .parse::<Method>()
-                        .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
-                        .unwrap_or(Method::GET);
+                    let method_str = maybe_method.to_ascii_uppercase();
+                    let method = method_str.parse::<Method>().unwrap_or(Method::GET);
                     (method, url_rest.to_string())
                 }
                 _ => (Method::GET, s.clone()),
@@ -355,10 +353,8 @@ async fn main() -> Result<()> {
         } else {
             let maybe_method = &test_vals[0];
             let url = &test_vals[1];
-            let method = maybe_method
-                .parse::<Method>()
-                .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
-                .unwrap_or(Method::GET);
+            let method_str = maybe_method.to_ascii_uppercase();
+            let method = method_str.parse::<Method>().unwrap_or(Method::GET);
             (method, url.clone())
         };
 
