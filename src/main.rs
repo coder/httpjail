@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
-use httpjail::rules::RuleEngine;
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
+use httpjail::rules::{Action, RuleEngine};
+use hyper::Method;
 use std::fs::OpenOptions;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,8 +80,17 @@ struct Args {
     )]
     server: bool,
 
+    /// Evaluate rule against a URL and exit (dry-run)
+    #[arg(
+        long = "test",
+        value_name = "[METHOD] URL",
+        conflicts_with = "server",
+        conflicts_with = "cleanup"
+    )]
+    test: Option<String>,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server"])]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
     command: Vec<String>,
 }
 
@@ -322,6 +332,56 @@ async fn main() -> Result<()> {
         };
         RuleEngine::from_trait(js_engine, request_log)
     };
+
+    // Handle test (dry-run) mode: evaluate the rule against a URL and exit
+    if let Some(test_arg) = &args.test {
+        // Parse the test argument: if it contains two words, the first is the method
+        let (method, url) = if let Some(space_pos) = test_arg.find(' ') {
+            let method_str = &test_arg[..space_pos];
+            let url = &test_arg[space_pos + 1..].trim();
+
+            // Parse the method string
+            let method = match method_str.to_uppercase().as_str() {
+                "GET" => Method::GET,
+                "POST" => Method::POST,
+                "PUT" => Method::PUT,
+                "DELETE" => Method::DELETE,
+                "HEAD" => Method::HEAD,
+                "OPTIONS" => Method::OPTIONS,
+                "CONNECT" => Method::CONNECT,
+                "PATCH" => Method::PATCH,
+                "TRACE" => Method::TRACE,
+                _ => {
+                    eprintln!("Invalid HTTP method: {}", method_str);
+                    std::process::exit(1);
+                }
+            };
+            (method, url.to_string())
+        } else {
+            // Single word: default to GET
+            (Method::GET, test_arg.clone())
+        };
+
+        let eval = rule_engine
+            .evaluate_with_context(method.clone(), &url)
+            .await;
+        match eval.action {
+            Action::Allow => {
+                println!("ALLOW {} {}", method, url);
+                if let Some(ctx) = eval.context {
+                    println!("{}", ctx);
+                }
+                std::process::exit(0);
+            }
+            Action::Deny => {
+                println!("DENY {} {}", method, url);
+                if let Some(ctx) = eval.context {
+                    println!("{}", ctx);
+                }
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Parse bind configuration from env vars
     // Supports both "port" and "ip:port" formats
