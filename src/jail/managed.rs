@@ -2,44 +2,36 @@ use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
-use std::process::ExitStatus;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-/// A jail with lifecycle management (heartbeat and orphan cleanup)
-pub struct ManagedJail<J: Jail> {
+use crate::jail::{JailConfig, JailError, get_canary_dir};
+
+/// Manages jail lifecycle and cleanup with automatic cleanup on drop
+pub struct ManagedJail<J: crate::jail::Jail> {
     jail: J,
-
-    // Lifecycle management fields (inlined from JailLifecycleManager)
-    canary_dir: PathBuf,
+    jail_id: String,
     canary_path: PathBuf,
-    heartbeat_interval: Duration,
-    orphan_timeout: Duration,
-    enable_heartbeat: bool,
-
-    // Heartbeat control
-    stop_heartbeat: Arc<AtomicBool>,
-    heartbeat_handle: Option<JoinHandle<()>>,
+    no_cleanup: bool,
 }
 
-impl<J: Jail> ManagedJail<J> {
-    /// Create a new managed jail
-    pub fn new(jail: J, config: &JailConfig) -> Result<Self> {
-        let canary_dir = PathBuf::from("/tmp/httpjail");
+impl<J: crate::jail::Jail> ManagedJail<J> {
+    pub fn new(mut jail: J, config: &JailConfig, no_cleanup: bool) -> Result<Self, JailError> {
+        let jail_id = config.jail_id.clone();
+
+        // Create canary file to track jail lifetime
+-        let canary_dir = dirs::data_local_dir()
+-            .unwrap_or_else(|| PathBuf::from("/var/lib"))
+-            .join("httpjail");
++        let canary_dir = get_canary_dir();
+        std::fs::create_dir_all(&canary_dir).ok();
         let canary_path = canary_dir.join(&config.jail_id);
 
         Ok(Self {
             jail,
-            canary_dir,
+            jail_id,
             canary_path,
-            heartbeat_interval: Duration::from_secs(config.heartbeat_interval_secs),
-            orphan_timeout: Duration::from_secs(config.orphan_timeout_secs),
-            enable_heartbeat: config.enable_heartbeat,
-            stop_heartbeat: Arc::new(AtomicBool::new(false)),
-            heartbeat_handle: None,
+            no_cleanup,
         })
     }
 

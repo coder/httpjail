@@ -144,7 +144,7 @@ fn cleanup_orphans() -> Result<()> {
     use std::time::{Duration, SystemTime};
     use tracing::{debug, info};
 
-    let canary_dir = PathBuf::from("/tmp/httpjail");
+    let canary_dir = httpjail::jail::get_canary_dir();
     let orphan_timeout = Duration::from_secs(5); // Short timeout to catch recent orphans
 
     debug!("Starting direct orphan cleanup scan");
@@ -444,7 +444,8 @@ async fn main() -> Result<()> {
     }
 
     // Create jail canary dir early to reduce race with cleanup
-    std::fs::create_dir_all("/tmp/httpjail").ok();
+    let canary_dir = httpjail::jail::get_canary_dir();
+    std::fs::create_dir_all(&canary_dir).ok();
 
     // Configure and execute the target command inside a jail
     jail_config.http_proxy_port = actual_http_port;

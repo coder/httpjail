@@ -1,5 +1,8 @@
 use anyhow::Result;
 use rand::Rng;
+use std::process::ExitStatus;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub mod managed;
 
@@ -43,8 +46,32 @@ pub trait Jail: Send + Sync {
         Self: Sized;
 }
 
-/// Configuration for jail setup
-#[derive(Debug, Clone)]
+/// Get the directory for httpjail canary files
+/// Uses user data directory if available, falls back to ~/.httpjail_canary
+pub fn get_canary_dir() -> std::path::PathBuf {
+    if let Some(data_dir) = dirs::data_local_dir() {
+        data_dir.join("httpjail")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".httpjail_canary")
+    }
+}
+
+/// Get the directory for httpjail temporary files (like resolv.conf)
+/// Uses runtime directory if available, falls back to ~/.httpjail_tmp
+pub fn get_temp_dir() -> std::path::PathBuf {
+    if let Some(runtime_dir) = dirs::runtime_dir() {
+        runtime_dir.join("httpjail")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".httpjail_tmp")
+    }
+}
+
+/// Jail configuration
+#[derive(Clone, Debug)]
 pub struct JailConfig {
     /// Port where the HTTP proxy is listening
     pub http_proxy_port: u16,
@@ -158,7 +185,7 @@ pub fn create_jail(config: JailConfig, weak_mode: bool) -> Result<Box<dyn Jail>>
     use self::managed::ManagedJail;
     use self::weak::WeakJail;
 
-    // Use weak jail if requested or on macOS (since PF cannot match groups with translation rules)
+    // Use weak jail if requested or on macOS (since PF cannot match on user/group)
     #[cfg(target_os = "macos")]
     {
         // Always use weak jail on macOS due to PF limitations
