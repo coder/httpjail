@@ -1,4 +1,5 @@
 pub mod dangerous_verifier;
+pub mod docker;
 pub mod jail;
 pub mod proxy;
 pub mod proxy_tls;

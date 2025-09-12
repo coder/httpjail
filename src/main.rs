@@ -90,8 +90,19 @@ struct Args {
     )]
     test: Option<Vec<String>>,
 
+    /// Run a Docker container with httpjail network isolation
+    /// All arguments after -- are passed to docker run
+    #[arg(
+        long = "docker-run",
+        conflicts_with = "server",
+        conflicts_with = "cleanup",
+        conflicts_with = "test",
+        conflicts_with = "weak"
+    )]
+    docker_run: bool,
+
     /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test"])]
+    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test", "docker_run"])]
     command: Vec<String>,
 }
 
@@ -506,7 +517,11 @@ async fn main() -> Result<()> {
     }
 
     // Execute command in jail with extra environment variables
-    let status = if let Some(timeout_secs) = args.timeout {
+    let status = if args.docker_run {
+        // Handle Docker container execution
+        httpjail::docker::execute_docker_run(&jail_config.jail_id, &args.command, &extra_env)
+            .await?
+    } else if let Some(timeout_secs) = args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
 
         // Use tokio to handle timeout
