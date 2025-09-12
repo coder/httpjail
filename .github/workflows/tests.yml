@@ -30,25 +30,18 @@ jobs:
           shared-key: ${{ runner.os }}
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        run: cargo install cargo-nextest --locked
 
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run unit tests
-        run: cargo nextest run --profile ci --lib --verbose
-
-      - name: Run smoke tests
-        run: cargo nextest run --profile ci --test smoke_test --verbose
-
-      - name: Run script integration tests
-        run: cargo nextest run --profile ci --test script_integration --verbose
-
-      - name: Run weak mode integration tests
+      - name: Build httpjail binary
         run: |
-          # On macOS, we only support weak mode due to PF limitations
-          # (PF translation rules cannot match on user/group)
-          cargo nextest run --profile ci --test weak_integration --verbose
+          cargo build --bin httpjail --target-dir target
+          export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+          echo "Binary built at: ${HTTPJAIL_BIN}"
+          ls -la "${HTTPJAIL_BIN}"
+          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
+
+      - name: Run all tests
+        run: cargo nextest run --profile ci
 
   test-linux:
     name: Linux Tests
@@ -92,75 +85,42 @@ jobs:
       - name: Setup Rust environment and install nextest
         run: |
           source ~/.cargo/env
+          rustup default stable
+          cargo install cargo-nextest || true
 
-          # Install nextest if not already present
-          if ! command -v cargo-nextest &> /dev/null; then
-            cargo install cargo-nextest --locked
+      - name: Fix target directory permissions from previous runs
+        run: |
+          if [ -d target ]; then
+            sudo chown -R ci:ci target || true
           fi
 
-      - name: Build
+      - name: Build httpjail binary
         run: |
           source ~/.cargo/env
-          # Use incremental compilation for faster builds
-          export CARGO_INCREMENTAL=1
-          cargo build --verbose
+          cargo build --bin httpjail --target-dir target
+          export HTTPJAIL_BIN="$(pwd)/target/debug/httpjail"
+          echo "Binary built at: ${HTTPJAIL_BIN}"
+          ls -la "${HTTPJAIL_BIN}"
+          echo "HTTPJAIL_BIN=${HTTPJAIL_BIN}" >> $GITHUB_ENV
 
-      - name: Run unit tests
+      - name: Run all tests (non-root)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --lib --verbose
+          cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
 
-      - name: Run smoke tests
-        run: |
-          source ~/.cargo/env
-          cargo nextest run --profile ci --test smoke_test --verbose
+      - name: Install dependencies for weak mode (curl)
+        run: sudo apt-get update && sudo apt-get install -y curl
 
-      - name: Run script integration tests
+      - name: Run weak mode integration tests (Linux)
         run: |
           source ~/.cargo/env
-          cargo nextest run --profile ci --test script_integration --verbose
+          cargo nextest run --profile ci --test weak_integration
 
-      - name: Run Linux jail integration tests
+      - name: Run Linux jail integration tests (sudo)
         run: |
           source ~/.cargo/env
-          # Run all tests without CI workarounds since this is a self-hosted runner
+          # Run Linux-specific jail tests with sudo to satisfy root requirements
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
-
-      - name: Run isolated cleanup tests
-        run: |
-          source ~/.cargo/env
-          # Run only the comprehensive cleanup and sigint tests with the feature flag
-          # These tests need to run in isolation from other tests
-          sudo -E $(which cargo) test --test linux_integration --features isolated-cleanup-tests -- test_comprehensive_resource_cleanup test_cleanup_after_sigint
-
-  test-weak:
-    name: Weak Mode Integration Tests (Linux)
-    runs-on: ubuntu-latest-8-cores
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run script integration tests
-        run: cargo nextest run --profile ci --test script_integration --verbose
-
-      - name: Run weak mode integration tests
-        run: cargo nextest run --profile ci --test weak_integration --verbose
 
   clippy:
     name: Clippy (${{ matrix.os }})

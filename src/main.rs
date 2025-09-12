@@ -151,11 +151,12 @@ fn setup_logging(verbosity: u8) {
 fn cleanup_orphans() -> Result<()> {
     use anyhow::Context;
     use std::fs;
+    #[cfg(target_os = "linux")]
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
     use tracing::{debug, info};
 
-    let canary_dir = PathBuf::from("/tmp/httpjail");
+    let canary_dir = httpjail::jail::get_canary_dir();
     let orphan_timeout = Duration::from_secs(5); // Short timeout to catch recent orphans
 
     debug!("Starting direct orphan cleanup scan");
@@ -355,10 +356,8 @@ async fn main() -> Result<()> {
             let mut parts = s.split_whitespace();
             match (parts.next(), parts.next()) {
                 (Some(maybe_method), Some(url_rest)) => {
-                    let method = maybe_method
-                        .parse::<Method>()
-                        .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
-                        .unwrap_or(Method::GET);
+                    let method_str = maybe_method.to_ascii_uppercase();
+                    let method = method_str.parse::<Method>().unwrap_or(Method::GET);
                     (method, url_rest.to_string())
                 }
                 _ => (Method::GET, s.clone()),
@@ -366,10 +365,8 @@ async fn main() -> Result<()> {
         } else {
             let maybe_method = &test_vals[0];
             let url = &test_vals[1];
-            let method = maybe_method
-                .parse::<Method>()
-                .or_else(|_| maybe_method.to_ascii_uppercase().parse::<Method>())
-                .unwrap_or(Method::GET);
+            let method_str = maybe_method.to_ascii_uppercase();
+            let method = method_str.parse::<Method>().unwrap_or(Method::GET);
             (method, url.clone())
         };
 
@@ -459,7 +456,8 @@ async fn main() -> Result<()> {
     }
 
     // Create jail canary dir early to reduce race with cleanup
-    std::fs::create_dir_all("/tmp/httpjail").ok();
+    let canary_dir = httpjail::jail::get_canary_dir();
+    std::fs::create_dir_all(&canary_dir).ok();
 
     // Configure and execute the target command inside a jail
     jail_config.http_proxy_port = actual_http_port;
