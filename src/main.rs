@@ -22,8 +22,8 @@ struct Args {
     ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
     /// Exit code 0 allows the request, non-zero blocks it
     /// stdout becomes additional context in the 403 response
-    #[arg(short = 's', long = "script", value_name = "PROG")]
-    script: Option<String>,
+    #[arg(long = "sh", value_name = "PROG")]
+    sh: Option<String>,
 
     /// Use JavaScript (V8) for evaluating requests
     /// The JavaScript code receives global variables:
@@ -33,7 +33,7 @@ struct Args {
     #[arg(
         long = "js",
         value_name = "CODE",
-        conflicts_with = "script",
+        conflicts_with = "sh",
         conflicts_with = "js_file"
     )]
     js: Option<String>,
@@ -43,7 +43,7 @@ struct Args {
     #[arg(
         long = "js-file",
         value_name = "FILE",
-        conflicts_with = "script",
+        conflicts_with = "sh",
         conflicts_with = "js"
     )]
     js_file: Option<String>,
@@ -295,7 +295,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    let rule_engine = if let Some(script) = &args.script {
+    let rule_engine = if let Some(script) = &args.sh {
         info!("Using script-based rule evaluation: {}", script);
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)

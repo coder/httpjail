@@ -35,8 +35,7 @@ impl ScriptRuleEngine {
 
         // Build the command
         let mut cmd = if self.script.contains(' ') {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            let mut cmd = tokio::process::Command::new(&shell);
+            let mut cmd = tokio::process::Command::new("sh");
             cmd.arg("-c").arg(&self.script);
             cmd
         } else {

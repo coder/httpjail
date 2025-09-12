@@ -42,7 +42,7 @@ httpjail --request-log requests.log --js "true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
 # Use custom script for request evaluation
-httpjail --script /path/to/check.sh -- ./my-app
+httpjail --sh /path/to/check.sh -- ./my-app
 # Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
 # Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
 
@@ -170,26 +170,21 @@ Instead of writing JavaScript, you can use a custom script to evaluate each requ
 
 ```bash
 # Simple script example
-cat > check_request.sh << 'EOF'
 #!/bin/bash
-# Allow only GitHub and reject everything else
-if [[ "$HTTPJAIL_HOST" == "github.com" ]]; then
-    exit 0
+if [ "$HTTPJAIL_HOST" = "github.com" ] && [ "$HTTPJAIL_METHOD" = "GET" ]; then
+    exit 0  # Allow the request
 else
-    echo "Access denied: $HTTPJAIL_HOST is not on the allowlist"
-    exit 1
+    exit 1  # Block the request
 fi
-EOF
-chmod +x check_request.sh
 
 # Use the script
-httpjail --script ./check_request.sh -- curl https://github.com
+httpjail --sh ./check_request.sh -- curl https://github.com
 
 # Inline script (with spaces, executed via shell)
-httpjail --script '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
+httpjail --sh '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
 ```
 
-If `--script` has spaces, it's run through `$SHELL` (default `/bin/sh`); otherwise it's executed directly.
+If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
 
 **Environment variables provided to the script:**
 
@@ -259,7 +254,7 @@ All request information is available via the `r` object:
 - JavaScript evaluation is generally faster than external script execution
 
 > [!NOTE]
-> The `--js` flag conflicts with `--script` and `--js-file`. Only one evaluation method can be used at a time.
+> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
 
 ### Advanced Options
 
