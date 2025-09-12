@@ -10,6 +10,17 @@ protocol), we must establish a timeout for the operation.
 
 Timeouts must not preclude long-running connections such as GRPC or WebSocket.
 
+## Building
+
+For faster builds during development and debugging, use the `fast` profile:
+
+```bash
+cargo build --profile fast
+```
+
+This profile inherits from release mode but uses lower optimization levels and disables LTO
+for significantly faster build times while still providing reasonable performance.
+
 ## Testing
 
 When writing tests, prefer pure rust solutions over shell script wrappers.
@@ -65,7 +76,34 @@ To debug CI failures on Linux:
 gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail
 ```
 
-The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. Tests run as the `ci` user, not root. When building manually:
+The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`. **IMPORTANT: Never modify files in this directory directly as it will interfere with running CI jobs.**
+
+### Testing Local Changes on CI
+
+When testing local changes on the CI instance, always work in a fresh directory named after your branch:
+
 ```bash
-su - ci -c 'cd /home/ci/actions-runner/_work/httpjail/httpjail && cargo test'
+# Set up a fresh workspace for your branch
+BRANCH_NAME="your-branch-name"
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+  rm -rf /tmp/httpjail-$BRANCH_NAME
+  git clone https://github.com/coder/httpjail /tmp/httpjail-$BRANCH_NAME
+  cd /tmp/httpjail-$BRANCH_NAME
+  git checkout $BRANCH_NAME
+"
+
+# Sync local changes to the test workspace
+gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
+gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
+
+# Build and test in the isolated workspace (using shared cargo cache)
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+  cd /tmp/httpjail-$BRANCH_NAME
+  export CARGO_HOME=/home/ci/.cargo
+  export CARGO_TARGET_DIR=/home/ci/.cargo/shared-target
+  /home/ci/.cargo/bin/cargo build --profile fast
+  sudo /home/ci/.cargo/shared-target/fast/httpjail --help
+"
 ```
+
+This ensures you don't interfere with active CI jobs and provides a clean environment for testing.

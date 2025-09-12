@@ -85,9 +85,7 @@ fn mount_namespace(namespace_name: &str) -> Result<()> {
         .context("Failed to spawn process in namespace")?;
 
     // Get the PID and link the namespace
-    let pid = sleep_cmd
-        .id()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get process ID"))?;
+    let pid = sleep_cmd.id();
     let proc_ns = format!("/proc/{}/ns/net", pid);
 
     // Create a bind mount of the namespace
