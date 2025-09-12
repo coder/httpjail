@@ -52,3 +52,9 @@ tempfile = "3.8"
 assert_cmd = "2.0"
 predicates = "3.0"
 serial_test = "3.0"
+
+[profile.fast]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16

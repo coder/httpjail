@@ -1,6 +1,9 @@
 mod nftables;
 mod resources;
 
+#[cfg(target_os = "linux")]
+pub mod docker;
+
 use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
