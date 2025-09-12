@@ -405,7 +405,28 @@ impl Jail for DockerLinux {
     where
         Self: Sized,
     {
-        // Delegate to LinuxJail for orphan cleanup
+        // Clean up Docker-specific resources first
+
+        // Clean up orphaned Docker network
+        let _docker_network = ManagedResource::<DockerNetwork>::for_existing(jail_id);
+
+        // Clean up orphaned Docker routing table
+        let table_name = format!("httpjail_docker_{}", jail_id);
+        let output = Command::new("nft")
+            .args(["delete", "table", "ip", &table_name])
+            .output()
+            .context("Failed to delete Docker routing table")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
+                warn!("Failed to delete orphaned Docker routing table: {}", stderr);
+            }
+        } else {
+            debug!("Cleaned up orphaned Docker routing table {}", table_name);
+        }
+
+        // Then delegate to LinuxJail for standard orphan cleanup
         LinuxJail::cleanup_orphaned(jail_id)
     }
 }
