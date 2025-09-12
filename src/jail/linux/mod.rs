@@ -1,7 +1,8 @@
 mod nftables;
 mod resources;
 
-use super::{Jail, JailConfig};
+use super::Jail;
+use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
@@ -492,15 +493,16 @@ nameserver 8.8.4.4\n",
             namespace_name
         );
 
-        // Create a temporary resolv.conf with public DNS
-        let temp_resolv = format!("/tmp/httpjail_resolv_{}.conf", &namespace_name);
-        std::fs::write(
-            &temp_resolv,
-            "# Temporary DNS for httpjail namespace\n\
-             nameserver 8.8.8.8\n\
-             nameserver 8.8.4.4\n\
-             nameserver 1.1.1.1\n",
-        )?;
+        // Setup DNS for the namespace
+        // Create a temporary resolv.conf before running the nsenter command
+        let temp_dir = crate::jail::get_temp_dir();
+        std::fs::create_dir_all(&temp_dir).ok();
+        let temp_resolv = temp_dir
+            .join(format!("httpjail_resolv_{}.conf", &namespace_name))
+            .to_string_lossy()
+            .to_string();
+        std::fs::write(&temp_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
 
         // First, try to directly write to /etc/resolv.conf in the namespace using echo
         let write_cmd = Command::new("ip")
