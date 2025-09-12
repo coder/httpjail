@@ -85,13 +85,13 @@ impl HttpjailCommand {
                     "SUDO_ASKPASS",
                     format!(
                         "{}/askpass_macos.sh",
-                        std::env::current_dir().unwrap().display()
+                        std::env::current_dir().unwrap().to_string_lossy()
                     ),
                 );
             }
 
             sudo_cmd.arg("-E"); // Preserve environment
-            sudo_cmd.arg(&httpjail_path);
+            sudo_cmd.arg(httpjail_path);
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
@@ -100,7 +100,7 @@ impl HttpjailCommand {
             }
             sudo_cmd
         } else {
-            let mut cmd = Command::new(&httpjail_path);
+            let mut cmd = Command::new(httpjail_path);
             for arg in &self.args {
                 cmd.arg(arg);
             }
