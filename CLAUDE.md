@@ -75,45 +75,17 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 
 ### CI Helper Scripts
 
-Helper scripts are provided in `./scripts/` to simplify CI operations:
-
 ```bash
-# SSH into CI-1 instance
-./scripts/ci-ssh.sh
+# SSH into CI-1 instance (interactive or with commands)
+./scripts/ci-ssh.sh                          # Interactive shell
+./scripts/ci-ssh.sh "ls /tmp/httpjail-*"    # Run command
 
-# Sync local changes to CI (without committing)
-./scripts/ci-sync.sh [branch-name]
-
-# Build on CI
-./scripts/ci-build.sh [branch-name] [profile]  # profile: debug, release, or fast
-
-# Run tests on CI
-./scripts/ci-test.sh [branch-name] [test-filter]
-
-# Run httpjail directly on CI
-./scripts/ci-run.sh [branch-name] [httpjail-args...]
-```
-
-#### Example Workflow
-
-```bash
-# Sync and build your changes
-./scripts/ci-sync.sh
-./scripts/ci-build.sh
-
-# Run specific tests
-./scripts/ci-test.sh docker-run docker_run
-
-# Quick test with httpjail
-./scripts/ci-run.sh docker-run --js 'true' -- echo hello
-
-# Interactive debugging
-./scripts/ci-ssh.sh
+# SCP files to/from CI-1
+./scripts/ci-scp.sh src/ /tmp/httpjail-docker-run/     # Upload
+./scripts/ci-scp.sh root@ci-1:/path/to/file ./         # Download
 ```
 
 ### Manual Testing on CI
-
-If you prefer manual commands or need more control:
 
 ```bash
 # Set up a fresh workspace for your branch

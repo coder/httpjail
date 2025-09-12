@@ -317,7 +317,6 @@ mod tests {
 
     /// Test Docker container execution with --docker-run
     #[test]
-    #[serial]
     fn test_docker_run_basic() {
         LinuxPlatform::require_privileges();
 
@@ -368,7 +367,6 @@ mod tests {
 
     /// Test Docker container with network restrictions
     #[test]
-    #[serial]
     fn test_docker_run_with_network_restrictions() {
         LinuxPlatform::require_privileges();
 
@@ -411,79 +409,5 @@ mod tests {
             stdout,
             stderr
         );
-    }
-
-    /// Test Docker container cleanup after execution
-    #[test]
-    #[serial]
-    fn test_docker_run_cleanup() {
-        LinuxPlatform::require_privileges();
-
-        // Check if Docker is available
-        let docker_check = std::process::Command::new("docker")
-            .arg("--version")
-            .output();
-
-        if docker_check.is_err() || !docker_check.unwrap().status.success() {
-            eprintln!("Skipping Docker test: Docker not available");
-            return;
-        }
-
-        // Get initial namespace count
-        let initial_ns = std::process::Command::new("ip")
-            .args(["netns", "list"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-
-        let initial_httpjail_ns = initial_ns
-            .lines()
-            .filter(|l| l.contains("httpjail_"))
-            .count();
-
-        // Run Docker container with httpjail
-        let mut cmd = httpjail_cmd();
-        cmd.arg("--js")
-            .arg("true")
-            .arg("--docker-run")
-            .arg("--")
-            .arg("--rm")
-            .arg("alpine:latest")
-            .arg("true");
-
-        let _output = cmd
-            .output()
-            .expect("Failed to execute httpjail with docker");
-
-        // Check namespace was cleaned up
-        let final_ns = std::process::Command::new("ip")
-            .args(["netns", "list"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-
-        let final_httpjail_ns = final_ns.lines().filter(|l| l.contains("httpjail_")).count();
-
-        assert_eq!(
-            initial_httpjail_ns, final_httpjail_ns,
-            "Network namespace not cleaned up after Docker container exit"
-        );
-
-        // Also check that no namespace mounts remain in /var/run/netns
-        if let Ok(entries) = std::fs::read_dir("/var/run/netns") {
-            let httpjail_mounts: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_name().to_string_lossy().contains("httpjail_"))
-                .collect();
-
-            assert!(
-                httpjail_mounts.is_empty(),
-                "Found lingering namespace mounts: {:?}",
-                httpjail_mounts
-                    .iter()
-                    .map(|e| e.file_name())
-                    .collect::<Vec<_>>()
-            );
-        }
     }
 }

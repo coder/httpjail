@@ -78,32 +78,53 @@ fn mount_namespace(namespace_name: &str) -> Result<()> {
 
     let namespace_path = format!("/var/run/netns/{}", namespace_name);
 
-    // Find a process in the namespace to get its network namespace file descriptor
-    let mut sleep_cmd = Command::new("ip")
-        .args(["netns", "exec", namespace_name, "sleep", "1"])
-        .spawn()
-        .context("Failed to spawn process in namespace")?;
+    // Create the mount point file
+    std::fs::File::create(&namespace_path).context("Failed to create namespace mount point")?;
 
-    // Get the PID and link the namespace
-    let pid = sleep_cmd.id();
-    let proc_ns = format!("/proc/{}/ns/net", pid);
+    // Find the PID of any process already running in the namespace
+    // httpjail keeps a process alive in the namespace, so we can use that
+    let output = Command::new("ip")
+        .args(["netns", "pids", namespace_name])
+        .output()
+        .context("Failed to get PIDs in namespace")?;
 
-    // Create a bind mount of the namespace
-    Command::new("touch")
-        .arg(&namespace_path)
-        .status()
-        .context("Failed to create namespace mount point")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to get PIDs from namespace: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
-    Command::new("mount")
+    let pids_str = String::from_utf8_lossy(&output.stdout);
+    let first_pid = pids_str
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse::<u32>().ok())
+        .context("No process found in namespace")?;
+
+    let proc_ns = format!("/proc/{}/ns/net", first_pid);
+
+    // Verify the namespace file exists
+    if !Path::new(&proc_ns).exists() {
+        anyhow::bail!("Namespace file {} does not exist", proc_ns);
+    }
+
+    // Bind mount the namespace
+    let mount_status = Command::new("mount")
         .args(["--bind", &proc_ns, &namespace_path])
         .status()
         .context("Failed to bind mount namespace")?;
 
-    debug!("Mounted namespace at {}", namespace_path);
+    if !mount_status.success() {
+        // Clean up the mount point if mount failed
+        std::fs::remove_file(&namespace_path).ok();
+        anyhow::bail!("Failed to bind mount namespace");
+    }
 
-    // Clean up the sleep process
-    sleep_cmd.kill().ok();
-    sleep_cmd.wait().ok();
+    debug!(
+        "Mounted namespace at {} using PID {}",
+        namespace_path, first_pid
+    );
 
     Ok(())
 }
