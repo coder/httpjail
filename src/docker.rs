@@ -85,22 +85,23 @@ fn mount_namespace(namespace_name: &str) -> Result<()> {
         .context("Failed to spawn process in namespace")?;
 
     // Get the PID and link the namespace
-    if let Some(pid) = sleep_cmd.id() {
-        let proc_ns = format!("/proc/{}/ns/net", pid);
+    let pid = sleep_cmd
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get process ID"))?;
+    let proc_ns = format!("/proc/{}/ns/net", pid);
 
-        // Create a bind mount of the namespace
-        Command::new("touch")
-            .arg(&namespace_path)
-            .status()
-            .context("Failed to create namespace mount point")?;
+    // Create a bind mount of the namespace
+    Command::new("touch")
+        .arg(&namespace_path)
+        .status()
+        .context("Failed to create namespace mount point")?;
 
-        Command::new("mount")
-            .args(["--bind", &proc_ns, &namespace_path])
-            .status()
-            .context("Failed to bind mount namespace")?;
+    Command::new("mount")
+        .args(["--bind", &proc_ns, &namespace_path])
+        .status()
+        .context("Failed to bind mount namespace")?;
 
-        debug!("Mounted namespace at {}", namespace_path);
-    }
+    debug!("Mounted namespace at {}", namespace_path);
 
     // Clean up the sleep process
     sleep_cmd.kill().ok();
