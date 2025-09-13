@@ -12,6 +12,32 @@ struct DockerNetwork {
     network_name: String,
 }
 
+impl DockerNetwork {
+    const NETWORK_PREFIX: &'static str = "httpjail_";
+
+    /// Generate network name from jail ID
+    fn network_name_from_jail_id(jail_id: &str) -> String {
+        format!("{}{}", Self::NETWORK_PREFIX, jail_id)
+    }
+
+    /// Extract jail ID from network name
+    fn jail_id_from_network_name(network_name: &str) -> Option<&str> {
+        network_name.strip_prefix(Self::NETWORK_PREFIX)
+    }
+
+    /// Check if a Docker command failed due to resource not existing
+    fn is_not_found_error(stderr: &str) -> bool {
+        stderr.contains("not found")
+            || stderr.contains("No such")
+            || stderr.contains("does not exist")
+    }
+
+    /// Check if a Docker command failed due to resource already existing
+    fn is_already_exists_error(stderr: &str) -> bool {
+        stderr.contains("already exists")
+    }
+}
+
 /// Docker routing nftables resource that gets cleaned up on drop
 struct DockerRoutingTable {
     #[allow(dead_code)]
@@ -19,12 +45,18 @@ struct DockerRoutingTable {
     table_name: String,
 }
 
+impl DockerRoutingTable {
+    /// Generate table name from jail ID
+    fn table_name_from_jail_id(jail_id: &str) -> String {
+        format!("httpjail_docker_{}", jail_id)
+    }
+}
+
 impl SystemResource for DockerRoutingTable {
     fn create(jail_id: &str) -> Result<Self> {
-        let table_name = format!("httpjail_docker_{}", jail_id);
         Ok(Self {
             jail_id: jail_id.to_string(),
-            table_name,
+            table_name: Self::table_name_from_jail_id(jail_id),
         })
     }
 
@@ -38,10 +70,10 @@ impl SystemResource for DockerRoutingTable {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
-                warn!("Failed to delete Docker routing table: {}", stderr);
-            } else {
+            if DockerNetwork::is_not_found_error(&stderr) {
                 debug!("Docker routing table {} already removed", self.table_name);
+            } else {
+                warn!("Failed to delete Docker routing table: {}", stderr);
             }
         } else {
             info!("Removed Docker routing table {}", self.table_name);
@@ -51,25 +83,16 @@ impl SystemResource for DockerRoutingTable {
     }
 
     fn for_existing(jail_id: &str) -> Self {
-        let table_name = format!("httpjail_docker_{}", jail_id);
         Self {
             jail_id: jail_id.to_string(),
-            table_name,
+            table_name: Self::table_name_from_jail_id(jail_id),
         }
-    }
-}
-
-impl DockerNetwork {
-    #[allow(dead_code)]
-    fn new(jail_id: &str) -> Result<Self> {
-        let network_name = format!("httpjail_{}", jail_id);
-        Ok(Self { network_name })
     }
 }
 
 impl SystemResource for DockerNetwork {
     fn create(jail_id: &str) -> Result<Self> {
-        let network_name = format!("httpjail_{}", jail_id);
+        let network_name = Self::network_name_from_jail_id(jail_id);
 
         // Create Docker network with no default gateway (isolated)
         // Using a /24 subnet in the 172.20.x.x range
@@ -92,7 +115,7 @@ impl SystemResource for DockerNetwork {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("already exists") {
+            if Self::is_already_exists_error(&stderr) {
                 info!("Docker network {} already exists", network_name);
             } else {
                 anyhow::bail!("Failed to create Docker network: {}", stderr);
@@ -117,7 +140,7 @@ impl SystemResource for DockerNetwork {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("not found") {
+            if Self::is_not_found_error(&stderr) {
                 debug!("Docker network {} already removed", self.network_name);
             } else {
                 warn!("Failed to remove Docker network: {}", stderr);
@@ -130,8 +153,9 @@ impl SystemResource for DockerNetwork {
     }
 
     fn for_existing(jail_id: &str) -> Self {
-        let network_name = format!("httpjail_{}", jail_id);
-        Self { network_name }
+        Self {
+            network_name: Self::network_name_from_jail_id(jail_id),
+        }
     }
 }
 
@@ -221,13 +245,10 @@ impl DockerLinux {
         let canary_dir = crate::jail::get_canary_dir();
 
         for network_name in networks.lines() {
-            // Only process httpjail networks
-            if !network_name.starts_with("httpjail_") {
+            // Extract jail_id from network name (skip non-httpjail networks)
+            let Some(jail_id) = DockerNetwork::jail_id_from_network_name(network_name) else {
                 continue;
-            }
-
-            // Extract jail_id from network name
-            let jail_id = &network_name[9..]; // Skip "httpjail_" prefix
+            };
 
             // Check if canary file exists for this jail
             let canary_path = canary_dir.join(jail_id);
@@ -245,7 +266,7 @@ impl DockerLinux {
 
                 if !rm_output.status.success() {
                     let stderr = String::from_utf8_lossy(&rm_output.stderr);
-                    if !stderr.contains("not found") {
+                    if !DockerNetwork::is_not_found_error(&stderr) {
                         warn!(
                             "Failed to remove orphaned Docker network {}: {}",
                             network_name, stderr
@@ -258,47 +279,23 @@ impl DockerLinux {
         Ok(())
     }
 
+    /// Docker flags that take a value as the next argument
+    const FLAGS_WITH_VALUES: &'static [&'static str] =
+        &["-e", "-v", "-p", "--name", "--entrypoint", "-w", "--user"];
+
     /// Build the docker command with isolated network
     fn build_docker_command(
         &self,
         docker_args: &[String],
         extra_env: &[(String, String)],
     ) -> Result<Command> {
-        let network_name = format!("httpjail_{}", self.config.jail_id);
+        let network_name = DockerNetwork::network_name_from_jail_id(&self.config.jail_id);
         // Parse docker arguments to filter out conflicting options and find the image
         let modified_args = Self::filter_network_args(docker_args);
 
         // Find where the image name is in the args
-        let mut image_idx = None;
-        let mut skip_next = false;
-
-        for (i, arg) in modified_args.iter().enumerate() {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
-
-            // Skip known flags that take values
-            if arg == "-e"
-                || arg == "-v"
-                || arg == "-p"
-                || arg == "--name"
-                || arg == "--entrypoint"
-                || arg == "-w"
-                || arg == "--user"
-            {
-                skip_next = true;
-                continue;
-            }
-
-            // If it doesn't start with -, it's likely the image
-            if !arg.starts_with('-') {
-                image_idx = Some(i);
-                break;
-            }
-        }
-
-        let image_idx = image_idx.context("Could not find Docker image in arguments")?;
+        let image_idx = Self::find_image_index(&modified_args)
+            .context("Could not find Docker image in arguments")?;
 
         // Split args into: docker options, image, and command
         let docker_opts = &modified_args[..image_idx];
@@ -358,6 +355,31 @@ impl DockerLinux {
         Ok(cmd)
     }
 
+    /// Find the index of the Docker image in the arguments
+    fn find_image_index(args: &[String]) -> Option<usize> {
+        let mut skip_next = false;
+
+        for (i, arg) in args.iter().enumerate() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+
+            // Skip known flags that take values
+            if Self::FLAGS_WITH_VALUES.contains(&arg.as_str()) {
+                skip_next = true;
+                continue;
+            }
+
+            // If it doesn't start with -, it's likely the image
+            if !arg.starts_with('-') {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
     /// Filter out any existing --network arguments from docker args
     fn filter_network_args(docker_args: &[String]) -> Vec<String> {
         let mut modified_args = Vec::new();
@@ -403,7 +425,7 @@ impl DockerLinux {
             // Add nftables rules to:
             // 1. Allow traffic from Docker network to jail's proxy ports
             // 2. DNAT HTTP/HTTPS traffic to the proxy
-            let table_name = format!("httpjail_docker_{}", self.config.jail_id);
+            let table_name = DockerRoutingTable::table_name_from_jail_id(&self.config.jail_id);
 
             // Create nftables rules
             let nft_rules = format!(
