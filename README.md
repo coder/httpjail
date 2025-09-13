@@ -123,7 +123,6 @@ httpjail creates an isolated network environment for the target process, interce
 
 ### macOS
 
-- macOS 10.15+ (Catalina or later)
 - No special permissions required (runs in weak mode)
 
 ## Configuration File
