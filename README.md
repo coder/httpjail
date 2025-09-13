@@ -11,6 +11,8 @@ Install:
 cargo install httpjail
 ```
 
+Or download a pre-built binary from the [releases page](https://github.com/coder/httpjail/releases).
+
 ## Features
 
 > [!WARNING]
@@ -238,6 +240,7 @@ If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
 > Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
 ## Advanced Options
+
 ```bash
 # Verbose logging
 httpjail -vvv --js "true" -- curl https://example.com
