@@ -225,12 +225,23 @@ impl<J: Jail> Jail for ManagedJail<J> {
         // Cleanup orphans first
         if self.enable_heartbeat {
             self.cleanup_orphans()?;
+
+            // Create canary BEFORE setting up jail to prevent race condition
+            // where another jail's cleanup might delete our network
+            self.create_canary()?;
         }
 
-        // Setup the inner jail
-        self.jail.setup(proxy_port)?;
+        // Setup the inner jail (which may create Docker networks)
+        let setup_result = self.jail.setup(proxy_port);
 
-        // Start heartbeat after successful setup
+        // If setup failed, clean up the canary we created
+        if setup_result.is_err() && self.enable_heartbeat {
+            let _ = self.delete_canary();
+            return setup_result;
+        }
+
+        // Start heartbeat thread after successful setup
+        // Note: This will try to create canary again but create_canary is idempotent
         self.start_heartbeat()?;
 
         Ok(())
@@ -272,8 +283,20 @@ impl<J: Jail> Drop for ManagedJail<J> {
     fn drop(&mut self) {
         // Best effort cleanup
         let _ = self.stop_heartbeat();
-        if self.enable_heartbeat {
+
+        // Explicitly cleanup jail resources BEFORE deleting canary
+        // This ensures resources are freed before we signal that the jail is gone
+        let cleanup_result = self.jail.cleanup();
+
+        // Only delete canary if cleanup succeeded
+        // If cleanup failed, leave the canary so orphan cleanup can retry later
+        if self.enable_heartbeat && cleanup_result.is_ok() {
             let _ = self.delete_canary();
+        } else if cleanup_result.is_err() {
+            error!(
+                "Failed to cleanup jail '{}', leaving canary for orphan cleanup",
+                self.jail.jail_id()
+            );
         }
     }
 }
