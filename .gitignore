@@ -2,3 +2,4 @@ target/
 
 # Local Claude Code instructions (not committed to repo)
 CLAUDE.local.md
+artifacts/
