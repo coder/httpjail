@@ -51,7 +51,14 @@ pub trait Jail: Send + Sync {
 
 /// Get the canary directory for tracking jail lifetimes
 pub fn get_canary_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from("/tmp/httpjail")
+    // Use user data directory instead of /tmp to avoid issues with tmp cleaners
+    // This ensures canaries persist across reboots and are only removed when we want them to be
+    if let Some(data_dir) = dirs::data_dir() {
+        data_dir.join("httpjail").join("canaries")
+    } else {
+        // Fallback to /tmp if we can't get user data dir (should rarely happen)
+        std::path::PathBuf::from("/tmp/httpjail")
+    }
 }
 
 /// Get the directory for httpjail temporary files (like resolv.conf)

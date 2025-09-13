@@ -202,6 +202,62 @@ impl DockerLinux {
         })
     }
 
+    /// Clean up all orphaned Docker networks that don't have corresponding canary files
+    fn cleanup_all_orphaned_docker_networks() -> Result<()> {
+        debug!("Scanning for orphaned Docker networks");
+
+        // List all Docker networks
+        let output = Command::new("docker")
+            .args(["network", "ls", "--format", "{{.Name}}"])
+            .output()
+            .context("Failed to list Docker networks")?;
+
+        if !output.status.success() {
+            warn!("Failed to list Docker networks for cleanup");
+            return Ok(());
+        }
+
+        let networks = String::from_utf8_lossy(&output.stdout);
+        let canary_dir = crate::jail::get_canary_dir();
+
+        for network_name in networks.lines() {
+            // Only process httpjail networks
+            if !network_name.starts_with("httpjail_") {
+                continue;
+            }
+
+            // Extract jail_id from network name
+            let jail_id = &network_name[9..]; // Skip "httpjail_" prefix
+
+            // Check if canary file exists for this jail
+            let canary_path = canary_dir.join(jail_id);
+            if !canary_path.exists() {
+                info!(
+                    "Found orphaned Docker network {} without canary, removing",
+                    network_name
+                );
+
+                // Remove the orphaned network
+                let rm_output = Command::new("docker")
+                    .args(["network", "rm", network_name])
+                    .output()
+                    .context("Failed to remove orphaned Docker network")?;
+
+                if !rm_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&rm_output.stderr);
+                    if !stderr.contains("not found") {
+                        warn!(
+                            "Failed to remove orphaned Docker network {}: {}",
+                            network_name, stderr
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Build the docker command with isolated network
     fn build_docker_command(
         &self,
@@ -412,6 +468,10 @@ impl DockerLinux {
 
 impl Jail for DockerLinux {
     fn setup(&mut self, proxy_port: u16) -> Result<()> {
+        // Clean up any orphaned Docker networks first
+        // This handles cases where Docker networks exist without corresponding canary files
+        Self::cleanup_all_orphaned_docker_networks()?;
+
         // First setup the inner Linux jail
         self.inner_jail.setup(proxy_port)?;
 
