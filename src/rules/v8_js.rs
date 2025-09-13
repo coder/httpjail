@@ -63,7 +63,12 @@ impl V8JsRuleEngine {
     }
 
     /// Evaluate the JavaScript rule against the given request
-    fn execute_js_rule(&self, method: &Method, url: &str) -> (bool, Option<String>) {
+    fn execute_js_rule(
+        &self,
+        method: &Method,
+        url: &str,
+        requester_ip: &str,
+    ) -> (bool, Option<String>) {
         let parsed_url = match Url::parse(url) {
             Ok(u) => u,
             Err(e) => {
@@ -83,7 +88,7 @@ impl V8JsRuleEngine {
 
         // Create a new isolate and context for this evaluation
         // This ensures thread safety at the cost of some performance
-        match self.create_and_execute(method.as_str(), url, scheme, host, path) {
+        match self.create_and_execute(method.as_str(), url, scheme, host, path, requester_ip) {
             Ok(result) => result,
             Err(e) => {
                 warn!("JavaScript execution failed: {}", e);
@@ -99,6 +104,7 @@ impl V8JsRuleEngine {
         scheme: &str,
         host: &str,
         path: &str,
+        requester_ip: &str,
     ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
         let handle_scope = &mut v8::HandleScope::new(&mut isolate);
@@ -136,6 +142,11 @@ impl V8JsRuleEngine {
         if let Some(path_str) = v8::String::new(context_scope, path) {
             let key = v8::String::new(context_scope, "path").unwrap();
             r_obj.set(context_scope, key.into(), path_str.into());
+        }
+
+        if let Some(ip_str) = v8::String::new(context_scope, requester_ip) {
+            let key = v8::String::new(context_scope, "requester_ip").unwrap();
+            r_obj.set(context_scope, key.into(), ip_str.into());
         }
 
         // Initialize block_message as undefined (can be set by user script)
@@ -188,16 +199,17 @@ impl V8JsRuleEngine {
 
 #[async_trait]
 impl RuleEngineTrait for V8JsRuleEngine {
-    async fn evaluate(&self, method: Method, url: &str) -> EvaluationResult {
+    async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
         // Run the JavaScript evaluation in a blocking task to avoid
         // issues with V8's single-threaded nature
         let js_code = self.js_code.clone();
         let method_clone = method.clone();
         let url_clone = url.to_string();
+        let ip_clone = requester_ip.to_string();
 
         let (allowed, block_message) = tokio::task::spawn_blocking(move || {
             let engine = V8JsRuleEngine { js_code };
-            engine.execute_js_rule(&method_clone, &url_clone)
+            engine.execute_js_rule(&method_clone, &url_clone, &ip_clone)
         })
         .await
         .unwrap_or_else(|e| {
@@ -237,7 +249,7 @@ mod tests {
         let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
 
         let result = engine
-            .evaluate(Method::GET, "https://github.com/test")
+            .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
     }
@@ -249,7 +261,7 @@ mod tests {
         let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
 
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
@@ -261,12 +273,12 @@ mod tests {
         let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
 
         let result = engine
-            .evaluate(Method::GET, "https://api.github.com/v3")
+            .evaluate(Method::GET, "https://api.github.com/v3", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         let result = engine
-            .evaluate(Method::POST, "https://api.github.com/v3")
+            .evaluate(Method::POST, "https://api.github.com/v3", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
@@ -278,12 +290,12 @@ mod tests {
         let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
 
         let result = engine
-            .evaluate(Method::GET, "https://example.com/api/test")
+            .evaluate(Method::GET, "https://example.com/api/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         let result = engine
-            .evaluate(Method::GET, "https://example.com/public/test")
+            .evaluate(Method::GET, "https://example.com/public/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
@@ -297,25 +309,25 @@ mod tests {
 
         // Test GitHub allow
         let result = engine
-            .evaluate(Method::GET, "https://github.com/user/repo")
+            .evaluate(Method::GET, "https://github.com/user/repo", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         // Test social media block
         let result = engine
-            .evaluate(Method::GET, "https://facebook.com/profile")
+            .evaluate(Method::GET, "https://facebook.com/profile", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
 
         // Test API allow
         let result = engine
-            .evaluate(Method::POST, "https://example.com/api/data")
+            .evaluate(Method::POST, "https://example.com/api/data", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         // Test default deny
         let result = engine
-            .evaluate(Method::GET, "https://example.com/public")
+            .evaluate(Method::GET, "https://example.com/public", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
@@ -338,7 +350,7 @@ mod tests {
 
         // Should return deny on runtime error
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
     }
@@ -352,7 +364,7 @@ mod tests {
 
         // Should block facebook with custom message
         let result = engine
-            .evaluate(Method::GET, "https://facebook.com/test")
+            .evaluate(Method::GET, "https://facebook.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(
@@ -362,7 +374,7 @@ mod tests {
 
         // Should allow others without message
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test")
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
         assert_eq!(result.context, None);

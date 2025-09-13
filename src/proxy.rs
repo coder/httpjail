@@ -293,7 +293,8 @@ impl ProxyServer {
 
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_http_connection(stream, rule_engine, cert_manager).await
+                                handle_http_connection(stream, rule_engine, cert_manager, addr)
+                                    .await
                             {
                                 error!("Error handling HTTP connection: {:?}", e);
                             }
@@ -335,7 +336,8 @@ impl ProxyServer {
 
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_https_connection(stream, rule_engine, cert_manager).await
+                                handle_https_connection(stream, rule_engine, cert_manager, addr)
+                                    .await
                             {
                                 error!("Error handling HTTPS connection: {:?}", e);
                             }
@@ -364,10 +366,16 @@ async fn handle_http_connection(
     stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: SocketAddr,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| {
-        handle_http_request(req, Arc::clone(&rule_engine), Arc::clone(&cert_manager))
+        handle_http_request(
+            req,
+            Arc::clone(&rule_engine),
+            Arc::clone(&cert_manager),
+            remote_addr,
+        )
     });
 
     http1::Builder::new()
@@ -383,15 +391,17 @@ async fn handle_https_connection(
     stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: SocketAddr,
 ) -> Result<()> {
     // Delegate to the TLS-specific module
-    crate::proxy_tls::handle_https_connection(stream, rule_engine, cert_manager).await
+    crate::proxy_tls::handle_https_connection(stream, rule_engine, cert_manager, remote_addr).await
 }
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
     rule_engine: Arc<RuleEngine>,
     _cert_manager: Arc<CertificateManager>,
+    remote_addr: SocketAddr,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -412,10 +422,16 @@ pub async fn handle_http_request(
         format!("http://{}{}", host, path)
     };
 
-    debug!("Proxying HTTP request: {} {}", method, full_url);
+    debug!(
+        "Proxying HTTP request: {} {} from {}",
+        method, full_url, remote_addr
+    );
 
-    // Evaluate rules with method
-    let evaluation = rule_engine.evaluate_with_context(method, &full_url).await;
+    // Evaluate rules with method and requester IP
+    let requester_ip = remote_addr.ip().to_string();
+    let evaluation = rule_engine
+        .evaluate_with_context_and_ip(method, &full_url, &requester_ip)
+        .await;
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);

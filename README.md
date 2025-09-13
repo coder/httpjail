@@ -175,6 +175,7 @@ All request information is available via the `r` object:
 - `r.host` - Hostname from the URL
 - `r.scheme` - URL scheme (http or https)
 - `r.path` - Path portion of the URL
+- `r.requester_ip` - IP address of the client making the request
 - `r.block_message` - Optional message to set when denying (writable)
 
 **JavaScript evaluation rules:**
@@ -224,6 +225,7 @@ If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
 - `HTTPJAIL_HOST` - Hostname from the URL
 - `HTTPJAIL_SCHEME` - URL scheme (http or https)
 - `HTTPJAIL_PATH` - Path component of the URL
+- `HTTPJAIL_REQUESTER_IP` - IP address of the client making the request
 
 **Script requirements:**
 
@@ -236,7 +238,6 @@ If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
 > Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
 
 ## Advanced Options
-
 ```bash
 # Verbose logging
 httpjail -vvv --js "true" -- curl https://example.com

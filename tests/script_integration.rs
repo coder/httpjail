@@ -2,6 +2,7 @@ use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::{Action, RuleEngineTrait};
 use hyper::Method;
 use std::fs;
+use std::io::Write;
 use tempfile::NamedTempFile;
 
 #[tokio::test]
@@ -34,13 +35,13 @@ fi
 
     // Test allowed request
     let result = engine
-        .evaluate(Method::GET, "https://github.com/user/repo")
+        .evaluate(Method::GET, "https://github.com/user/repo", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Allow));
 
     // Test denied request with context
     let result = engine
-        .evaluate(Method::POST, "https://example.com/api")
+        .evaluate(Method::POST, "https://example.com/api", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Deny));
     assert_eq!(
@@ -82,18 +83,18 @@ fi
 
     // Test allowed methods
     let result = engine
-        .evaluate(Method::GET, "https://example.com/api")
+        .evaluate(Method::GET, "https://example.com/api", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Allow));
 
     let result = engine
-        .evaluate(Method::HEAD, "https://example.com/api")
+        .evaluate(Method::HEAD, "https://example.com/api", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Allow));
 
     // Test denied method with context
     let result = engine
-        .evaluate(Method::POST, "https://example.com/api")
+        .evaluate(Method::POST, "https://example.com/api", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Deny));
     assert_eq!(result.context, Some("Method POST not allowed".to_string()));
@@ -110,12 +111,16 @@ async fn test_inline_script_evaluation() {
     );
 
     let result = engine
-        .evaluate(Method::GET, "https://example.com/api/v1/health")
+        .evaluate(
+            Method::GET,
+            "https://example.com/api/v1/health",
+            "127.0.0.1",
+        )
         .await;
     assert!(matches!(result.action, Action::Allow));
 
     let result = engine
-        .evaluate(Method::GET, "https://example.com/api/v2/users")
+        .evaluate(Method::GET, "https://example.com/api/v2/users", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Deny));
 }
@@ -156,7 +161,7 @@ fi
 
     // Test allowed GitHub GET
     let result = engine
-        .evaluate(Method::GET, "https://github.com/user/repo")
+        .evaluate(Method::GET, "https://github.com/user/repo", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Allow));
     assert_eq!(
@@ -166,14 +171,14 @@ fi
 
     // Test allowed API POST
     let result = engine
-        .evaluate(Method::POST, "https://api.example.com/users")
+        .evaluate(Method::POST, "https://api.example.com/users", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Allow));
     assert_eq!(result.context, Some("API write access allowed".to_string()));
 
     // Test denied request
     let result = engine
-        .evaluate(Method::POST, "https://github.com/user/repo")
+        .evaluate(Method::POST, "https://github.com/user/repo", "127.0.0.1")
         .await;
     assert!(matches!(result.action, Action::Deny));
     assert!(
@@ -184,5 +189,47 @@ fi
     );
 
     // TempPath will be automatically deleted when it goes out of scope
+    drop(script_path);
+}
+
+#[tokio::test]
+async fn test_script_receives_requester_ip() {
+    // Create a script that logs the requester IP
+    let mut script = NamedTempFile::new().unwrap();
+    let script_content = r#"#!/bin/bash
+if [ -n "$HTTPJAIL_REQUESTER_IP" ]; then
+    echo "Request from IP: $HTTPJAIL_REQUESTER_IP"
+    exit 0
+else
+    echo "No requester IP provided"
+    exit 1
+fi
+"#;
+    script.write_all(script_content.as_bytes()).unwrap();
+    script.flush().unwrap();
+
+    let script_path = script.into_temp_path();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+
+    // Test with a specific IP
+    let result = engine
+        .evaluate(Method::GET, "https://example.com", "192.168.1.100")
+        .await;
+
+    assert!(matches!(result.action, Action::Allow));
+    assert!(result.context.is_some());
+    assert!(
+        result
+            .context
+            .unwrap()
+            .contains("Request from IP: 192.168.1.100")
+    );
+
     drop(script_path);
 }

@@ -37,8 +37,9 @@ pub async fn handle_https_connection(
     stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
-    debug!("Handling new HTTPS connection");
+    debug!("Handling new HTTPS connection from {}", remote_addr);
 
     // Peek at the first few bytes to determine if this is HTTP or TLS
     let mut peek_buf = [0; 6];
@@ -64,18 +65,18 @@ pub async fn handle_https_connection(
     if peek_buf[0] == 0x16 && n > 1 && (peek_buf[1] == 0x03 || peek_buf[1] == 0x02) {
         // This is a TLS ClientHello - we're in transparent proxy mode
         debug!("Detected TLS ClientHello - transparent proxy mode");
-        handle_transparent_tls(stream, rule_engine, cert_manager).await
+        handle_transparent_tls(stream, rule_engine, cert_manager, remote_addr).await
     } else if peek_buf[0] >= 0x41 && peek_buf[0] <= 0x5A {
         // This looks like HTTP (starts with uppercase ASCII letter)
         // Check if it's a CONNECT request
         let request_str = String::from_utf8_lossy(&peek_buf);
         if request_str.starts_with("CONNEC") {
             debug!("Detected CONNECT request - explicit proxy mode");
-            handle_connect_tunnel(stream, rule_engine, cert_manager).await
+            handle_connect_tunnel(stream, rule_engine, cert_manager, remote_addr).await
         } else {
             // Regular HTTP on HTTPS port
             debug!("Detected plain HTTP on HTTPS port");
-            handle_plain_http(stream, rule_engine, cert_manager).await
+            handle_plain_http(stream, rule_engine, cert_manager, remote_addr).await
         }
     } else {
         warn!(
@@ -159,6 +160,7 @@ async fn handle_transparent_tls(
     mut stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
     debug!("Handling transparent TLS connection");
 
@@ -212,7 +214,7 @@ async fn handle_transparent_tls(
     let io = TokioIo::new(tls_stream);
     let service = service_fn(move |req| {
         let host_clone = hostname.clone();
-        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
+        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone, remote_addr)
     });
 
     debug!("Starting HTTP/1.1 server for decrypted requests");
@@ -230,6 +232,7 @@ async fn handle_connect_tunnel(
     stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
     debug!("Handling CONNECT tunnel");
 
@@ -305,8 +308,9 @@ async fn handle_connect_tunnel(
 
     // Check if this host is allowed
     let full_url = format!("https://{}", target);
+    let requester_ip = remote_addr.ip().to_string();
     let evaluation = rule_engine
-        .evaluate_with_context(Method::GET, &full_url)
+        .evaluate_with_context_and_ip(Method::GET, &full_url, &requester_ip)
         .await;
     match evaluation.action {
         Action::Allow => {
@@ -337,7 +341,7 @@ async fn handle_connect_tunnel(
             debug!("Sent 200 Connection Established, starting TLS handshake");
 
             // Now perform TLS handshake with the client
-            perform_tls_interception(stream, rule_engine, cert_manager, host).await
+            perform_tls_interception(stream, rule_engine, cert_manager, host, remote_addr).await
         }
         Action::Deny => {
             warn!("CONNECT denied to: {}", host);
@@ -372,6 +376,7 @@ async fn perform_tls_interception(
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
     host: &str,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
     // Get certificate for the host
     let (cert_chain, key) = cert_manager
@@ -405,9 +410,10 @@ async fn perform_tls_interception(
     // Now handle the decrypted HTTPS requests
     let io = TokioIo::new(tls_stream);
     let host_string = host.to_string();
+    let remote_addr_copy = remote_addr; // Copy for the closure
     let service = service_fn(move |req| {
         let host_clone = host_string.clone();
-        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone)
+        handle_decrypted_https_request(req, Arc::clone(&rule_engine), host_clone, remote_addr_copy)
     });
 
     debug!("Starting HTTP/1.1 server for decrypted requests");
@@ -425,12 +431,18 @@ async fn handle_plain_http(
     stream: TcpStream,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
     debug!("Handling plain HTTP on HTTPS port");
 
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| {
-        crate::proxy::handle_http_request(req, Arc::clone(&rule_engine), Arc::clone(&cert_manager))
+        crate::proxy::handle_http_request(
+            req,
+            Arc::clone(&rule_engine),
+            Arc::clone(&cert_manager),
+            remote_addr,
+        )
     });
 
     http1::Builder::new()
@@ -447,6 +459,7 @@ async fn handle_decrypted_https_request(
     req: Request<Incoming>,
     rule_engine: Arc<RuleEngine>,
     host: String,
+    remote_addr: std::net::SocketAddr,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -455,11 +468,15 @@ async fn handle_decrypted_https_request(
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let full_url = format!("https://{}{}", host, path);
 
-    debug!("Proxying HTTPS request: {} {}", method, full_url);
+    debug!(
+        "Proxying HTTPS request: {} {} from {}",
+        method, full_url, remote_addr
+    );
 
-    // Evaluate rules with method
+    // Evaluate rules with method and requester IP
+    let requester_ip = remote_addr.ip().to_string();
     let evaluation = rule_engine
-        .evaluate_with_context(method.clone(), &full_url)
+        .evaluate_with_context_and_ip(method.clone(), &full_url, &requester_ip)
         .await;
     match evaluation.action {
         Action::Allow => {
@@ -671,8 +688,8 @@ mod tests {
 
         // Spawn proxy handler
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_connect_tunnel(stream, rule_engine, cert_manager).await;
+            let (stream, addr) = listener.accept().await.unwrap();
+            let _ = handle_connect_tunnel(stream, rule_engine, cert_manager, addr).await;
         });
 
         // Connect to proxy
@@ -706,8 +723,8 @@ mod tests {
 
         // Spawn proxy handler
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_connect_tunnel(stream, rule_engine, cert_manager).await;
+            let (stream, addr) = listener.accept().await.unwrap();
+            let _ = handle_connect_tunnel(stream, rule_engine, cert_manager, addr).await;
         });
 
         // Connect to proxy
@@ -743,8 +760,8 @@ mod tests {
 
         // Spawn proxy handler
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let _ = handle_transparent_tls(stream, rule_engine, cert_manager).await;
+            let (stream, addr) = listener.accept().await.unwrap();
+            let _ = handle_transparent_tls(stream, rule_engine, cert_manager, addr).await;
         });
 
         // Connect to proxy with TLS directly (transparent mode)
@@ -815,8 +832,8 @@ mod tests {
             let cert_manager = cert_manager.clone();
             let rule_engine = rule_engine.clone();
             tokio::spawn(async move {
-                let (stream, _) = listener.accept().await.unwrap();
-                let _ = handle_https_connection(stream, rule_engine, cert_manager).await;
+                let (stream, addr) = listener.accept().await.unwrap();
+                let _ = handle_https_connection(stream, rule_engine, cert_manager, addr).await;
             });
 
             let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -848,9 +865,9 @@ mod tests {
 
         // Start proxy handler
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let (stream, addr) = listener.accept().await.unwrap();
             // Use the actual transparent TLS handler (which will extract SNI, etc.)
-            let _ = handle_transparent_tls(stream, rule_engine, cert_manager).await;
+            let _ = handle_transparent_tls(stream, rule_engine, cert_manager, addr).await;
         });
 
         // Give the server time to start
