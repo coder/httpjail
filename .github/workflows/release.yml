@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Run all tests first using the reusable workflow
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  # Build binaries for different platforms
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest-16-cores
+            name: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest-16-cores
+            name: linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-13-large
+            name: macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-14-xlarge
+            name: macos-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools for ARM64 Linux
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create tarball
+        run: |
+          # Get version from tag
+          VERSION=${GITHUB_REF_NAME#v}
+
+          # Create directory structure
+          mkdir -p httpjail-${VERSION}-${{ matrix.name }}
+
+          # Copy binary
+          cp target/${{ matrix.target }}/release/httpjail httpjail-${VERSION}-${{ matrix.name }}/
+
+          # Copy README and LICENSE if they exist
+          [ -f README.md ] && cp README.md httpjail-${VERSION}-${{ matrix.name }}/
+          [ -f LICENSE ] && cp LICENSE httpjail-${VERSION}-${{ matrix.name }}/
+
+          # Create tarball
+          tar czf httpjail-${VERSION}-${{ matrix.name }}.tar.gz httpjail-${VERSION}-${{ matrix.name }}
+
+          # Output path for upload
+          echo "ASSET_PATH=httpjail-${VERSION}-${{ matrix.name }}.tar.gz" >> $GITHUB_ENV
+          echo "ASSET_NAME=httpjail-${VERSION}-${{ matrix.name }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: ${{ env.ASSET_PATH }}
+          retention-days: 1
+
+  # Create release and publish to crates.io
+  release:
+    name: Create Release and Publish
+    needs: build-binaries
+    runs-on: ubuntu-latest-16-cores
+    environment: publish
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history for changelog
+
+      - name: Check if test release
+        id: check_test
+        run: |
+          if [[ "${{ github.ref_name }}" == *-test ]]; then
+            echo "is_test=true" >> $GITHUB_OUTPUT
+            echo "This is a test release"
+          else
+            echo "is_test=false" >> $GITHUB_OUTPUT
+            echo "This is a production release"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+
+      - name: Verify version matches tag
+        if: steps.check_test.outputs.is_test == 'false'
+        run: |
+          # Extract version from Cargo.toml
+          CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+          # Get the git tag without the 'v' prefix
+          TAG_VERSION=${GITHUB_REF_NAME#v}
+
+          echo "Cargo.toml version: $CARGO_VERSION"
+          echo "Git tag version: $TAG_VERSION"
+
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: Version mismatch!"
+            echo "Cargo.toml has version $CARGO_VERSION but git tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          echo "Version check passed!"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the current tag
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 ${CURRENT_TAG}^ 2>/dev/null || echo "")
+
+          # Generate changelog
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "First release!"
+            CHANGELOG="Initial release of httpjail"
+          else
+            echo "Generating changelog from $PREVIOUS_TAG to $CURRENT_TAG"
+            
+            # Get commit messages between tags
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${CURRENT_TAG})
+          fi
+
+          # Save to file for release body
+          if [[ "${{ github.ref_name }}" == *-test ]]; then
+            TEST_WARNING="## ⚠️ TEST RELEASE\n\nThis is a test release for validation purposes. Please use official releases for production.\n\n"
+          else
+            TEST_WARNING=""
+          fi
+
+          cat > RELEASE_NOTES.md << EOF
+          ${TEST_WARNING}## What's Changed
+
+          $CHANGELOG
+
+          ## Installation
+
+          Download the appropriate tarball for your platform, extract it, and place the binary in your PATH:
+
+          \`\`\`bash
+          tar xzf httpjail-*.tar.gz
+          sudo mv httpjail-*/httpjail /usr/local/bin/
+          # on macOS, you may need to run:
+          #   xattr -d com.apple.quarantine httpjail-*/httpjail
+          # before the system allows you execute it.
+          \`\`\`
+
+          Or install from crates.io:
+
+          \`\`\`bash
+          cargo install httpjail
+          \`\`\`
+          EOF
+
+          echo "PREVIOUS_TAG=$PREVIOUS_TAG" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: RELEASE_NOTES.md
+          files: artifacts/**/*.tar.gz
+          draft: ${{ steps.check_test.outputs.is_test == 'true' }}
+          prerelease: ${{ steps.check_test.outputs.is_test == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to crates.io
+        if: steps.check_test.outputs.is_test == 'false'
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
