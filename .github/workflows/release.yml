@@ -22,16 +22,16 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest-8-cores
+            os: ubuntu-latest-16-cores
             name: linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest-8-cores
+            os: ubuntu-latest-16-cores
             name: linux-aarch64
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-13-xlarge
             name: macos-x86_64
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-14-xlarge
             name: macos-aarch64
     
     steps:
@@ -93,7 +93,7 @@ jobs:
   release:
     name: Create Release and Publish
     needs: build-binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores
     environment: publish
     permissions:
       contents: write
