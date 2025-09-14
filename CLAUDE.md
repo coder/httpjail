@@ -56,9 +56,11 @@ DO NOT `cargo clean`. Instead, `chown -R <user> target`.
 
 ## macOS
 
-- On macOS, use `SUDO_ASKPASS=$(pwd)/askpass_macos.sh sudo -A <cmd>` to test jail features with sufficient permissions.
-- To debug pf, you may run the command with `--no-jail-cleanup` to leave around the `httpjail` group
-  and PF rules.
+- macOS uses weak mode (environment-only) and does not use PF. No root/sudo required for standard usage or tests.
+- To run integration tests on macOS, prefer the weak-mode suite:
+  ```bash
+  cargo test --test weak_integration
+  ```
 
 ## Documentation
 
