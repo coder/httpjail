@@ -517,6 +517,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Inject glibc resolver timeouts to avoid long DNS hangs if not already set
+    if std::env::var("RES_OPTIONS").is_err() && !extra_env.iter().any(|(k, _)| k == "RES_OPTIONS") {
+        debug!("Setting glibc resolver timeouts via RES_OPTIONS=timeout:2 attempts:1");
+        extra_env.push((
+            "RES_OPTIONS".to_string(),
+            "timeout:2 attempts:1".to_string(),
+        ));
+    } else {
+        debug!("RES_OPTIONS already present; not overriding existing setting");
+    }
+
     // Execute command in jail with extra environment variables
     let status = if let Some(timeout_secs) = args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
