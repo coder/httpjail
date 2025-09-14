@@ -1,4 +1,5 @@
 /// Common proxy utilities for HTTP and HTTPS.
+use crate::body_logger::{BodyLogConfig, LoggingRequestBody, LoggingResponseBody};
 use crate::dangerous_verifier::create_dangerous_client_config;
 use crate::rules::{Action, RuleEngine};
 #[allow(unused_imports)]
@@ -21,6 +22,7 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use socket2::{Domain, Protocol, Socket, Type};
 
+use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -63,11 +65,22 @@ static HTTPS_CLIENT: OnceLock<
     >,
 > = OnceLock::new();
 
+/// Helper function to log response status
+fn log_response_status(log_config: &Option<BodyLogConfig>, status: StatusCode) {
+    if let Some(config) = log_config {
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        if let Ok(mut file) = config.log_file.lock() {
+            let _ = writeln!(file, "{} <-- {} {}", timestamp, config.request_id, status);
+        }
+    }
+}
+
 /// Prepare a request for forwarding to upstream server
-/// Removes proxy-specific headers and converts body to BoxBody
+/// Removes proxy-specific headers and optionally wraps body for logging
 pub fn prepare_upstream_request(
     req: Request<Incoming>,
     target_uri: Uri,
+    body_log_config: Option<BodyLogConfig>,
 ) -> Request<BoxBody<Bytes, HyperError>> {
     let (mut parts, incoming_body) = req.into_parts();
 
@@ -80,8 +93,13 @@ pub fn prepare_upstream_request(
     parts.headers.remove("proxy-authorization");
     parts.headers.remove("proxy-authenticate");
 
-    // Convert incoming body to boxed body
-    let boxed_request_body = incoming_body.boxed();
+    // Wrap body for logging if configured
+    let boxed_request_body = if let Some(config) = body_log_config {
+        let logging_body = LoggingRequestBody::new(incoming_body, config);
+        logging_body.boxed()
+    } else {
+        incoming_body.boxed()
+    };
 
     // Create new request with boxed body
     Request::from_parts(parts, boxed_request_body)
@@ -432,10 +450,14 @@ pub async fn handle_http_request(
     let evaluation = rule_engine
         .evaluate_with_context_and_ip(method, &full_url, &requester_ip)
         .await;
+
+    // Get body logging configuration
+    let body_log_config = rule_engine.get_body_log_config(evaluation.request_id.clone());
+
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
-            match proxy_request(req, &full_url).await {
+            match proxy_request(req, &full_url, body_log_config).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -453,12 +475,13 @@ pub async fn handle_http_request(
 async fn proxy_request(
     req: Request<Incoming>,
     full_url: &str,
+    body_log_config: Option<BodyLogConfig>,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Parse the target URL
     let target_uri = full_url.parse::<Uri>()?;
 
-    // Prepare request for upstream
-    let new_req = prepare_upstream_request(req, target_uri);
+    // Prepare request for upstream with optional body logging
+    let new_req = prepare_upstream_request(req, target_uri, body_log_config.clone());
 
     // Use the shared HTTP/HTTPS client
     let client = get_client();
@@ -487,10 +510,11 @@ async fn proxy_request(
         }
     };
 
-    debug!(
-        "Received HTTP response from upstream server: {:?}",
-        resp.status()
-    );
+    let status = resp.status();
+    debug!("Received HTTP response from upstream server: {:?}", status);
+
+    // Log response status if body logging is enabled
+    log_response_status(&body_log_config, status);
 
     // Convert the response body to BoxBody for uniform type
     let (mut parts, body) = resp.into_parts();
@@ -500,7 +524,13 @@ async fn proxy_request(
         .headers
         .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
 
-    let boxed_body = body.boxed();
+    // Wrap response body for logging if configured
+    let boxed_body = if let Some(config) = body_log_config {
+        let logging_body = LoggingResponseBody::new(body, config);
+        logging_body.boxed()
+    } else {
+        body.boxed()
+    };
 
     Ok(Response::from_parts(parts, boxed_body))
 }
@@ -537,13 +567,15 @@ pub fn create_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request_log::NoopLogger;
     use crate::rules::v8_js::V8JsRuleEngine;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_proxy_server_creation() {
         let js = r"/^github\.com$/.test(r.host)";
         let engine = V8JsRuleEngine::new(js.to_string()).unwrap();
-        let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
+        let rule_engine = RuleEngine::from_trait(Box::new(engine), Arc::new(NoopLogger));
 
         let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine, None);
 
@@ -554,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_server_auto_port() {
         let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
-        let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
+        let rule_engine = RuleEngine::from_trait(Box::new(engine), Arc::new(NoopLogger));
         let mut proxy = ProxyServer::new(None, None, rule_engine, None);
 
         let (http_port, https_port) = proxy.start().await.unwrap();

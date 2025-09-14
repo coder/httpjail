@@ -14,10 +14,12 @@ isolated-cleanup-tests = []
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1.35", features = ["full"] }
 hyper = { version = "1.7", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
+http-body = "1.0"
 http-body-util = "0.1"
 bytes = "1.5"
 tokio-rustls = "0.26"

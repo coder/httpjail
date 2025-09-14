@@ -1,15 +1,12 @@
 pub mod script;
 pub mod v8_js;
 
+use crate::request_log::{LoggingRuleEngine, RequestLogger};
 use async_trait::async_trait;
-use chrono::{SecondsFormat, Utc};
 use hyper::Method;
-use std::fs::File;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
-use tracing::warn;
+use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Allow,
     Deny,
@@ -19,6 +16,7 @@ pub enum Action {
 pub struct EvaluationResult {
     pub action: Action,
     pub context: Option<String>,
+    pub request_id: String,
 }
 
 impl EvaluationResult {
@@ -26,6 +24,7 @@ impl EvaluationResult {
         Self {
             action: Action::Allow,
             context: None,
+            request_id: String::new(),
         }
     }
 
@@ -33,11 +32,17 @@ impl EvaluationResult {
         Self {
             action: Action::Deny,
             context: None,
+            request_id: String::new(),
         }
     }
 
     pub fn with_context(mut self, context: String) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    pub fn with_request_id(mut self, request_id: String) -> Self {
+        self.request_id = request_id;
         self
     }
 }
@@ -49,67 +54,29 @@ pub trait RuleEngineTrait: Send + Sync {
     fn name(&self) -> &str;
 }
 
-pub struct LoggingRuleEngine {
-    engine: Box<dyn RuleEngineTrait>,
-    request_log: Option<Arc<Mutex<File>>>,
-}
-
-impl LoggingRuleEngine {
-    pub fn new(engine: Box<dyn RuleEngineTrait>, request_log: Option<Arc<Mutex<File>>>) -> Self {
-        Self {
-            engine,
-            request_log,
-        }
-    }
-}
-
-#[async_trait]
-impl RuleEngineTrait for LoggingRuleEngine {
-    async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
-        let result = self
-            .engine
-            .evaluate(method.clone(), url, requester_ip)
-            .await;
-
-        if let Some(log) = &self.request_log
-            && let Ok(mut file) = log.lock()
-        {
-            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let status = match &result.action {
-                Action::Allow => '+',
-                Action::Deny => '-',
-            };
-            if let Err(e) = writeln!(file, "{} {} {} {}", timestamp, status, method, url) {
-                warn!("Failed to write to request log: {}", e);
-            }
-        }
-
-        result
-    }
-
-    fn name(&self) -> &str {
-        self.engine.name()
-    }
-}
-
 #[derive(Clone)]
 pub struct RuleEngine {
     inner: Arc<dyn RuleEngineTrait>,
+    logging_engine: Option<Arc<LoggingRuleEngine>>,
 }
 
 impl RuleEngine {
-    pub fn from_trait(
-        engine: Box<dyn RuleEngineTrait>,
-        request_log: Option<Arc<Mutex<File>>>,
-    ) -> Self {
-        let engine: Box<dyn RuleEngineTrait> = if request_log.is_some() {
-            Box::new(LoggingRuleEngine::new(engine, request_log))
-        } else {
-            engine
-        };
+    pub fn from_trait(engine: Box<dyn RuleEngineTrait>, logger: Arc<dyn RequestLogger>) -> Self {
+        let logging_engine = Arc::new(LoggingRuleEngine::new(engine, logger));
         RuleEngine {
-            inner: Arc::from(engine),
+            inner: Arc::clone(&logging_engine) as Arc<dyn RuleEngineTrait>,
+            logging_engine: Some(logging_engine),
         }
+    }
+
+    /// Get body logging configuration if enabled
+    pub fn get_body_log_config(
+        &self,
+        request_id: String,
+    ) -> Option<crate::body_logger::BodyLogConfig> {
+        self.logging_engine
+            .as_ref()?
+            .get_body_log_config(request_id)
     }
 
     pub async fn evaluate(&self, method: Method, url: &str) -> Action {
@@ -137,6 +104,7 @@ impl RuleEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request_log::FileRequestLogger;
     use crate::rules::v8_js::V8JsRuleEngine;
     use std::fs::OpenOptions;
     use std::sync::{Arc, Mutex};
@@ -149,7 +117,8 @@ mod tests {
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::from_trait(Box::new(engine), Some(Arc::new(Mutex::new(file))));
+        let logger = Arc::new(FileRequestLogger::new(Arc::new(Mutex::new(file)), false));
+        let engine = RuleEngine::from_trait(Box::new(engine), logger);
 
         engine.evaluate(Method::GET, "https://example.com").await;
 
@@ -165,7 +134,8 @@ mod tests {
             .append(true)
             .open(log_file.path())
             .unwrap();
-        let engine = RuleEngine::from_trait(Box::new(engine), Some(Arc::new(Mutex::new(file))));
+        let logger = Arc::new(FileRequestLogger::new(Arc::new(Mutex::new(file)), false));
+        let engine = RuleEngine::from_trait(Box::new(engine), logger);
 
         engine.evaluate(Method::GET, "https://blocked.com").await;
 

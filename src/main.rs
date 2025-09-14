@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
+use httpjail::request_log::{FileRequestLogger, NoopLogger, RequestLogger};
 use httpjail::rules::script::ScriptRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
 use httpjail::rules::{Action, RuleEngine};
@@ -302,22 +303,30 @@ async fn main() -> Result<()> {
     let mut jail_config = JailConfig::new();
 
     // Build rule engine based on script or JS
-    let request_log = if let Some(path) = &args.request_log {
-        Some(Arc::new(Mutex::new(
+    let logger: Arc<dyn RequestLogger> = if let Some(path) = &args.request_log {
+        let file = Arc::new(Mutex::new(
             OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
                 .with_context(|| format!("Failed to open request log file: {}", path))?,
-        )))
+        ));
+
+        // Check if body logging is enabled via environment variable
+        let log_bodies = std::env::var("HTTPJAIL_REQUEST_LOG_BODY").is_ok();
+        if log_bodies {
+            info!("Request/response body logging enabled via HTTPJAIL_REQUEST_LOG_BODY");
+        }
+
+        Arc::new(FileRequestLogger::new(file, log_bodies))
     } else {
-        None
+        Arc::new(NoopLogger)
     };
 
     let rule_engine = if let Some(script) = &args.sh {
         info!("Using script-based rule evaluation: {}", script);
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
-        RuleEngine::from_trait(script_engine, request_log)
+        RuleEngine::from_trait(script_engine, Arc::clone(&logger))
     } else if let Some(js_code) = &args.js {
         info!("Using V8 JavaScript rule evaluation");
         let js_engine = match V8JsRuleEngine::new(js_code.clone()) {
@@ -327,7 +336,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        RuleEngine::from_trait(js_engine, request_log)
+        RuleEngine::from_trait(js_engine, Arc::clone(&logger))
     } else if let Some(js_file) = &args.js_file {
         info!("Using V8 JavaScript rule evaluation from file: {}", js_file);
         let code = std::fs::read_to_string(js_file)
@@ -339,7 +348,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        RuleEngine::from_trait(js_engine, request_log)
+        RuleEngine::from_trait(js_engine, Arc::clone(&logger))
     } else {
         info!("No rule evaluation provided; defaulting to deny-all");
         let js_engine = match V8JsRuleEngine::new("false".to_string()) {
@@ -349,7 +358,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        RuleEngine::from_trait(js_engine, request_log)
+        RuleEngine::from_trait(js_engine, Arc::clone(&logger))
     };
 
     // Handle test (dry-run) mode: evaluate the rule against a URL and exit

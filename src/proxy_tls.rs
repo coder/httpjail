@@ -1,6 +1,7 @@
+use crate::body_logger::{BodyLogConfig, LoggingResponseBody};
 use crate::proxy::{
     HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
-    create_forbidden_response,
+    create_forbidden_response, prepare_upstream_request,
 };
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
@@ -13,6 +14,7 @@ use hyper::service::service_fn;
 use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use rustls::ServerConfig;
+use std::io::Write;
 use std::sync::Arc;
 use tls_parser::{TlsMessage, parse_tls_plaintext};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -31,6 +33,16 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 // Timeout for reading TLS ClientHello
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Helper function to log response status
+fn log_response_status(log_config: &Option<BodyLogConfig>, status: StatusCode) {
+    if let Some(config) = log_config {
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        if let Ok(mut file) = config.log_file.lock() {
+            let _ = writeln!(file, "{} <-- {} {}", timestamp, config.request_id, status);
+        }
+    }
+}
 
 /// Handle an HTTPS connection with potential CONNECT tunneling and TLS interception
 pub async fn handle_https_connection(
@@ -478,10 +490,14 @@ async fn handle_decrypted_https_request(
     let evaluation = rule_engine
         .evaluate_with_context_and_ip(method.clone(), &full_url, &requester_ip)
         .await;
+
+    // Get body logging configuration
+    let body_log_config = rule_engine.get_body_log_config(evaluation.request_id.clone());
+
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
-            match proxy_https_request(req, &host).await {
+            match proxy_https_request(req, &host, body_log_config).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -500,6 +516,7 @@ async fn handle_decrypted_https_request(
 async fn proxy_https_request(
     req: Request<Incoming>,
     host: &str,
+    body_log_config: Option<BodyLogConfig>,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
     let path = req
@@ -512,8 +529,8 @@ async fn proxy_https_request(
 
     debug!("Forwarding request to: {}", target_url);
 
-    // Prepare request for upstream using common function
-    let new_req = crate::proxy::prepare_upstream_request(req, target_uri);
+    // Prepare request for upstream using common function with optional body logging
+    let new_req = prepare_upstream_request(req, target_uri, body_log_config.clone());
 
     // Use the shared HTTP/HTTPS client from proxy module
     let client = crate::proxy::get_client();
@@ -565,11 +582,15 @@ async fn proxy_https_request(
         }
     };
 
+    let status = resp.status();
     debug!(
         "Received response from upstream server: status={:?}, version={:?}",
-        resp.status(),
+        status,
         resp.version()
     );
+
+    // Log response status if body logging is enabled
+    log_response_status(&body_log_config, status);
 
     // Convert the response body to BoxBody for uniform type
     let (mut parts, body) = resp.into_parts();
@@ -579,7 +600,13 @@ async fn proxy_https_request(
         .headers
         .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
 
-    let boxed_body = body.boxed();
+    // Wrap response body for logging if configured
+    let boxed_body = if let Some(config) = body_log_config {
+        let logging_body = LoggingResponseBody::new(body, config);
+        logging_body.boxed()
+    } else {
+        body.boxed()
+    };
 
     Ok(Response::from_parts(parts, boxed_body))
 }
@@ -587,6 +614,7 @@ async fn proxy_https_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request_log::NoopLogger;
     use rustls::ClientConfig;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -614,7 +642,10 @@ mod tests {
             "/example\\.com/.test(r.host)".to_string()
         };
         let engine = crate::rules::v8_js::V8JsRuleEngine::new(js).unwrap();
-        Arc::new(RuleEngine::from_trait(Box::new(engine), None))
+        Arc::new(RuleEngine::from_trait(
+            Box::new(engine),
+            Arc::new(NoopLogger),
+        ))
     }
 
     /// Create a TLS client config that trusts any certificate (for testing)
