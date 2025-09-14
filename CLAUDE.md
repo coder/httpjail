@@ -31,12 +31,22 @@ variables to the proxy address.
 
 ### Integration Tests
 
-The integration tests use the `HTTPJAIL_BIN` environment variable to determine which binary to test.
-Always set this to the most up-to-date binary before running tests:
+The integration tests run against the binary built by Cargo; no manual environment variables are required. On Linux, run the strong-jail integration tests with sudo:
 
 ```bash
-export HTTPJAIL_BIN=/path/to/httpjail
-cargo test --test linux_integration
+sudo -E cargo test --test linux_integration
+```
+
+Weak-mode tests (environment-only, cross-platform) run without sudo:
+
+```bash
+cargo test --test weak_integration
+```
+
+Run the full suite:
+
+```bash
+cargo test
 ```
 
 ## Cargo Cache
