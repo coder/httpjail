@@ -623,34 +623,39 @@ impl Jail for LinuxJail {
 
         // Check if we're running as root and should drop privileges
         let current_uid = unsafe { libc::getuid() };
-        let target_user = if current_uid == 0 {
-            // Running as root - check for SUDO_USER to drop privileges to original user
-            std::env::var("SUDO_USER").ok()
+        let drop_privs = if current_uid == 0 {
+            // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
+            match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
+                (Ok(uid), Ok(gid)) => {
+                    debug!(
+                        "Will drop privileges to uid={} gid={} after entering namespace",
+                        uid, gid
+                    );
+                    Some((uid, gid))
+                }
+                _ => {
+                    debug!("Running as root but no SUDO_UID/SUDO_GID found, continuing as root");
+                    None
+                }
+            }
         } else {
             // Not root - no privilege dropping needed
             None
         };
 
-        if let Some(ref user) = target_user {
-            debug!(
-                "Will drop to user '{}' (from SUDO_USER) after entering namespace",
-                user
-            );
-        }
-
         // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with runuser
+        // If we need to drop privileges, we wrap with setpriv
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name()]);
 
         // Handle privilege dropping and command execution
-        if let Some(user) = target_user {
-            // Use runuser to drop privileges to the original user
-            // runuser is cleaner than su - no shell wrapper needed
-            cmd.arg("runuser");
-            cmd.arg("--preserve-environment"); // Preserve all environment variables
-            cmd.arg("-u");
-            cmd.arg(&user); // Username from SUDO_USER
+        if let Some((uid, gid)) = drop_privs {
+            // Use setpriv to drop privileges to the original user
+            // setpriv is lighter than runuser - no PAM, direct execve()
+            cmd.arg("setpriv");
+            cmd.arg(format!("--reuid={}", uid)); // Set real and effective UID
+            cmd.arg(format!("--regid={}", gid)); // Set real and effective GID
+            cmd.arg("--init-groups"); // Initialize supplementary groups
             cmd.arg("--"); // End of options
             for arg in command {
                 cmd.arg(arg);
