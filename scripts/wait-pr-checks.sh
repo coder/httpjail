@@ -46,16 +46,16 @@ last_status=""
 
 while true; do
     # Get check status as JSON
-    if ! json_output=$(gh pr checks "${PR_NUMBER}" --repo "${REPO}" --json name,status,conclusion,detailsUrl 2>/dev/null); then
+    if ! json_output=$(gh pr checks "${PR_NUMBER}" --repo "${REPO}" --json name,state,link 2>/dev/null); then
         echo -e "${YELLOW}Waiting for checks to start...${NC}"
         sleep 1
         continue
     fi
     
     # Parse JSON to get counts
-    pending_count=$(echo "$json_output" | jq '[.[] | select(.status == "IN_PROGRESS" or .status == "QUEUED")] | length')
-    failed_count=$(echo "$json_output" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED")] | length')
-    passed_count=$(echo "$json_output" | jq '[.[] | select(.conclusion == "SUCCESS")] | length')
+    pending_count=$(echo "$json_output" | jq '[.[] | select(.state == "PENDING" or .state == "IN_PROGRESS" or .state == "QUEUED")] | length')
+    failed_count=$(echo "$json_output" | jq '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | length')
+    passed_count=$(echo "$json_output" | jq '[.[] | select(.state == "SUCCESS")] | length')
     total_count=$(echo "$json_output" | jq 'length')
     
     # Build status string
@@ -70,7 +70,7 @@ while true; do
     # Check for failures
     if [ $failed_count -gt 0 ]; then
         echo -e "\n\n${RED}❌ The following check(s) failed:${NC}"
-        echo "$json_output" | jq -r '.[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED") | "  - \(.name)"'
+        echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "  - \(.name)"'
         echo -e "\nView details at: https://github.com/${REPO}/pull/${PR_NUMBER}/checks"
         exit 1
     fi
