@@ -515,9 +515,7 @@ async fn main() -> Result<()> {
     }
 
     // Inject glibc resolver timeouts to avoid long DNS hangs if not already set
-    if std::env::var("RES_OPTIONS").is_err()
-        && !extra_env.iter().any(|(k, _)| k == "RES_OPTIONS")
-    {
+    if std::env::var("RES_OPTIONS").is_err() && !extra_env.iter().any(|(k, _)| k == "RES_OPTIONS") {
         debug!("Setting glibc resolver timeouts via RES_OPTIONS=timeout:2 attempts:1");
         extra_env.push((
             "RES_OPTIONS".to_string(),
