@@ -639,36 +639,21 @@ impl Jail for LinuxJail {
         }
 
         // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with su
+        // If we need to drop privileges, we wrap with runuser
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name()]);
 
-        // When we need to drop privileges, use a shell wrapper
-        // Environment variables are handled by Command::env() below
-        if target_user.is_some() {
-            // Build shell command with proper escaping
-            let shell_command = command
-                .iter()
-                .map(|arg| {
-                    // Simple escaping: wrap in single quotes and escape existing single quotes
-                    if arg.contains('\'') {
-                        format!("\"{}\"", arg.replace('"', "\\\""))
-                    } else {
-                        format!("'{}'", arg)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            if let Some(user) = target_user {
-                // Use su to drop privileges to the original user
-                cmd.arg("su");
-                cmd.arg("-s"); // Specify shell explicitly
-                cmd.arg("/bin/sh"); // Use sh for compatibility
-                cmd.arg("-p"); // Preserve environment
-                cmd.arg(&user); // Username from SUDO_USER
-                cmd.arg("-c"); // Execute command
-                cmd.arg(shell_command);
+        // Handle privilege dropping and command execution
+        if let Some(user) = target_user {
+            // Use runuser to drop privileges to the original user
+            // runuser is cleaner than su - no shell wrapper needed
+            cmd.arg("runuser");
+            cmd.arg("--preserve-environment"); // Preserve all environment variables
+            cmd.arg("-u");
+            cmd.arg(&user); // Username from SUDO_USER
+            cmd.arg("--"); // End of options
+            for arg in command {
+                cmd.arg(arg);
             }
         } else {
             // No privilege dropping, execute directly
