@@ -277,6 +277,9 @@ async fn main() -> Result<()> {
 
     setup_logging(args.verbose);
 
+    // Log the version at startup for easier diagnostics
+    debug!("httpjail version: {}", env!("VERSION_WITH_GIT_HASH"));
+
     debug!("Starting httpjail with args: {:?}", args);
 
     // Handle cleanup flag
