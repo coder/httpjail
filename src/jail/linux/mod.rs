@@ -643,34 +643,22 @@ impl Jail for LinuxJail {
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name()]);
 
-        // When we have environment variables to pass OR need to drop privileges,
-        // use a shell wrapper to ensure proper environment handling
-        if target_user.is_some() || !extra_env.is_empty() {
-            // Build shell command with explicit environment exports
-            let mut shell_command = String::new();
-
-            // Export environment variables explicitly in the shell command
-            for (key, value) in extra_env {
-                // Escape the value for shell safety
-                let escaped_value = value.replace('\'', "'\\''");
-                shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
-            }
-
-            // Add the actual command with proper escaping
-            shell_command.push_str(
-                &command
-                    .iter()
-                    .map(|arg| {
-                        // Simple escaping: wrap in single quotes and escape existing single quotes
-                        if arg.contains('\'') {
-                            format!("\"{}\"", arg.replace('"', "\\\""))
-                        } else {
-                            format!("'{}'", arg)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
+        // When we need to drop privileges, use a shell wrapper
+        // Environment variables are handled by Command::env() below
+        if target_user.is_some() {
+            // Build shell command with proper escaping
+            let shell_command = command
+                .iter()
+                .map(|arg| {
+                    // Simple escaping: wrap in single quotes and escape existing single quotes
+                    if arg.contains('\'') {
+                        format!("\"{}\"", arg.replace('"', "\\\""))
+                    } else {
+                        format!("'{}'", arg)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
 
             if let Some(user) = target_user {
                 // Use su to drop privileges to the original user
@@ -681,14 +669,9 @@ impl Jail for LinuxJail {
                 cmd.arg(&user); // Username from SUDO_USER
                 cmd.arg("-c"); // Execute command
                 cmd.arg(shell_command);
-            } else {
-                // No privilege dropping but need shell for env vars
-                cmd.arg("sh");
-                cmd.arg("-c");
-                cmd.arg(shell_command);
             }
         } else {
-            // No privilege dropping and no env vars, execute directly
+            // No privilege dropping, execute directly
             cmd.arg(&command[0]);
             for arg in &command[1..] {
                 cmd.arg(arg);
@@ -710,6 +693,8 @@ impl Jail for LinuxJail {
         if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
             cmd.env("SUDO_GID", sudo_gid);
         }
+
+        debug!("Executing command: {:?}", cmd);
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
         // The jail uses nftables rules to transparently redirect traffic to the proxy,
