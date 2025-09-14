@@ -93,6 +93,10 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 # SCP files to/from CI-1
 ./scripts/ci-scp.sh src/ /tmp/httpjail-docker-run/     # Upload
 ./scripts/ci-scp.sh root@ci-1:/path/to/file ./         # Download
+
+# Wait for PR checks to pass or fail
+./scripts/wait-pr-checks.sh 47               # Monitor PR #47
+./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify repo explicitly
 ```
 
 ### Manual Testing on CI

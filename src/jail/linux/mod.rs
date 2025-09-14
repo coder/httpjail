@@ -623,72 +623,45 @@ impl Jail for LinuxJail {
 
         // Check if we're running as root and should drop privileges
         let current_uid = unsafe { libc::getuid() };
-        let target_user = if current_uid == 0 {
-            // Running as root - check for SUDO_USER to drop privileges to original user
-            std::env::var("SUDO_USER").ok()
+        let drop_privs = if current_uid == 0 {
+            // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
+            match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
+                (Ok(uid), Ok(gid)) => {
+                    debug!(
+                        "Will drop privileges to uid={} gid={} after entering namespace",
+                        uid, gid
+                    );
+                    Some((uid, gid))
+                }
+                _ => {
+                    debug!("Running as root but no SUDO_UID/SUDO_GID found, continuing as root");
+                    None
+                }
+            }
         } else {
             // Not root - no privilege dropping needed
             None
         };
 
-        if let Some(ref user) = target_user {
-            debug!(
-                "Will drop to user '{}' (from SUDO_USER) after entering namespace",
-                user
-            );
-        }
-
         // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with su
+        // If we need to drop privileges, we wrap with setpriv
         let mut cmd = Command::new("ip");
         cmd.args(["netns", "exec", &self.namespace_name()]);
 
-        // When we have environment variables to pass OR need to drop privileges,
-        // use a shell wrapper to ensure proper environment handling
-        if target_user.is_some() || !extra_env.is_empty() {
-            // Build shell command with explicit environment exports
-            let mut shell_command = String::new();
-
-            // Export environment variables explicitly in the shell command
-            for (key, value) in extra_env {
-                // Escape the value for shell safety
-                let escaped_value = value.replace('\'', "'\\''");
-                shell_command.push_str(&format!("export {}='{}'; ", key, escaped_value));
-            }
-
-            // Add the actual command with proper escaping
-            shell_command.push_str(
-                &command
-                    .iter()
-                    .map(|arg| {
-                        // Simple escaping: wrap in single quotes and escape existing single quotes
-                        if arg.contains('\'') {
-                            format!("\"{}\"", arg.replace('"', "\\\""))
-                        } else {
-                            format!("'{}'", arg)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-
-            if let Some(user) = target_user {
-                // Use su to drop privileges to the original user
-                cmd.arg("su");
-                cmd.arg("-s"); // Specify shell explicitly
-                cmd.arg("/bin/sh"); // Use sh for compatibility
-                cmd.arg("-p"); // Preserve environment
-                cmd.arg(&user); // Username from SUDO_USER
-                cmd.arg("-c"); // Execute command
-                cmd.arg(shell_command);
-            } else {
-                // No privilege dropping but need shell for env vars
-                cmd.arg("sh");
-                cmd.arg("-c");
-                cmd.arg(shell_command);
+        // Handle privilege dropping and command execution
+        if let Some((uid, gid)) = drop_privs {
+            // Use setpriv to drop privileges to the original user
+            // setpriv is lighter than runuser - no PAM, direct execve()
+            cmd.arg("setpriv");
+            cmd.arg(format!("--reuid={}", uid)); // Set real and effective UID
+            cmd.arg(format!("--regid={}", gid)); // Set real and effective GID
+            cmd.arg("--init-groups"); // Initialize supplementary groups
+            cmd.arg("--"); // End of options
+            for arg in command {
+                cmd.arg(arg);
             }
         } else {
-            // No privilege dropping and no env vars, execute directly
+            // No privilege dropping, execute directly
             cmd.arg(&command[0]);
             for arg in &command[1..] {
                 cmd.arg(arg);
@@ -710,6 +683,8 @@ impl Jail for LinuxJail {
         if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
             cmd.env("SUDO_GID", sudo_gid);
         }
+
+        debug!("Executing command: {:?}", cmd);
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
         // The jail uses nftables rules to transparently redirect traffic to the proxy,
