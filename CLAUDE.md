@@ -54,7 +54,7 @@ DO NOT `cargo clean`. Instead, `chown -R <user> target`.
 
 User-facing documentation should be in the README.md file.
 
-Code/testing/contributing documentation should be in the CONTRIBUTING.md file.
+Code/testing/contributing documentation should be here.
 
 When updating any user-facing interface of the tool in a way that breaks compatibility or adds a new feature, update the README.md file.
 
