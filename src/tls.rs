@@ -262,50 +262,98 @@ impl CertificateManager {
 
     /// Generate environment variables for common tools to use the CA certificate
     pub fn get_ca_env_vars() -> Result<Vec<(String, String)>> {
-        // Try multiple possible locations for the CA certificate
-        // This handles cases where the effective user changes (e.g., sudo in CI)
-        let mut ca_path = Self::get_ca_cert_path()?;
+        // Resolve the most appropriate CA certificate path for the target process.
+        // Prefer the non-root SUDO_USER's config if available, since we may drop privileges
+        // before executing the jailed command.
+        let current_path = Self::get_ca_cert_path()?; // Typically the path under the current user (often root under sudo)
 
-        if !ca_path.exists() {
-            // If not found in current user's config, check common locations
-            let possible_paths = [
-                // Check SUDO_USER's config directory
-                std::env::var("SUDO_USER").ok().and_then(|sudo_user| {
-                    dirs::home_dir().map(|home| {
-                        home.parent()
-                            .unwrap_or(&home)
-                            .join(sudo_user)
-                            .join(".config/httpjail/ca-cert.pem")
-                    })
-                }),
-                // Check /home/runner for CI
-                Some(PathBuf::from("/home/runner/.config/httpjail/ca-cert.pem")),
-                // Check root's config
-                Some(PathBuf::from("/root/.config/httpjail/ca-cert.pem")),
-            ];
+        // Build candidate paths in priority order
+        let mut candidates: Vec<PathBuf> = Vec::new();
 
-            for path in possible_paths.iter().flatten() {
-                if path.exists() {
-                    ca_path = Utf8PathBuf::try_from(path.clone())
-                        .context("CA cert path is not valid UTF-8")?;
-                    debug!("Found CA certificate at alternate location: {}", ca_path);
-                    break;
-                }
+        // If running under sudo, prefer the invoking user's config directory
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            #[cfg(target_os = "linux")]
+            {
+                candidates.push(PathBuf::from(format!(
+                    "/home/{}/.config/httpjail/ca-cert.pem",
+                    sudo_user
+                )));
             }
-
-            if !ca_path.exists() {
-                anyhow::bail!(
-                    "CA certificate not found. Searched: {:?} and common locations",
-                    ca_path
-                );
+            #[cfg(target_os = "macos")]
+            {
+                candidates.push(PathBuf::from(format!(
+                    "/Users/{}/Library/Application Support/httpjail/ca-cert.pem",
+                    sudo_user
+                )));
             }
         }
+
+        // Always consider the path for the current effective user (may be /root/.config/...)
+        candidates.push(PathBuf::from(current_path.as_str()));
+
+        // Common CI/runner locations
+        candidates.push(PathBuf::from("/home/runner/.config/httpjail/ca-cert.pem"));
+        candidates.push(PathBuf::from("/root/.config/httpjail/ca-cert.pem"));
+
+        // Pick the first existing path
+        let mut chosen = candidates
+            .iter()
+            .find(|p| p.exists())
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(current_path.as_str()));
+
+        // If we're under sudo and the chosen path is under /root, try to materialize a readable
+        // copy for the invoking user so the jailed (non-root) process can read it.
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            #[cfg(target_os = "linux")]
+            let user_target =
+                PathBuf::from(format!("/home/{}/.config/httpjail/ca-cert.pem", sudo_user));
+            #[cfg(target_os = "macos")]
+            let user_target = PathBuf::from(format!(
+                "/Users/{}/Library/Application Support/httpjail/ca-cert.pem",
+                sudo_user
+            ));
+
+            let chosen_str = chosen.to_string_lossy();
+            if chosen_str.starts_with("/root/") {
+                if !user_target.exists() {
+                    if let Some(parent) = user_target.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    if let Ok(bytes) = fs::read(&chosen) {
+                        // Best-effort write; world-readable cert (default umask 022) is fine
+                        if fs::write(&user_target, bytes).is_ok() {
+                            debug!(
+                                "Copied CA certificate to invoking user's config: {}",
+                                user_target.to_string_lossy()
+                            );
+                            chosen = user_target;
+                        }
+                    }
+                } else {
+                    // Prefer the user's existing CA cert if present
+                    chosen = user_target;
+                }
+            }
+        }
+
+        // Ensure we have a valid, existing file
+        if !chosen.exists() {
+            anyhow::bail!(
+                "CA certificate not found. Looked for {} and common locations",
+                chosen.to_string_lossy()
+            );
+        }
+
+        let ca_path = Utf8PathBuf::try_from(chosen).context("CA cert path is not valid UTF-8")?;
 
         let ca_path_str = ca_path.to_string();
         let ca_dir = ca_path
             .parent()
             .map(|p| p.to_string())
             .unwrap_or_else(|| ".".to_string());
+
+        debug!("Using CA certificate at {}", ca_path_str);
 
         let env_vars = vec![
             // OpenSSL/LibreSSL-based tools (generic)
