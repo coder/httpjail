@@ -93,7 +93,42 @@ while true; do
     if [ $failed_count -gt 0 ]; then
         echo -e "\n\n${RED}❌ The following check(s) failed:${NC}"
         echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "  - \(.name)"'
-        echo -e "\nView details at: https://github.com/${REPO}/pull/${PR_NUMBER}/checks"
+        
+        # Try to fetch logs for the first failed check
+        echo -e "\n${YELLOW}Fetching logs for first failed check...${NC}\n"
+        
+        # Get the first failed check details
+        first_failed=$(echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "\(.name)|\(.link)"' | head -1)
+        
+        if [ -n "$first_failed" ]; then
+            IFS='|' read -r check_name check_link <<< "$first_failed"
+            echo -e "${YELLOW}=== Logs for: ${check_name} ===${NC}"
+            
+            # Extract run ID and job ID from the link
+            if [[ "$check_link" =~ /runs/([0-9]+)/job/([0-9]+) ]]; then
+                run_id="${BASH_REMATCH[1]}"
+                job_id="${BASH_REMATCH[2]}"
+                
+                # Try to get job logs
+                if job_logs=$(gh run view "${run_id}" --repo "${REPO}" --job "${job_id}" --log 2>&1); then
+                    # Look for error patterns in the logs
+                    error_logs=$(echo "$job_logs" | grep -E "(error:|Error:|ERROR:|warning:|clippy::|failed|Failed)" | head -30)
+                    if [ -n "$error_logs" ]; then
+                        echo "$error_logs"
+                    else
+                        echo "No specific errors found in logs. Check full logs at: ${check_link}"
+                    fi
+                else
+                    # If logs aren't ready, try to at least show the conclusion
+                    echo "Full logs not available yet. Check: ${check_link}"
+                fi
+            else
+                echo "Could not parse check link: ${check_link}"
+            fi
+            echo ""
+        fi
+        
+        echo -e "\nView full details at: https://github.com/${REPO}/pull/${PR_NUMBER}/checks"
         exit 1
     fi
     
