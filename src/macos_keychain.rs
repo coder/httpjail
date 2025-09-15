@@ -3,17 +3,15 @@ use std::path::Path;
 use std::process::Command;
 use tracing::{debug, info};
 
+const CA_NAME: &str = "httpjail CA";
+
 #[cfg(target_os = "macos")]
-pub struct KeychainManager {
-    ca_name: String,
-}
+pub struct KeychainManager;
 
 #[cfg(target_os = "macos")]
 impl Default for KeychainManager {
     fn default() -> Self {
-        Self {
-            ca_name: "httpjail CA".to_string(),
-        }
+        Self
     }
 }
 
@@ -26,7 +24,7 @@ impl KeychainManager {
     pub fn is_ca_trusted(&self) -> Result<bool> {
         // First check if the certificate exists in keychain
         let find_output = Command::new("security")
-            .args(["find-certificate", "-c", &self.ca_name, "-p"])
+            .args(["find-certificate", "-c", CA_NAME, "-p"])
             .arg(self.get_user_keychain()?)
             .output()
             .context("Failed to check for CA certificate")?;
@@ -76,9 +74,12 @@ impl KeychainManager {
     pub fn install_ca(&self, cert_path: &Path) -> Result<()> {
         self.cleanup_old_certificates()?;
 
-        info!("Installing httpjail CA to user keychain...");
+        info!("Installing {} to user keychain...", CA_NAME);
         println!("\n⚠️  Security Notice:");
-        println!("You are about to install the httpjail CA certificate to your user keychain.");
+        println!(
+            "You are about to install the {} certificate to your user keychain.",
+            CA_NAME
+        );
         println!("This allows httpjail to inspect HTTPS traffic for allowed domains.");
         println!("The certificate will only be trusted for SSL connections.");
         println!("\nYou may be prompted for your password to authorize this change.");
@@ -103,21 +104,21 @@ impl KeychainManager {
             }
         }
 
-        info!("Successfully installed httpjail CA to keychain");
+        info!("Successfully installed {} to keychain", CA_NAME);
         Ok(())
     }
 
     pub fn uninstall_ca(&self) -> Result<()> {
-        info!("Removing httpjail CA from keychain...");
+        info!("Removing {} from keychain...", CA_NAME);
 
         let sha1_output = Command::new("security")
-            .args(["find-certificate", "-a", "-c", &self.ca_name, "-Z"])
+            .args(["find-certificate", "-a", "-c", CA_NAME, "-Z"])
             .arg(self.get_user_keychain()?)
             .output()
             .context("Failed to find certificates")?;
 
         if !sha1_output.status.success() {
-            info!("No httpjail CA found in keychain");
+            info!("No {} found in keychain", CA_NAME);
             return Ok(());
         }
 
@@ -125,8 +126,9 @@ impl KeychainManager {
         let mut removed_count = 0;
 
         for line in output_str.lines() {
-            if line.contains("SHA-1 hash:")
-                && let Some(hash) = line.split_whitespace().last()
+            // Accept both SHA-256 and SHA-1 hashes (SHA-256 preferred)
+            if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
+                && let Some(hash) = line.split(':').last().map(|s| s.trim())
             {
                 let delete_output = Command::new("security")
                     .args(["delete-certificate", "-Z", hash])
@@ -136,18 +138,18 @@ impl KeychainManager {
 
                 if delete_output.status.success() {
                     removed_count += 1;
-                    debug!("Removed certificate with SHA-1: {}", hash);
+                    debug!("Removed certificate with hash: {}", hash);
                 }
             }
         }
 
         if removed_count > 0 {
             info!(
-                "Removed {} httpjail CA certificate(s) from keychain",
-                removed_count
+                "Removed {} {} certificate(s) from keychain",
+                removed_count, CA_NAME
             );
         } else {
-            info!("No httpjail CA certificates found to remove");
+            info!("No {} certificates found to remove", CA_NAME);
         }
 
         Ok(())
@@ -155,7 +157,7 @@ impl KeychainManager {
 
     fn cleanup_old_certificates(&self) -> Result<()> {
         let sha1_output = Command::new("security")
-            .args(["find-certificate", "-a", "-c", &self.ca_name, "-Z"])
+            .args(["find-certificate", "-a", "-c", CA_NAME, "-Z"])
             .arg(self.get_user_keychain()?)
             .output()
             .context("Failed to find existing certificates")?;
@@ -168,8 +170,9 @@ impl KeychainManager {
         let mut old_certs = Vec::new();
 
         for line in output_str.lines() {
-            if line.contains("SHA-1 hash:")
-                && let Some(hash) = line.split_whitespace().last()
+            // Accept both SHA-256 and SHA-1 hashes (SHA-256 preferred)
+            if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
+                && let Some(hash) = line.split(':').last().map(|s| s.trim())
             {
                 old_certs.push(hash.to_string());
             }
@@ -177,15 +180,16 @@ impl KeychainManager {
 
         if !old_certs.is_empty() {
             info!(
-                "Found {} existing httpjail CA certificate(s), removing old ones...",
-                old_certs.len()
+                "Found {} existing {} certificate(s), removing old ones...",
+                old_certs.len(),
+                CA_NAME
             );
             for hash in old_certs {
                 let _ = Command::new("security")
                     .args(["delete-certificate", "-Z", &hash])
                     .arg(self.get_user_keychain()?)
                     .output();
-                debug!("Removed old certificate with SHA-1: {}", hash);
+                debug!("Removed old certificate with hash: {}", hash);
             }
         }
 
