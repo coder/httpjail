@@ -137,7 +137,7 @@ impl CertificateManager {
             if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
                 warn!("CA not installed to keychain: {}", e);
                 warn!(
-                    "HTTPS interception will be limited. Run 'httpjail trust --install' to enable full HTTPS interception."
+                    "Applications may fail with certificate errors. Run 'httpjail trust --install' to trust the CA."
                 );
             } else {
                 info!("CA certificate automatically installed to macOS keychain");

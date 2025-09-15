@@ -62,6 +62,15 @@ DO NOT `cargo clean`. Instead, `chown -R <user> target`.
   cargo test --test weak_integration
   ```
 
+### Certificate Trust on macOS
+
+- **curl and most CLI tools**: Respect the `SSL_CERT_FILE`/`SSL_CERT_DIR` environment variables that httpjail sets, so they work even without the CA in the system keychain
+- **Go programs (gh, go, etc.)**: Use the macOS Security.framework and ignore environment variables, requiring the CA to be installed in the keychain via `httpjail trust --install`
+- When the CA is not trusted in the keychain, httpjail will:
+  - Still attempt TLS interception (not pass-through)
+  - Warn that applications may fail with certificate errors
+  - Go programs will fail to connect until `httpjail trust --install` is run
+
 ## Documentation
 
 User-facing documentation should be in the README.md file.

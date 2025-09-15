@@ -130,7 +130,7 @@ httpjail creates an isolated network environment for the target process, interce
   - `httpjail trust` - Check if the CA certificate is trusted
   - `httpjail trust --install` - Install CA to user keychain (with prompt)
   - `httpjail trust --remove` - Remove CA from keychain
-  - When CA is not trusted, HTTPS connections pass through without interception (hostname-based rules still apply)
+  - When CA is not trusted, applications may fail with certificate errors until you run `httpjail trust --install`
 
 ## Configuration File
 
