@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
+#[cfg(target_os = "macos")]
 use crate::macos_keychain::KeychainManager;
 
 const CERT_CACHE_SIZE: usize = 1024;
