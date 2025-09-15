@@ -26,7 +26,8 @@ struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Manage CA certificate trust (macOS only)
+    #[cfg(target_os = "macos")]
+    /// Manage CA certificate trust
     Trust {
         /// Install the httpjail CA certificate to the system keychain
         #[arg(long)]
@@ -299,61 +300,53 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Handle trust subcommand (takes precedence)
+    #[cfg(target_os = "macos")]
     if let Some(Command::Trust { install, remove }) = &args.command {
         setup_logging(0); // Minimal logging for trust commands
 
-        #[cfg(target_os = "macos")]
-        {
-            use httpjail::macos_keychain::KeychainManager;
-            let keychain_manager = KeychainManager::new();
+        use httpjail::macos_keychain::KeychainManager;
+        let keychain_manager = KeychainManager::new();
 
-            if !*install && !*remove {
-                // Default to status if no flags provided
-                match keychain_manager.is_ca_trusted() {
-                    Ok(true) => {
-                        println!("✓ httpjail CA certificate is trusted in keychain");
-                        return Ok(());
-                    }
-                    Ok(false) => {
-                        println!("✗ httpjail CA certificate is NOT trusted in keychain");
-                        println!("Run 'httpjail trust --install' to enable HTTPS interception");
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("Error checking trust status: {}", e);
-                        std::process::exit(1);
-                    }
+        if !*install && !*remove {
+            // Default to status if no flags provided
+            match keychain_manager.is_ca_trusted() {
+                Ok(true) => {
+                    println!("✓ httpjail CA certificate is trusted in keychain");
+                    return Ok(());
                 }
-            }
-
-            if *install {
-                // First ensure CA exists
-                let config_dir = dirs::config_dir()
-                    .context("Could not find user config directory")?
-                    .join("httpjail");
-                let ca_cert_path = config_dir.join("ca-cert.pem");
-
-                if !ca_cert_path.exists() {
-                    // Generate CA first
-                    info!("Generating CA certificate...");
-                    let _ = httpjail::tls::CertificateManager::new()?;
+                Ok(false) => {
+                    println!("✗ httpjail CA certificate is NOT trusted in keychain");
+                    println!("Run 'httpjail trust --install' to enable HTTPS interception");
+                    std::process::exit(1);
                 }
-
-                keychain_manager.install_ca(&ca_cert_path)?;
-                println!("✓ httpjail CA certificate installed successfully");
-                return Ok(());
-            }
-
-            if *remove {
-                keychain_manager.uninstall_ca()?;
-                return Ok(());
+                Err(e) => {
+                    eprintln!("Error checking trust status: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            eprintln!("Trust management is only available on macOS");
-            std::process::exit(1);
+        if *install {
+            // First ensure CA exists
+            let config_dir = dirs::config_dir()
+                .context("Could not find user config directory")?
+                .join("httpjail");
+            let ca_cert_path = config_dir.join("ca-cert.pem");
+
+            if !ca_cert_path.exists() {
+                // Generate CA first
+                info!("Generating CA certificate...");
+                let _ = httpjail::tls::CertificateManager::new()?;
+            }
+
+            keychain_manager.install_ca(&ca_cert_path)?;
+            println!("✓ httpjail CA certificate installed successfully");
+            return Ok(());
+        }
+
+        if *remove {
+            keychain_manager.uninstall_ca()?;
+            return Ok(());
         }
     }
 

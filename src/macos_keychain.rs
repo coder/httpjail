@@ -18,7 +18,7 @@ impl Default for KeychainManager {
 #[cfg(target_os = "macos")]
 impl KeychainManager {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     pub fn is_ca_trusted(&self) -> Result<bool> {
@@ -122,10 +122,10 @@ impl KeychainManager {
         info!("Successfully installed {} to keychain", CA_NAME);
 
         // Try to show certificate info
-        if let Ok(cert_content) = std::fs::read_to_string(cert_path) {
-            if let Ok(info) = self.get_cert_info(&cert_content) {
-                println!("✓ Installed certificate: {}", info);
-            }
+        if let Ok(cert_content) = std::fs::read_to_string(cert_path)
+            && let Ok(info) = self.get_cert_info(&cert_content)
+        {
+            println!("✓ Installed certificate: {}", info);
         }
 
         Ok(())
@@ -170,7 +170,7 @@ impl KeychainManager {
                 current_cert_pem.push_str(line);
                 current_cert_pem.push('\n');
             } else if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
-                && let Some(hash) = line.split(':').last().map(|s| s.trim())
+                && let Some(hash) = line.split(':').next_back().map(|s| s.trim())
             {
                 let delete_output = Command::new("security")
                     .args(["delete-certificate", "-Z", hash])
@@ -222,7 +222,7 @@ impl KeychainManager {
         for line in output_str.lines() {
             // Accept both SHA-256 and SHA-1 hashes (SHA-256 preferred)
             if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
-                && let Some(hash) = line.split(':').last().map(|s| s.trim())
+                && let Some(hash) = line.split(':').next_back().map(|s| s.trim())
             {
                 old_certs.push(hash.to_string());
             }
@@ -310,24 +310,24 @@ impl KeychainManager {
 
         for line in info_str.lines() {
             if line.starts_with("subject=") {
-                if let Some(cn) = line.split("CN=").nth(1) {
-                    if let Some(cn_value) = cn.split(',').next() {
-                        info_parts.push(format!("CN={}", cn_value.trim()));
-                    }
+                if let Some(cn) = line.split("CN=").nth(1)
+                    && let Some(cn_value) = cn.split(',').next()
+                {
+                    info_parts.push(format!("CN={}", cn_value.trim()));
                 }
             } else if line.starts_with("notAfter=") {
                 let expiry = line.strip_prefix("notAfter=").unwrap_or("");
                 info_parts.push(format!("expires {}", expiry));
-            } else if line.starts_with("SHA256 Fingerprint=") {
-                if let Some(fp) = line.split('=').nth(1) {
-                    // Take first 16 chars of fingerprint for brevity
-                    let short_fp = fp
-                        .chars()
-                        .filter(|c| *c != ':')
-                        .take(16)
-                        .collect::<String>();
-                    info_parts.push(format!("SHA256:{}", short_fp));
-                }
+            } else if line.starts_with("SHA256 Fingerprint=")
+                && let Some(fp) = line.split('=').nth(1)
+            {
+                // Take first 16 chars of fingerprint for brevity
+                let short_fp = fp
+                    .chars()
+                    .filter(|c| *c != ':')
+                    .take(16)
+                    .collect::<String>();
+                info_parts.push(format!("SHA256:{}", short_fp));
             }
         }
 
@@ -362,7 +362,7 @@ impl Default for KeychainManager {
 #[cfg(not(target_os = "macos"))]
 impl KeychainManager {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     pub fn is_ca_trusted(&self) -> Result<bool> {
