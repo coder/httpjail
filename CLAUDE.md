@@ -116,8 +116,9 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 ./scripts/ci-scp.sh root@ci-1:/path/to/file ./         # Download
 
 # Wait for PR checks to pass or fail
-./scripts/wait-pr-checks.sh 47               # Monitor PR #47
-./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify repo explicitly
+./scripts/wait-pr-checks.sh                  # Auto-detect PR from current branch
+./scripts/wait-pr-checks.sh 47               # Monitor specific PR #47
+./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify PR and repo explicitly
 ```
 
 ### Manual Testing on CI

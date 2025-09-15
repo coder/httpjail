@@ -1,29 +1,51 @@
 #!/bin/bash
 # wait-pr-checks.sh - Poll GitHub Actions status for a PR and exit on first failure or when all pass
 #
-# Usage: ./scripts/wait-pr-checks.sh <pr-number> [repo]
-#   pr-number: The PR number to check
+# Usage: ./scripts/wait-pr-checks.sh [pr-number] [repo]
+#   pr-number: Optional PR number (auto-detects from current branch if not provided)
 #   repo: Optional repository in format owner/repo (defaults to coder/httpjail)
 #
 # Exit codes:
 #   0 - All checks passed
 #   1 - A check failed
-#   2 - Invalid arguments
+#   2 - Invalid arguments or no PR found
 #
 # Requires: gh, jq
 
 set -euo pipefail
 
-# Parse arguments
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <pr-number> [repo]" >&2
-    echo "Example: $0 47" >&2
-    echo "Example: $0 47 coder/httpjail" >&2
-    exit 2
+# Parse arguments and auto-detect PR if needed
+if [ $# -eq 0 ]; then
+    # Auto-detect PR from current branch
+    echo "Auto-detecting PR from current branch..." >&2
+    CURRENT_BRANCH=$(git branch --show-current)
+    
+    # Try to find PR for current branch
+    PR_INFO=$(gh pr list --head "${CURRENT_BRANCH}" --json number,headRefName --limit 1 2>/dev/null || echo "[]")
+    PR_NUMBER=$(echo "$PR_INFO" | jq -r '.[0].number // empty')
+    
+    if [ -z "$PR_NUMBER" ]; then
+        echo "Error: No PR found for branch '${CURRENT_BRANCH}'" >&2
+        echo "" >&2
+        echo "Usage: $0 [pr-number] [repo]" >&2
+        echo "  When called without arguments, auto-detects PR from current branch" >&2
+        echo "  Examples:" >&2
+        echo "    $0                    # Auto-detect PR from current branch" >&2
+        echo "    $0 47                 # Monitor PR #47" >&2
+        echo "    $0 47 coder/httpjail  # Monitor PR #47 in specific repo" >&2
+        exit 2
+    fi
+    
+    # Auto-detect repo from git remote
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "coder/httpjail")
+    echo "Found PR #${PR_NUMBER} for branch '${CURRENT_BRANCH}' in ${REPO}" >&2
+elif [ $# -eq 1 ]; then
+    PR_NUMBER="$1"
+    REPO="coder/httpjail"
+else
+    PR_NUMBER="$1"
+    REPO="$2"
 fi
-
-PR_NUMBER="$1"
-REPO="${2:-coder/httpjail}"
 
 # Check for required tools
 if ! command -v jq &> /dev/null; then
