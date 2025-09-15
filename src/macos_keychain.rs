@@ -1,8 +1,13 @@
+#[cfg(target_os = "macos")]
 use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
 use tracing::{debug, info};
 
+#[cfg(target_os = "macos")]
 const CA_NAME: &str = "httpjail CA";
 
 #[cfg(target_os = "macos")]
@@ -350,7 +355,19 @@ impl KeychainManager {
 }
 
 #[cfg(not(target_os = "macos"))]
+use anyhow::Result;
+#[cfg(not(target_os = "macos"))]
+use std::path::Path;
+
+#[cfg(not(target_os = "macos"))]
 pub struct KeychainManager;
+
+#[cfg(not(target_os = "macos"))]
+impl Default for KeychainManager {
+    fn default() -> Self {
+        Self
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 impl KeychainManager {

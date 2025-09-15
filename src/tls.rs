@@ -7,7 +7,9 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use tracing::{debug, info, warn};
+#[cfg(target_os = "macos")]
+use tracing::warn;
+use tracing::{debug, info};
 
 #[cfg(target_os = "macos")]
 use crate::macos_keychain::KeychainManager;

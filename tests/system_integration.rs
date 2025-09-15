@@ -254,9 +254,9 @@ pub fn test_jail_requires_command<P: JailTestPlatform>() {
     let mut cmd = httpjail_cmd();
     cmd.arg("--js").arg("true");
 
-    cmd.assert().failure().stderr(predicate::str::contains(
-        "required arguments were not provided",
-    ));
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("No command specified"));
 }
 
 /// Test exit code propagation
