@@ -8,6 +8,7 @@ pub struct HttpjailCommand {
     use_sudo: bool,
     weak_mode: bool,
     env: Vec<(String, String)>,
+    timeout_secs: u16,
 }
 
 impl HttpjailCommand {
@@ -18,6 +19,7 @@ impl HttpjailCommand {
             use_sudo: false,
             weak_mode: false,
             env: vec![],
+            timeout_secs: 15, // Default timeout
         }
     }
 
@@ -61,14 +63,20 @@ impl HttpjailCommand {
         self
     }
 
+    /// Set custom timeout in seconds
+    pub fn timeout(mut self, seconds: u16) -> Self {
+        self.timeout_secs = seconds;
+        self
+    }
+
     /// Build and execute the command
     pub fn execute(mut self) -> Result<(i32, String, String), String> {
         // Use the binary path produced by the same Cargo test build
         let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
 
-        // Always add timeout for tests (15 seconds default for CI environment)
+        // Always add timeout for tests
         self.args.insert(0, "--timeout".to_string());
-        self.args.insert(1, "15".to_string());
+        self.args.insert(1, self.timeout_secs.to_string());
 
         // Add weak mode if requested
         if self.weak_mode {
@@ -95,6 +103,8 @@ impl HttpjailCommand {
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
+            // Skip automatic keychain installation during tests
+            sudo_cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
             for (key, value) in &self.env {
                 sudo_cmd.env(key, value);
             }
@@ -104,6 +114,8 @@ impl HttpjailCommand {
             for arg in &self.args {
                 cmd.arg(arg);
             }
+            // Skip automatic keychain installation during tests
+            cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
             for (key, value) in &self.env {
                 cmd.env(key, value);
             }

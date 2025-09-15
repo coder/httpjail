@@ -1,29 +1,51 @@
 #!/bin/bash
 # wait-pr-checks.sh - Poll GitHub Actions status for a PR and exit on first failure or when all pass
 #
-# Usage: ./scripts/wait-pr-checks.sh <pr-number> [repo]
-#   pr-number: The PR number to check
+# Usage: ./scripts/wait-pr-checks.sh [pr-number] [repo]
+#   pr-number: Optional PR number (auto-detects from current branch if not provided)
 #   repo: Optional repository in format owner/repo (defaults to coder/httpjail)
 #
 # Exit codes:
 #   0 - All checks passed
 #   1 - A check failed
-#   2 - Invalid arguments
+#   2 - Invalid arguments or no PR found
 #
 # Requires: gh, jq
 
 set -euo pipefail
 
-# Parse arguments
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <pr-number> [repo]" >&2
-    echo "Example: $0 47" >&2
-    echo "Example: $0 47 coder/httpjail" >&2
-    exit 2
+# Parse arguments and auto-detect PR if needed
+if [ $# -eq 0 ]; then
+    # Auto-detect PR from current branch
+    echo "Auto-detecting PR from current branch..." >&2
+    CURRENT_BRANCH=$(git branch --show-current)
+    
+    # Try to find PR for current branch
+    PR_INFO=$(gh pr list --head "${CURRENT_BRANCH}" --json number,headRefName --limit 1 2>/dev/null || echo "[]")
+    PR_NUMBER=$(echo "$PR_INFO" | jq -r '.[0].number // empty')
+    
+    if [ -z "$PR_NUMBER" ]; then
+        echo "Error: No PR found for branch '${CURRENT_BRANCH}'" >&2
+        echo "" >&2
+        echo "Usage: $0 [pr-number] [repo]" >&2
+        echo "  When called without arguments, auto-detects PR from current branch" >&2
+        echo "  Examples:" >&2
+        echo "    $0                    # Auto-detect PR from current branch" >&2
+        echo "    $0 47                 # Monitor PR #47" >&2
+        echo "    $0 47 coder/httpjail  # Monitor PR #47 in specific repo" >&2
+        exit 2
+    fi
+    
+    # Auto-detect repo from git remote
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "coder/httpjail")
+    echo "Found PR #${PR_NUMBER} for branch '${CURRENT_BRANCH}' in ${REPO}" >&2
+elif [ $# -eq 1 ]; then
+    PR_NUMBER="$1"
+    REPO="coder/httpjail"
+else
+    PR_NUMBER="$1"
+    REPO="$2"
 fi
-
-PR_NUMBER="$1"
-REPO="${2:-coder/httpjail}"
 
 # Check for required tools
 if ! command -v jq &> /dev/null; then
@@ -71,7 +93,43 @@ while true; do
     if [ $failed_count -gt 0 ]; then
         echo -e "\n\n${RED}❌ The following check(s) failed:${NC}"
         echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "  - \(.name)"'
-        echo -e "\nView details at: https://github.com/${REPO}/pull/${PR_NUMBER}/checks"
+        
+        # Try to fetch logs for the first failed check
+        echo -e "\n${YELLOW}Fetching logs for first failed check...${NC}\n"
+        
+        # Get the first failed check details
+        first_failed=$(echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "\(.name)|\(.link)"' | head -1)
+        
+        if [ -n "$first_failed" ]; then
+            IFS='|' read -r check_name check_link <<< "$first_failed"
+            echo -e "${YELLOW}=== Logs for: ${check_name} ===${NC}"
+            
+            # Extract run ID and job ID from the link
+            if [[ "$check_link" =~ /runs/([0-9]+)/job/([0-9]+) ]]; then
+                run_id="${BASH_REMATCH[1]}"
+                job_id="${BASH_REMATCH[2]}"
+                
+                # Use direct API call to get job logs (more reliable than gh run view)
+                if job_logs=$(gh api "repos/${REPO}/actions/jobs/${job_id}/logs" --paginate 2>&1); then
+                    # Look for error patterns in the logs
+                    error_logs=$(echo "$job_logs" | grep -E "(error:|Error:|ERROR:|warning:|clippy::|failed|Failed|##\[error\])" | head -30)
+                    if [ -n "$error_logs" ]; then
+                        echo "$error_logs"
+                    else
+                        # If no error patterns found, show last 100 lines which often contain the failure
+                        echo "$job_logs" | tail -100
+                    fi
+                else
+                    # If logs aren't ready, try to at least show the conclusion
+                    echo "Full logs not available yet. Check: ${check_link}"
+                fi
+            else
+                echo "Could not parse check link: ${check_link}"
+            fi
+            echo ""
+        fi
+        
+        echo -e "\nView full details at: https://github.com/${REPO}/pull/${PR_NUMBER}/checks"
         exit 1
     fi
     

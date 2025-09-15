@@ -378,6 +378,18 @@ async fn perform_tls_interception(
     host: &str,
     remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
+    // On macOS, warn if the CA is not trusted (but still attempt interception)
+    #[cfg(target_os = "macos")]
+    {
+        if !CertificateManager::is_ca_trusted() {
+            warn!(
+                "CA not trusted in keychain - {} may fail with certificate errors",
+                host
+            );
+            warn!("Run 'httpjail trust --install' to trust the CA and avoid connection failures");
+        }
+    }
+
     // Get certificate for the host
     let (cert_chain, key) = cert_manager
         .get_cert_for_host(host)

@@ -49,6 +49,16 @@ Run the full suite:
 cargo test
 ```
 
+### Test Performance Requirements
+
+**All tests must complete within seconds, not minutes.** The CI timeout is set to 30 seconds per test. Tests that require longer operations (like timeouts) should use minimal durations:
+
+- Use `HttpjailCommand::timeout(2)` for timeout tests with `sleep 3`
+- Network tests should use `--connect-timeout 5 --max-time 8` for curl commands
+- Any test taking longer than a few seconds should be optimized or redesigned
+
+This ensures fast feedback during development and prevents CI timeouts.
+
 ## Cargo Cache
 
 Occasionally you will encounter permissions issues due to running the tests under sudo. In these cases,
@@ -61,6 +71,15 @@ DO NOT `cargo clean`. Instead, `chown -R <user> target`.
   ```bash
   cargo test --test weak_integration
   ```
+
+### Certificate Trust on macOS
+
+- **curl and most CLI tools**: Respect the `SSL_CERT_FILE`/`SSL_CERT_DIR` environment variables that httpjail sets, so they work even without the CA in the system keychain
+- **Go programs (gh, go, etc.)**: Use the macOS Security.framework and ignore environment variables, requiring the CA to be installed in the keychain via `httpjail trust --install`
+- When the CA is not trusted in the keychain, httpjail will:
+  - Still attempt TLS interception (not pass-through)
+  - Warn that applications may fail with certificate errors
+  - Go programs will fail to connect until `httpjail trust --install` is run
 
 ## Documentation
 
@@ -107,8 +126,9 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 ./scripts/ci-scp.sh root@ci-1:/path/to/file ./         # Download
 
 # Wait for PR checks to pass or fail
-./scripts/wait-pr-checks.sh 47               # Monitor PR #47
-./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify repo explicitly
+./scripts/wait-pr-checks.sh                  # Auto-detect PR from current branch
+./scripts/wait-pr-checks.sh 47               # Monitor specific PR #47
+./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify PR and repo explicitly
 ```
 
 ### Manual Testing on CI

@@ -22,5 +22,8 @@ failure-output = "final"
 success-output = "never"
 status-level = "retry"
 
+# Test timeout - terminate tests that run longer than 30 seconds
+slow-timeout = { period = "30s", terminate-after = 1 }
+
 # Allow more retries in CI for flaky tests
 retries = { backoff = "exponential", count = 2, delay = "1s", max-delay = "10s" }

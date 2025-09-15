@@ -17,6 +17,30 @@ use tracing::{debug, info, warn};
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
 #[command(about = "Monitor and restrict HTTP/HTTPS requests from processes")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    run_args: RunArgs,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    #[cfg(target_os = "macos")]
+    /// Manage CA certificate trust
+    Trust {
+        /// Install the httpjail CA certificate to the system keychain
+        #[arg(long)]
+        install: bool,
+
+        /// Remove the httpjail CA certificate from the system keychain
+        #[arg(long, conflicts_with = "install")]
+        remove: bool,
+    },
+}
+
+#[derive(Parser, Debug)]
+struct RunArgs {
     /// Use script for evaluating requests
     /// The script receives environment variables:
     ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
@@ -101,9 +125,9 @@ struct Args {
     )]
     docker_run: bool,
 
-    /// Command and arguments to execute
-    #[arg(trailing_var_arg = true, required_unless_present_any = ["cleanup", "server", "test", "docker_run"])]
-    command: Vec<String>,
+    /// Command and arguments to execute  
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    exec_command: Vec<String>,
 }
 
 fn setup_logging(verbosity: u8) {
@@ -131,11 +155,11 @@ fn setup_logging(verbosity: u8) {
             .init();
     } else {
         // Use verbosity flag
+        // Default (0) shows warn and error, -v shows info, -vv shows debug, -vvv shows trace
         let level = match verbosity {
-            0 => "error",
-            1 => "warn",
-            2 => "info",
-            3 => "debug",
+            0 => "warn",
+            1 => "info",
+            2 => "debug",
             _ => "trace",
         };
 
@@ -275,15 +299,66 @@ fn cleanup_orphans() -> Result<()> {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    setup_logging(args.verbose);
+    // Handle trust subcommand (takes precedence)
+    #[cfg(target_os = "macos")]
+    if let Some(Command::Trust { install, remove }) = &args.command {
+        setup_logging(0); // Minimal logging for trust commands
+
+        use httpjail::macos_keychain::KeychainManager;
+        let keychain_manager = KeychainManager::new();
+
+        if !*install && !*remove {
+            // Default to status if no flags provided
+            match keychain_manager.is_ca_trusted() {
+                Ok(true) => {
+                    println!("✓ httpjail CA certificate is trusted in keychain");
+                    return Ok(());
+                }
+                Ok(false) => {
+                    println!("✗ httpjail CA certificate is NOT trusted in keychain");
+                    println!("Run 'httpjail trust --install' to enable HTTPS interception");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error checking trust status: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if *install {
+            // First ensure CA exists
+            let config_dir = dirs::config_dir()
+                .context("Could not find user config directory")?
+                .join("httpjail");
+            let ca_cert_path = config_dir.join("ca-cert.pem");
+
+            if !ca_cert_path.exists() {
+                // Generate CA first
+                info!("Generating CA certificate...");
+                let _ = httpjail::tls::CertificateManager::new()?;
+            }
+
+            keychain_manager.install_ca(&ca_cert_path)?;
+            println!("✓ httpjail CA certificate installed successfully");
+            return Ok(());
+        }
+
+        if *remove {
+            keychain_manager.uninstall_ca()?;
+            return Ok(());
+        }
+    }
+
+    setup_logging(args.run_args.verbose);
 
     // Log the version at startup for easier diagnostics
     debug!("httpjail version: {}", env!("VERSION_WITH_GIT_HASH"));
 
-    debug!("Starting httpjail with args: {:?}", args);
+    debug!("Starting httpjail with args: {:?}", args.run_args);
 
     // Handle cleanup flag
-    if args.cleanup {
+    if args.run_args.cleanup {
         info!("Running orphan cleanup and exiting...");
 
         // Directly call platform-specific orphan cleanup without creating jails
@@ -294,7 +369,7 @@ async fn main() -> Result<()> {
     }
 
     // Handle server mode
-    if args.server {
+    if args.run_args.server {
         info!("Starting httpjail in server mode");
     }
 
@@ -302,7 +377,7 @@ async fn main() -> Result<()> {
     let mut jail_config = JailConfig::new();
 
     // Build rule engine based on script or JS
-    let request_log = if let Some(path) = &args.request_log {
+    let request_log = if let Some(path) = &args.run_args.request_log {
         Some(Arc::new(Mutex::new(
             OpenOptions::new()
                 .create(true)
@@ -314,11 +389,11 @@ async fn main() -> Result<()> {
         None
     };
 
-    let rule_engine = if let Some(script) = &args.sh {
+    let rule_engine = if let Some(script) = &args.run_args.sh {
         info!("Using script-based rule evaluation: {}", script);
         let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)
-    } else if let Some(js_code) = &args.js {
+    } else if let Some(js_code) = &args.run_args.js {
         info!("Using V8 JavaScript rule evaluation");
         let js_engine = match V8JsRuleEngine::new(js_code.clone()) {
             Ok(engine) => Box::new(engine),
@@ -328,7 +403,7 @@ async fn main() -> Result<()> {
             }
         };
         RuleEngine::from_trait(js_engine, request_log)
-    } else if let Some(js_file) = &args.js_file {
+    } else if let Some(js_file) = &args.run_args.js_file {
         info!("Using V8 JavaScript rule evaluation from file: {}", js_file);
         let code = std::fs::read_to_string(js_file)
             .with_context(|| format!("Failed to read JS file: {}", js_file))?;
@@ -353,7 +428,7 @@ async fn main() -> Result<()> {
     };
 
     // Handle test (dry-run) mode: evaluate the rule against a URL and exit
-    if let Some(test_vals) = &args.test {
+    if let Some(test_vals) = &args.run_args.test {
         let (method, url) = if test_vals.len() == 1 {
             let s = &test_vals[0];
             let mut parts = s.split_whitespace();
@@ -429,7 +504,7 @@ async fn main() -> Result<()> {
     // so the proxy is accessible from the veth interface. For weak mode or server mode,
     // localhost is fine.
     // TODO: This has security implications - see GitHub issue #31
-    let bind_address: Option<[u8; 4]> = if args.weak || args.server {
+    let bind_address: Option<[u8; 4]> = if args.run_args.weak || args.run_args.server {
         None
     } else {
         #[cfg(target_os = "linux")]
@@ -449,7 +524,7 @@ async fn main() -> Result<()> {
     // Start proxy in background if running as server; otherwise start with random ports
     let (actual_http_port, actual_https_port) = proxy.start().await?;
 
-    if args.server {
+    if args.run_args.server {
         info!(
             "Proxy server running on http://localhost:{} and https://localhost:{}",
             actual_http_port, actual_https_port
@@ -467,7 +542,11 @@ async fn main() -> Result<()> {
     jail_config.https_proxy_port = actual_https_port;
 
     // Create and setup jail
-    let mut jail = create_jail(jail_config.clone(), args.weak, args.docker_run)?;
+    let mut jail = create_jail(
+        jail_config.clone(),
+        args.run_args.weak,
+        args.run_args.docker_run,
+    )?;
 
     // Setup jail (pass 0 as the port parameter is ignored)
     jail.setup(0)?;
@@ -479,7 +558,7 @@ async fn main() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let jail_for_signal = jail.clone();
     let shutdown_clone = shutdown.clone();
-    let no_cleanup = args.no_jail_cleanup;
+    let no_cleanup = args.run_args.no_jail_cleanup;
 
     // Set up signal handler for SIGINT and SIGTERM
     ctrlc::set_handler(move || {
@@ -529,11 +608,11 @@ async fn main() -> Result<()> {
     }
 
     // Execute command in jail with extra environment variables
-    let status = if let Some(timeout_secs) = args.timeout {
+    let status = if let Some(timeout_secs) = args.run_args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
 
         // Use tokio to handle timeout
-        let command = args.command.clone();
+        let command = args.run_args.exec_command.clone();
         let extra_env_clone = extra_env.clone();
         let jail_clone = jail.clone();
 
@@ -554,11 +633,11 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        jail.execute(&args.command, &extra_env)?
+        jail.execute(&args.run_args.exec_command, &extra_env)?
     };
 
     // Cleanup jail (unless testing flag is set)
-    if !args.no_jail_cleanup {
+    if !args.run_args.no_jail_cleanup {
         jail.cleanup()?;
     } else {
         info!("Skipping jail cleanup (--no-jail-cleanup flag set)");

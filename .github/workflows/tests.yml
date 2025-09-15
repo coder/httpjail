@@ -54,6 +54,11 @@ jobs:
           fi
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
       - name: Fix permissions on current directory
         run: |
           # Clean up any files left from previous sudo runs

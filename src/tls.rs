@@ -7,7 +7,12 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+#[cfg(target_os = "macos")]
+use tracing::warn;
 use tracing::{debug, info};
+
+#[cfg(target_os = "macos")]
+use crate::macos_keychain::KeychainManager;
 
 const CERT_CACHE_SIZE: usize = 1024;
 
@@ -126,6 +131,35 @@ impl CertificateManager {
         }
 
         info!("Saved new CA certificate to {}", ca_cert_path);
+
+        // On macOS, install the CA to the keychain (unless disabled for testing)
+        #[cfg(target_os = "macos")]
+        {
+            // Skip automatic keychain installation if:
+            // 1. Explicitly disabled via environment variable (for tests)
+            // 2. Not running in a TTY (non-interactive, CI/automation)
+            let skip_env = std::env::var("HTTPJAIL_SKIP_KEYCHAIN_INSTALL").is_ok();
+            let is_tty = atty::is(atty::Stream::Stdout);
+
+            if skip_env {
+                debug!(
+                    "Skipping automatic keychain installation (HTTPJAIL_SKIP_KEYCHAIN_INSTALL set)"
+                );
+            } else if !is_tty {
+                debug!("Skipping automatic keychain installation (not running in TTY)");
+            } else {
+                let keychain_manager = KeychainManager::new();
+                if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
+                    warn!("CA not installed to keychain: {}", e);
+                    warn!(
+                        "Applications may fail with certificate errors. Run 'httpjail trust --install' to trust the CA."
+                    );
+                } else {
+                    info!("CA certificate automatically installed to macOS keychain");
+                }
+            }
+        }
+
         Ok((ca_cert, ca_key_pair))
     }
 
@@ -159,6 +193,19 @@ impl CertificateManager {
             cert_cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
             config_dir,
         })
+    }
+
+    /// Check if the CA certificate is trusted on macOS
+    #[cfg(target_os = "macos")]
+    pub fn is_ca_trusted() -> bool {
+        let keychain_manager = KeychainManager::new();
+        keychain_manager.is_ca_trusted().unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn is_ca_trusted() -> bool {
+        // On non-macOS systems, we rely on environment variables
+        true
     }
 
     /// Get or generate a certificate for a hostname

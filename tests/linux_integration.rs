@@ -245,6 +245,7 @@ mod tests {
             .arg("--")
             .arg("sleep")
             .arg("60")
+            .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1") // Skip automatic keychain installation during tests
             .spawn()
             .expect("Failed to spawn httpjail");
 

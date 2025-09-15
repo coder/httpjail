@@ -126,6 +126,15 @@ httpjail creates an isolated network environment for the target process, interce
 ### macOS
 
 - No special permissions required (runs in weak mode)
+- **Automatic keychain trust:** On first run, httpjail will attempt to automatically install its CA certificate to your user keychain (with macOS password prompt). This enables HTTPS interception for most applications.
+- **Manual keychain management:**
+  - `httpjail trust` - Check if the CA certificate is trusted
+  - `httpjail trust --install` - Manually install CA to user keychain (with prompt)
+  - `httpjail trust --remove` - Remove CA from keychain
+- **Application compatibility:**
+  - ✅ Most CLI tools (curl, npm, etc.) work with environment variables or keychain trust
+  - ❌ Go programs (gh, go) require keychain trust and may fail until `httpjail trust --install` is run
+  - ❌ Some applications may bypass proxy settings entirely
 
 ## Configuration File
 

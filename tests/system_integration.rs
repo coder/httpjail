@@ -24,6 +24,8 @@ pub fn httpjail_cmd() -> Command {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
     // Add timeout for all tests (15 seconds for CI environment)
     cmd.arg("--timeout").arg("15");
+    // Skip automatic keychain installation during tests
+    cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
     // No need to specify ports - they'll be auto-assigned
     cmd
 }
@@ -252,9 +254,13 @@ pub fn test_jail_requires_command<P: JailTestPlatform>() {
     let mut cmd = httpjail_cmd();
     cmd.arg("--js").arg("true");
 
-    cmd.assert().failure().stderr(predicate::str::contains(
-        "required arguments were not provided",
-    ));
+    cmd.assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("No command specified").or(predicate::str::contains(
+                "Network namespace operations require root access",
+            )),
+        );
 }
 
 /// Test exit code propagation
@@ -591,6 +597,7 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
         .arg("sh")
         .arg("-c")
         .arg("curl -s --connect-timeout 10 --max-time 15 http://ifconfig.me && echo ' - Instance1 Success' || echo 'Instance1 Failed'")
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")  // Skip automatic keychain installation during tests
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -609,6 +616,7 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
         .arg("sh")
         .arg("-c")
         .arg("curl -s --connect-timeout 10 --max-time 15 http://ifconfig.io && echo ' - Instance2 Success' || echo 'Instance2 Failed'")
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")  // Skip automatic keychain installation during tests
         .output()
         .expect("Failed to execute second httpjail");
 
