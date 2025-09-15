@@ -29,7 +29,7 @@ fn test_httpjail_requires_command() {
 
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("required"));
+        .stderr(predicate::str::contains("No command specified"));
 }
 
 #[test]
