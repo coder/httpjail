@@ -130,17 +130,24 @@ impl CertificateManager {
 
         info!("Saved new CA certificate to {}", ca_cert_path);
 
-        // On macOS, install the CA to the keychain
+        // On macOS, install the CA to the keychain (unless disabled for testing)
         #[cfg(target_os = "macos")]
         {
-            let keychain_manager = KeychainManager::new();
-            if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
-                warn!("CA not installed to keychain: {}", e);
-                warn!(
-                    "Applications may fail with certificate errors. Run 'httpjail trust --install' to trust the CA."
-                );
+            // Skip automatic keychain installation during tests or when explicitly disabled
+            if std::env::var("HTTPJAIL_SKIP_KEYCHAIN_INSTALL").is_err() {
+                let keychain_manager = KeychainManager::new();
+                if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
+                    warn!("CA not installed to keychain: {}", e);
+                    warn!(
+                        "Applications may fail with certificate errors. Run 'httpjail trust --install' to trust the CA."
+                    );
+                } else {
+                    info!("CA certificate automatically installed to macOS keychain");
+                }
             } else {
-                info!("CA certificate automatically installed to macOS keychain");
+                debug!(
+                    "Skipping automatic keychain installation (HTTPJAIL_SKIP_KEYCHAIN_INSTALL set)"
+                );
             }
         }
 
