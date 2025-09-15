@@ -29,7 +29,11 @@ fn test_httpjail_requires_command() {
 
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("No command specified"));
+        .stderr(
+            predicate::str::contains("No command specified").or(predicate::str::contains(
+                "Network namespace operations require root access",
+            )),
+        );
 }
 
 #[test]

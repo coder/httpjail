@@ -109,14 +109,15 @@ while true; do
                 run_id="${BASH_REMATCH[1]}"
                 job_id="${BASH_REMATCH[2]}"
                 
-                # Try to get job logs
-                if job_logs=$(gh run view "${run_id}" --repo "${REPO}" --job "${job_id}" --log 2>&1); then
+                # Use direct API call to get job logs (more reliable than gh run view)
+                if job_logs=$(gh api "repos/${REPO}/actions/jobs/${job_id}/logs" --paginate 2>&1); then
                     # Look for error patterns in the logs
-                    error_logs=$(echo "$job_logs" | grep -E "(error:|Error:|ERROR:|warning:|clippy::|failed|Failed)" | head -30)
+                    error_logs=$(echo "$job_logs" | grep -E "(error:|Error:|ERROR:|warning:|clippy::|failed|Failed|##\[error\])" | head -30)
                     if [ -n "$error_logs" ]; then
                         echo "$error_logs"
                     else
-                        echo "No specific errors found in logs. Check full logs at: ${check_link}"
+                        # If no error patterns found, show last 20 lines which often contain the failure
+                        echo "$job_logs" | tail -20
                     fi
                 else
                     # If logs aren't ready, try to at least show the conclusion
