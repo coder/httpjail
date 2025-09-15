@@ -105,29 +105,56 @@ impl KeychainManager {
         }
 
         info!("Successfully installed {} to keychain", CA_NAME);
+
+        // Try to show certificate info
+        if let Ok(cert_content) = std::fs::read_to_string(cert_path) {
+            if let Ok(info) = self.get_cert_info(&cert_content) {
+                println!("✓ Installed certificate: {}", info);
+            }
+        }
+
         Ok(())
     }
 
     pub fn uninstall_ca(&self) -> Result<()> {
-        info!("Removing {} from keychain...", CA_NAME);
+        info!("Looking for {} in keychain...", CA_NAME);
 
-        let sha1_output = Command::new("security")
-            .args(["find-certificate", "-a", "-c", CA_NAME, "-Z"])
+        let find_output = Command::new("security")
+            .args(["find-certificate", "-a", "-c", CA_NAME, "-p", "-Z"])
             .arg(self.get_user_keychain()?)
             .output()
             .context("Failed to find certificates")?;
 
-        if !sha1_output.status.success() {
-            info!("No {} found in keychain", CA_NAME);
+        if !find_output.status.success() || find_output.stdout.is_empty() {
+            println!("No {} certificates found in keychain", CA_NAME);
             return Ok(());
         }
 
-        let output_str = String::from_utf8_lossy(&sha1_output.stdout);
+        let output_str = String::from_utf8_lossy(&find_output.stdout);
         let mut removed_count = 0;
+        let mut cert_info = Vec::new();
+
+        // Extract certificate info and hashes
+        let mut current_cert_pem = String::new();
+        let mut in_cert = false;
 
         for line in output_str.lines() {
-            // Accept both SHA-256 and SHA-1 hashes (SHA-256 preferred)
-            if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
+            if line == "-----BEGIN CERTIFICATE-----" {
+                in_cert = true;
+                current_cert_pem.clear();
+                current_cert_pem.push_str(line);
+                current_cert_pem.push('\n');
+            } else if line == "-----END CERTIFICATE-----" {
+                current_cert_pem.push_str(line);
+                in_cert = false;
+                // Try to get basic cert info
+                if let Ok(info) = self.get_cert_info(&current_cert_pem) {
+                    cert_info.push(info);
+                }
+            } else if in_cert {
+                current_cert_pem.push_str(line);
+                current_cert_pem.push('\n');
+            } else if (line.contains("SHA-256 hash:") || line.contains("SHA-1 hash:"))
                 && let Some(hash) = line.split(':').last().map(|s| s.trim())
             {
                 let delete_output = Command::new("security")
@@ -138,18 +165,26 @@ impl KeychainManager {
 
                 if delete_output.status.success() {
                     removed_count += 1;
-                    debug!("Removed certificate with hash: {}", hash);
+                    if !cert_info.is_empty() && cert_info.len() > removed_count - 1 {
+                        let info = &cert_info[removed_count - 1];
+                        println!("✓ Removed certificate: {}", info);
+                    } else {
+                        println!("✓ Removed certificate with hash: {}", hash);
+                    }
                 }
             }
         }
 
         if removed_count > 0 {
-            info!(
-                "Removed {} {} certificate(s) from keychain",
+            println!(
+                "Successfully removed {} {} certificate(s) from keychain",
                 removed_count, CA_NAME
             );
         } else {
-            info!("No {} certificates found to remove", CA_NAME);
+            println!(
+                "No {} certificates were removed (may have already been removed)",
+                CA_NAME
+            );
         }
 
         Ok(())
@@ -218,6 +253,74 @@ impl KeychainManager {
         }
 
         Ok(keychain_path)
+    }
+
+    fn get_cert_info(&self, cert_pem: &str) -> Result<String> {
+        // Use openssl to parse certificate info
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = Command::new("openssl")
+            .args([
+                "x509",
+                "-noout",
+                "-subject",
+                "-issuer",
+                "-dates",
+                "-fingerprint",
+                "-sha256",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn openssl")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(cert_pem.as_bytes())
+                .context("Failed to write to openssl")?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .context("Failed to read openssl output")?;
+
+        if !output.status.success() {
+            return Ok("unknown certificate".to_string());
+        }
+
+        let info_str = String::from_utf8_lossy(&output.stdout);
+        let mut info_parts = Vec::new();
+
+        for line in info_str.lines() {
+            if line.starts_with("subject=") {
+                if let Some(cn) = line.split("CN=").nth(1) {
+                    if let Some(cn_value) = cn.split(',').next() {
+                        info_parts.push(format!("CN={}", cn_value.trim()));
+                    }
+                }
+            } else if line.starts_with("notAfter=") {
+                let expiry = line.strip_prefix("notAfter=").unwrap_or("");
+                info_parts.push(format!("expires {}", expiry));
+            } else if line.starts_with("SHA256 Fingerprint=") {
+                if let Some(fp) = line.split('=').nth(1) {
+                    // Take first 16 chars of fingerprint for brevity
+                    let short_fp = fp
+                        .chars()
+                        .filter(|c| *c != ':')
+                        .take(16)
+                        .collect::<String>();
+                    info_parts.push(format!("SHA256:{}", short_fp));
+                }
+            }
+        }
+
+        if info_parts.is_empty() {
+            Ok("certificate".to_string())
+        } else {
+            Ok(info_parts.join(", "))
+        }
     }
 
     pub fn check_keychain_unlocked(&self) -> Result<bool> {

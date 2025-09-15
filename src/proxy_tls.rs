@@ -442,9 +442,11 @@ async fn perform_tls_interception(
     {
         if !CertificateManager::is_ca_trusted() {
             warn!(
-                "CA not trusted in keychain, passing through CONNECT tunnel for {} (only hostname available to rule)",
+                "NO_TRUST: CA not trusted in keychain, passing through CONNECT tunnel for {}",
                 host
             );
+            warn!("NO_TRUST: only hostname available to rule engine");
+            warn!("NO_TRUST: run `httpjail trust --install` to trust the CA");
             return pass_through_connect_tunnel(stream, host).await;
         }
     }

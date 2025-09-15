@@ -346,7 +346,6 @@ async fn main() -> Result<()> {
 
             if *remove {
                 keychain_manager.uninstall_ca()?;
-                println!("✓ httpjail CA certificate removed from keychain");
                 return Ok(());
             }
         }

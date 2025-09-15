@@ -126,6 +126,11 @@ httpjail creates an isolated network environment for the target process, interce
 ### macOS
 
 - No special permissions required (runs in weak mode)
+- **Keychain integration for HTTPS interception:**
+  - `httpjail trust` - Check if the CA certificate is trusted
+  - `httpjail trust --install` - Install CA to user keychain (with prompt)
+  - `httpjail trust --remove` - Remove CA from keychain
+  - When CA is not trusted, HTTPS connections pass through without interception (hostname-based rules still apply)
 
 ## Configuration File
 
