@@ -7,7 +7,10 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+#[cfg(target_os = "macos")]
+use crate::macos_keychain::KeychainManager;
 
 const CERT_CACHE_SIZE: usize = 1024;
 
@@ -126,6 +129,21 @@ impl CertificateManager {
         }
 
         info!("Saved new CA certificate to {}", ca_cert_path);
+
+        // On macOS, install the CA to the keychain
+        #[cfg(target_os = "macos")]
+        {
+            let keychain_manager = KeychainManager::new();
+            if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
+                warn!("CA not installed to keychain: {}", e);
+                warn!(
+                    "HTTPS interception will be limited. Run 'httpjail trust --install' to enable full HTTPS interception."
+                );
+            } else {
+                info!("CA certificate automatically installed to macOS keychain");
+            }
+        }
+
         Ok((ca_cert, ca_key_pair))
     }
 
@@ -159,6 +177,19 @@ impl CertificateManager {
             cert_cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
             config_dir,
         })
+    }
+
+    /// Check if the CA certificate is trusted on macOS
+    #[cfg(target_os = "macos")]
+    pub fn is_ca_trusted() -> bool {
+        let keychain_manager = KeychainManager::new();
+        keychain_manager.is_ca_trusted().unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn is_ca_trusted() -> bool {
+        // On non-macOS systems, we rely on environment variables
+        true
     }
 
     /// Get or generate a certificate for a hostname

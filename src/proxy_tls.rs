@@ -370,6 +370,65 @@ async fn handle_connect_tunnel(
     }
 }
 
+/// Pass through a CONNECT tunnel without interception
+async fn pass_through_connect_tunnel(client_stream: TcpStream, host: &str) -> Result<()> {
+    // Parse host and port
+    let (hostname, port) = if host.contains(':') {
+        let parts: Vec<&str> = host.split(':').collect();
+        (parts[0], parts[1].parse::<u16>().unwrap_or(443))
+    } else {
+        (host, 443)
+    };
+
+    debug!("Establishing pass-through tunnel to {}:{}", hostname, port);
+
+    // Connect to the target server
+    let server_stream = match timeout(
+        Duration::from_secs(10),
+        TcpStream::connect((hostname, port)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => {
+            error!("Failed to connect to {}:{} - {}", hostname, port, e);
+            return Err(e.into());
+        }
+        Err(_) => {
+            error!("Timeout connecting to {}:{}", hostname, port);
+            return Err(anyhow::anyhow!("Connection timeout"));
+        }
+    };
+
+    debug!("Connected to target server, starting bidirectional copy");
+
+    // Split both streams
+    let (mut client_reader, mut client_writer) = client_stream.into_split();
+    let (mut server_reader, mut server_writer) = server_stream.into_split();
+
+    // Copy data bidirectionally
+    let client_to_server = tokio::io::copy(&mut client_reader, &mut server_writer);
+    let server_to_client = tokio::io::copy(&mut server_reader, &mut client_writer);
+
+    // Wait for either direction to complete
+    tokio::select! {
+        result = client_to_server => {
+            match result {
+                Ok(bytes) => debug!("Client to server copy completed: {} bytes", bytes),
+                Err(e) => debug!("Client to server copy error: {}", e),
+            }
+        }
+        result = server_to_client => {
+            match result {
+                Ok(bytes) => debug!("Server to client copy completed: {} bytes", bytes),
+                Err(e) => debug!("Server to client copy error: {}", e),
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Perform TLS interception on a stream
 async fn perform_tls_interception(
     stream: TcpStream,
@@ -378,6 +437,18 @@ async fn perform_tls_interception(
     host: &str,
     remote_addr: std::net::SocketAddr,
 ) -> Result<()> {
+    // On macOS, check if the CA is trusted before attempting interception
+    #[cfg(target_os = "macos")]
+    {
+        if !CertificateManager::is_ca_trusted() {
+            warn!(
+                "CA not trusted in keychain, passing through CONNECT tunnel for {} (no inspection)",
+                host
+            );
+            return pass_through_connect_tunnel(stream, host).await;
+        }
+    }
+
     // Get certificate for the host
     let (cert_chain, key) = cert_manager
         .get_cert_for_host(host)
