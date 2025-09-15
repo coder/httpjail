@@ -72,6 +72,20 @@ impl KeychainManager {
     }
 
     pub fn install_ca(&self, cert_path: &Path) -> Result<()> {
+        // First check if this exact certificate is already installed and trusted
+        if self.is_ca_trusted().unwrap_or(false) {
+            // Check if it's the same certificate by comparing fingerprints
+            if let Ok(cert_content) = std::fs::read_to_string(cert_path) {
+                if self.is_same_certificate_installed(&cert_content)? {
+                    println!("✓ {} is already installed and trusted in keychain", CA_NAME);
+                    if let Ok(info) = self.get_cert_info(&cert_content) {
+                        println!("  Certificate: {}", info);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         self.cleanup_old_certificates()?;
 
         info!("Installing {} to user keychain...", CA_NAME);
@@ -253,6 +267,90 @@ impl KeychainManager {
         }
 
         Ok(keychain_path)
+    }
+
+    fn is_same_certificate_installed(&self, cert_pem: &str) -> Result<bool> {
+        // Get fingerprint of the certificate we want to install
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = Command::new("openssl")
+            .args(["x509", "-noout", "-fingerprint", "-sha256"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn openssl")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(cert_pem.as_bytes())
+                .context("Failed to write to openssl")?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .context("Failed to read openssl output")?;
+
+        if !output.status.success() {
+            return Ok(false);
+        }
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let mut new_fingerprint = String::new();
+
+        for line in output_str.lines() {
+            if line.starts_with("SHA256 Fingerprint=") {
+                if let Some(fp) = line.split('=').nth(1) {
+                    new_fingerprint = fp.trim().to_string();
+                    break;
+                }
+            }
+        }
+
+        if new_fingerprint.is_empty() {
+            return Ok(false);
+        }
+
+        // Now check if this fingerprint exists in the keychain
+        let find_output = Command::new("security")
+            .args(["find-certificate", "-a", "-c", CA_NAME, "-p", "-Z"])
+            .arg(self.get_user_keychain()?)
+            .output()
+            .context("Failed to find certificates")?;
+
+        if !find_output.status.success() {
+            return Ok(false);
+        }
+
+        let keychain_output = String::from_utf8_lossy(&find_output.stdout);
+
+        // The -Z flag outputs SHA-256 in a different format, so we need to extract and compare
+        // the certificates themselves
+        let mut current_cert_pem = String::new();
+        let mut in_cert = false;
+
+        for line in keychain_output.lines() {
+            if line == "-----BEGIN CERTIFICATE-----" {
+                in_cert = true;
+                current_cert_pem.clear();
+                current_cert_pem.push_str(line);
+                current_cert_pem.push('\n');
+            } else if line == "-----END CERTIFICATE-----" {
+                current_cert_pem.push_str(line);
+                in_cert = false;
+
+                // Compare this certificate with ours
+                if current_cert_pem.trim() == cert_pem.trim() {
+                    return Ok(true);
+                }
+            } else if in_cert {
+                current_cert_pem.push_str(line);
+                current_cert_pem.push('\n');
+            }
+        }
+
+        Ok(false)
     }
 
     fn get_cert_info(&self, cert_pem: &str) -> Result<String> {
