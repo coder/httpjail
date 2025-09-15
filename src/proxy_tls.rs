@@ -442,7 +442,7 @@ async fn perform_tls_interception(
     {
         if !CertificateManager::is_ca_trusted() {
             warn!(
-                "CA not trusted in keychain, passing through CONNECT tunnel for {} (no inspection)",
+                "CA not trusted in keychain, passing through CONNECT tunnel for {} (only hostname available to rule)",
                 host
             );
             return pass_through_connect_tunnel(stream, host).await;
