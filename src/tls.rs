@@ -135,8 +135,19 @@ impl CertificateManager {
         // On macOS, install the CA to the keychain (unless disabled for testing)
         #[cfg(target_os = "macos")]
         {
-            // Skip automatic keychain installation during tests or when explicitly disabled
-            if std::env::var("HTTPJAIL_SKIP_KEYCHAIN_INSTALL").is_err() {
+            // Skip automatic keychain installation if:
+            // 1. Explicitly disabled via environment variable (for tests)
+            // 2. Not running in a TTY (non-interactive, CI/automation)
+            let skip_env = std::env::var("HTTPJAIL_SKIP_KEYCHAIN_INSTALL").is_ok();
+            let is_tty = atty::is(atty::Stream::Stdout);
+
+            if skip_env {
+                debug!(
+                    "Skipping automatic keychain installation (HTTPJAIL_SKIP_KEYCHAIN_INSTALL set)"
+                );
+            } else if !is_tty {
+                debug!("Skipping automatic keychain installation (not running in TTY)");
+            } else {
                 let keychain_manager = KeychainManager::new();
                 if let Err(e) = keychain_manager.install_ca(ca_cert_path.as_std_path()) {
                     warn!("CA not installed to keychain: {}", e);
@@ -146,10 +157,6 @@ impl CertificateManager {
                 } else {
                     info!("CA certificate automatically installed to macOS keychain");
                 }
-            } else {
-                debug!(
-                    "Skipping automatic keychain installation (HTTPJAIL_SKIP_KEYCHAIN_INSTALL set)"
-                );
             }
         }
 
