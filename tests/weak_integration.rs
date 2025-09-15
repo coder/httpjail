@@ -181,6 +181,7 @@ fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, 
         .arg("-vv")
         .env("HTTPJAIL_HTTP_BIND", http_port.to_string())
         .env("HTTPJAIL_HTTPS_BIND", https_port.to_string())
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1") // Skip automatic keychain installation during tests
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 

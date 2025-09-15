@@ -24,6 +24,8 @@ pub fn httpjail_cmd() -> Command {
     let mut cmd = Command::cargo_bin("httpjail").unwrap();
     // Add timeout for all tests (15 seconds for CI environment)
     cmd.arg("--timeout").arg("15");
+    // Skip automatic keychain installation during tests
+    cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
     // No need to specify ports - they'll be auto-assigned
     cmd
 }
