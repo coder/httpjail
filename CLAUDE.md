@@ -49,6 +49,16 @@ Run the full suite:
 cargo test
 ```
 
+### Test Performance Requirements
+
+**All tests must complete within seconds, not minutes.** The CI timeout is set to 30 seconds per test. Tests that require longer operations (like timeouts) should use minimal durations:
+
+- Use `HttpjailCommand::timeout(2)` for timeout tests with `sleep 3`
+- Network tests should use `--connect-timeout 5 --max-time 8` for curl commands
+- Any test taking longer than a few seconds should be optimized or redesigned
+
+This ensures fast feedback during development and prevents CI timeouts.
+
 ## Cargo Cache
 
 Occasionally you will encounter permissions issues due to running the tests under sudo. In these cases,

@@ -56,14 +56,14 @@ fn test_weak_mode_blocks_http_correctly() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn test_weak_mode_timeout_works() {
-    // Test that the timeout mechanism works correctly
+    // Test that the timeout mechanism works correctly (should complete in ~2 seconds)
     // This test uses a command that would normally hang
     let result = HttpjailCommand::new()
         .weak()
         .js("true")
         .verbose(2)
-        .command(vec!["bash", "-c", "sleep 60"])
-        // command that exceeds timeout
+        .timeout(2) // Set 2-second timeout for fast test completion
+        .command(vec!["bash", "-c", "sleep 3"]) // Sleep longer than timeout
         .execute();
 
     match result {
