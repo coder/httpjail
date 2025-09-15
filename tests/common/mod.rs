@@ -95,6 +95,8 @@ impl HttpjailCommand {
             for arg in &self.args {
                 sudo_cmd.arg(arg);
             }
+            // Skip automatic keychain installation during tests
+            sudo_cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
             for (key, value) in &self.env {
                 sudo_cmd.env(key, value);
             }
@@ -104,6 +106,8 @@ impl HttpjailCommand {
             for arg in &self.args {
                 cmd.arg(arg);
             }
+            // Skip automatic keychain installation during tests
+            cmd.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1");
             for (key, value) in &self.env {
                 cmd.env(key, value);
             }

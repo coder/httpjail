@@ -33,8 +33,6 @@ jobs:
         run: cargo install cargo-nextest --locked
 
       - name: Run all tests
-        env:
-          HTTPJAIL_SKIP_KEYCHAIN_INSTALL: 1
         run: cargo nextest run --profile ci
 
   test-linux:
@@ -89,8 +87,6 @@ jobs:
           fi
 
       - name: Run all tests (non-root)
-        env:
-          HTTPJAIL_SKIP_KEYCHAIN_INSTALL: 1
         run: |
           source ~/.cargo/env
           cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
@@ -99,15 +95,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y curl
 
       - name: Run weak mode integration tests (Linux)
-        env:
-          HTTPJAIL_SKIP_KEYCHAIN_INSTALL: 1
         run: |
           source ~/.cargo/env
           cargo nextest run --profile ci --test weak_integration
 
       - name: Run Linux jail integration tests (sudo)
-        env:
-          HTTPJAIL_SKIP_KEYCHAIN_INSTALL: 1
         run: |
           source ~/.cargo/env
           # Run Linux-specific jail tests with sudo to satisfy root requirements
