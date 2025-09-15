@@ -1,6 +1,8 @@
 mod common;
 
+#[cfg(not(target_os = "macos"))]
 use common::HttpjailCommand;
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
 
 // macOS' Go toolchain uses the platform verifier which ignores SSL_CERT_FILE, so
