@@ -35,10 +35,6 @@ enum Command {
         /// Remove the httpjail CA certificate from the system keychain
         #[arg(long, conflicts_with = "install")]
         remove: bool,
-
-        /// Check if the httpjail CA certificate is trusted
-        #[arg(long, conflicts_with_all = &["install", "remove"])]
-        status: bool,
     },
 }
 
@@ -303,12 +299,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Handle trust subcommand (takes precedence)
-    if let Some(Command::Trust {
-        install,
-        remove,
-        status,
-    }) = &args.command
-    {
+    if let Some(Command::Trust { install, remove }) = &args.command {
         setup_logging(0); // Minimal logging for trust commands
 
         #[cfg(target_os = "macos")]
@@ -316,7 +307,7 @@ async fn main() -> Result<()> {
             use httpjail::macos_keychain::KeychainManager;
             let keychain_manager = KeychainManager::new();
 
-            if *status || (!*install && !*remove) {
+            if !*install && !*remove {
                 // Default to status if no flags provided
                 match keychain_manager.is_ca_trusted() {
                     Ok(true) => {
