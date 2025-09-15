@@ -593,6 +593,7 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
         .arg("sh")
         .arg("-c")
         .arg("curl -s --connect-timeout 10 --max-time 15 http://ifconfig.me && echo ' - Instance1 Success' || echo 'Instance1 Failed'")
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")  // Skip automatic keychain installation during tests
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -611,6 +612,7 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
         .arg("sh")
         .arg("-c")
         .arg("curl -s --connect-timeout 10 --max-time 15 http://ifconfig.io && echo ' - Instance2 Success' || echo 'Instance2 Failed'")
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")  // Skip automatic keychain installation during tests
         .output()
         .expect("Failed to execute second httpjail");
 
