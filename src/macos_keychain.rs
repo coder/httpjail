@@ -24,13 +24,53 @@ impl KeychainManager {
     }
 
     pub fn is_ca_trusted(&self) -> Result<bool> {
-        let output = Command::new("security")
-            .args(["find-certificate", "-c", &self.ca_name])
+        // First check if the certificate exists in keychain
+        let find_output = Command::new("security")
+            .args(["find-certificate", "-c", &self.ca_name, "-p"])
             .arg(self.get_user_keychain()?)
             .output()
             .context("Failed to check for CA certificate")?;
 
-        Ok(output.status.success())
+        if !find_output.status.success() {
+            debug!("Certificate not found in keychain");
+            return Ok(false);
+        }
+
+        // Certificate exists in keychain, now verify if it's actually trusted for SSL
+        // We need to get the certificate path to verify it
+        let config_dir = dirs::config_dir()
+            .context("Could not find user config directory")?
+            .join("httpjail");
+        let ca_cert_path = config_dir.join("ca-cert.pem");
+
+        if !ca_cert_path.exists() {
+            debug!("Certificate file not found at {:?}", ca_cert_path);
+            return Ok(false);
+        }
+
+        // Use verify-cert to check if it's trusted for SSL
+        // -p ssl specifies we're checking SSL trust policy
+        let verify_output = Command::new("security")
+            .args([
+                "verify-cert",
+                "-c",
+                ca_cert_path.to_str().unwrap(),
+                "-p",
+                "ssl",
+            ])
+            .output()
+            .context("Failed to verify certificate trust")?;
+
+        if !verify_output.status.success() {
+            debug!("Certificate exists but is not trusted for SSL");
+            debug!(
+                "verify-cert stderr: {}",
+                String::from_utf8_lossy(&verify_output.stderr)
+            );
+        }
+
+        // verify-cert returns 0 if the certificate is trusted
+        Ok(verify_output.status.success())
     }
 
     pub fn install_ca(&self, cert_path: &Path) -> Result<()> {
