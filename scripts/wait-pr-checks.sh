@@ -116,8 +116,8 @@ while true; do
                     if [ -n "$error_logs" ]; then
                         echo "$error_logs"
                     else
-                        # If no error patterns found, show last 20 lines which often contain the failure
-                        echo "$job_logs" | tail -20
+                        # If no error patterns found, show last 100 lines which often contain the failure
+                        echo "$job_logs" | tail -100
                     fi
                 else
                     # If logs aren't ready, try to at least show the conclusion
