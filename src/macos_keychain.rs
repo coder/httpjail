@@ -353,13 +353,6 @@ impl KeychainManager {
 pub struct KeychainManager;
 
 #[cfg(not(target_os = "macos"))]
-impl Default for KeychainManager {
-    fn default() -> Self {
-        Self
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
 impl KeychainManager {
     pub fn new() -> Self {
         Self
