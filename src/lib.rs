@@ -1,6 +1,5 @@
 pub mod dangerous_verifier;
 pub mod jail;
-#[cfg(target_os = "macos")]
 pub mod macos_keychain;
 pub mod proxy;
 pub mod proxy_tls;
