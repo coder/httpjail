@@ -159,7 +159,7 @@ username [CID=12345678] path/to/file.rs#L42: Comment text
 #### Replying to PR Comments
 
 ```bash
-# Reply to a specific comment (auto-prefixes with "Claude Code:")
+# Reply to a specific comment (auto-marks as automated)
 ./scripts/reply-to-comment.sh <COMMENT_ID> <MESSAGE>
 
 # Examples:
@@ -172,7 +172,7 @@ To find comment IDs, use:
 ./scripts/get-pr-comments.sh --raw | grep CID
 ```
 
-**Note:** The reply script automatically prefixes all messages with "Claude Code:" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
+**Note:** The reply script automatically marks all messages with "🤖 Automated 🤖" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
 
 ### Manual Testing on CI
 

@@ -15,11 +15,11 @@ NC='\033[0m' # No Color
 usage() {
     echo "Usage: $0 <COMMENT_ID> <MESSAGE>"
     echo ""
-    echo "Reply to a GitHub PR review comment with 'Claude Code:' prefix"
+    echo "Reply to a GitHub PR review comment with automated indicator"
     echo ""
     echo "Arguments:"
     echo "  COMMENT_ID    The ID of the comment to reply to (get from get-pr-comments.sh)"
-    echo "  MESSAGE       The reply message (will be prefixed with 'Claude Code:')"
+    echo "  MESSAGE       The reply message (will be marked as automated)"
     echo ""
     echo "Examples:"
     echo "  $0 2365688250 'Fixed in commit abc123'"
@@ -74,8 +74,12 @@ fi
 PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
 echo -e "Found PR #${PR_NUMBER} (${PR_STATE}) for ${OWNER}/${REPO}"
 
-# Prefix message with "Claude Code:"
-FULL_MESSAGE="Claude Code: ${MESSAGE}"
+# Prefix message with automated indicator
+FULL_MESSAGE="🤖 Automated 🤖
+
+${MESSAGE}
+
+---"
 
 # Send the reply
 echo -e "${YELLOW}Sending reply to comment ${COMMENT_ID}...${NC}"
