@@ -174,13 +174,13 @@ httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? 
 # Path-based filtering
 httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
 
-# Custom block message
-httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
+# Custom block message (using object return)
+httpjail --js "r.host.includes('facebook.com') ? {allow: false, message: 'Social media blocked'} : true" -- curl https://facebook.com
 ```
 
 **JavaScript API:**
 
-All request information is available via the `r` object:
+All request information is available via the `r` object (read-only):
 
 - `r.url` - Full URL being requested (string)
 - `r.method` - HTTP method (GET, POST, etc.)
@@ -188,16 +188,33 @@ All request information is available via the `r` object:
 - `r.scheme` - URL scheme (http or https)
 - `r.path` - Path portion of the URL
 - `r.requester_ip` - IP address of the client making the request
-- `r.block_message` - Optional message to set when denying (writable)
+
+**JavaScript Return Values:**
+
+JavaScript expressions can return either:
+- A boolean: `true` to allow, `false` to deny
+- An object: `{allow: true/false, message: "optional context"}`
+
+Examples:
+```javascript
+// Simple boolean
+true  // Allow
+false // Deny
+
+// Object with message (parentheses needed when used as expression)
+({allow: false, message: "Blocked by policy"})
+({allow: true, message: "Allowed with warning"})
+
+// Conditional with message
+r.method === 'POST' ? {allow: false, message: 'POST not allowed'} : true
+```
 
 **JavaScript evaluation rules:**
 
-- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
 - Code is executed in a sandboxed V8 isolate for security
 - Syntax errors are caught during startup and cause httpjail to exit
 - Runtime errors result in the request being blocked
 - Each request evaluation runs in a fresh context for thread safety
-- You can set `r.block_message` to provide a custom denial message
 
 **Performance considerations:**
 
