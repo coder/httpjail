@@ -819,6 +819,7 @@ impl Clone for LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
+            dns_server: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),
