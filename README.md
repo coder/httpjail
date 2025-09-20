@@ -133,27 +133,32 @@ This approach blocks DNS tunneling while maintaining full HTTP/HTTPS functionali
 sequenceDiagram
     participant J as Jailed Process
     participant S as Jail Server
-    participant I as Internet
+    participant D as Public DNS Resolvers
     
-    Note over J,I: DNS Exfiltration Attempt
+    Note over J,D: DNS Exfiltration Attempt
     J->>S: DNS Query: secret-data.attacker.com
     S-->>J: Response: 6.6.6.6 (dummy)
-    Note over S,I: ❌ Query never reaches Internet
+    Note over S,D: ❌ Query never reaches public resolvers
     
-    Note over J,I: Normal HTTP Request Flow
+    Note over J,D: Blocked HTTP Flow
+    J->>S: HTTP GET http://blocked.com
+    Note over S: Rule evaluation: denied
+    S-->>J: 403 Forbidden
+    Note over S,D: ❌ No DNS resolution needed
+    
+    Note over J,D: Allowed HTTP Flow
     J->>S: HTTP GET http://example.com
-    Note over S: Rule evaluation: allowed?
-    alt Rule allows (r.host === 'example.com')
-        S->>I: Forward HTTP request
-        I-->>S: HTTP response
-        S-->>J: Forward response
-    else Rule denies
-        S-->>J: 403 Forbidden
-        Note over S,I: ❌ Request blocked
-    end
+    Note over S: Rule evaluation: allowed
+    S->>D: DNS Query: example.com (only if needed)
+    D-->>S: Real IP address
+    S->>S: Forward to upstream server
+    S-->>J: HTTP response
 ```
 
-The diagram shows how DNS queries are always answered locally with a dummy IP (6.6.6.6), preventing any data from reaching external DNS servers. Meanwhile, HTTP/HTTPS traffic is evaluated by rules and only forwarded to the Internet if explicitly allowed.
+The diagram illustrates three key scenarios:
+1. **DNS Exfiltration Prevention**: All DNS queries from the jailed process receive a dummy response (6.6.6.6), never reaching public resolvers
+2. **Blocked HTTP Traffic**: Requests to denied domains are rejected without any DNS resolution
+3. **Allowed HTTP Traffic**: Only when rules permit, the server performs actual DNS resolution and forwards the request
 
 ## Prerequisites
 
