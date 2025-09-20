@@ -221,6 +221,9 @@ impl LinuxJail {
         let commands = vec![
             // Bring up loopback
             vec!["ip", "link", "set", "lo", "up"],
+            // Enable route_localnet to allow DNAT on loopback (needed for DNS redirection)
+            vec!["sysctl", "-w", "net.ipv4.conf.all.route_localnet=1"],
+            vec!["sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1"],
             // Configure veth interface with IP
             vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
             vec!["ip", "link", "set", &veth_ns, "up"],
@@ -231,6 +234,7 @@ impl LinuxJail {
         for cmd_args in commands {
             let mut cmd = Command::new("ip");
             cmd.args(["netns", "exec", &namespace_name]);
+            // First element is the actual command to run in the namespace
             cmd.args(&cmd_args);
 
             let output = cmd.output().context(format!(
