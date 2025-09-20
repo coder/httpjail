@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use simple_dns::rdata::RData;
+use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,7 +67,6 @@ impl Drop for DummyDnsServer {
     }
 }
 
-#[allow(clippy::collapsible_if)]
 fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
     let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
 
@@ -74,13 +75,19 @@ fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
             Ok((size, src)) => {
                 debug!("Received DNS query from {}: {} bytes", src, size);
 
-                if size >= 12
-                    && let Ok(response) = build_dummy_response(&buf[..size])
-                {
-                    if let Err(e) = socket.send_to(&response, src) {
-                        warn!("Failed to send DNS response to {}: {}", src, e);
-                    } else {
-                        debug!("Sent dummy DNS response to {}", src);
+                // Parse the DNS query using simple-dns
+                match Packet::parse(&buf[..size]) {
+                    Ok(query) => {
+                        if let Ok(response) = build_dummy_response(query) {
+                            if let Err(e) = socket.send_to(&response, src) {
+                                warn!("Failed to send DNS response to {}: {}", src, e);
+                            } else {
+                                debug!("Sent dummy DNS response to {}", src);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to parse DNS query: {}", e);
                     }
                 }
             }
@@ -102,103 +109,79 @@ fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
-fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
-    if query.len() < 12 {
-        anyhow::bail!("DNS query too short");
+fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
+    // Create a response packet based on the query
+    let mut response = Packet::new_reply(query.id());
+
+    // Set standard response flags
+    response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
+
+    // Copy all questions from the query to the response
+    for question in query.questions() {
+        response.questions.push(question.clone());
     }
 
-    let mut response = Vec::with_capacity(512);
-
-    response.extend_from_slice(&query[0..2]);
-
-    let mut flags = ((query[2] as u16) << 8) | (query[3] as u16);
-    flags |= 0x8000;
-    flags &= !0x7800;
-    flags &= !0x000F;
-
-    response.push((flags >> 8) as u8);
-    response.push((flags & 0xFF) as u8);
-
-    // Copy question count from query
-    response.extend_from_slice(&query[4..6]);
-
-    response.push(0);
-    response.push(1);
-
-    response.push(0);
-    response.push(0);
-    response.push(0);
-    response.push(0);
-
-    let query_end = find_query_end(query, 12)?;
-    response.extend_from_slice(&query[12..query_end]);
-
-    response.push(0xC0);
-    response.push(0x0C);
-
-    response.push(0);
-    response.push(1);
-
-    response.push(0);
-    response.push(1);
-
-    response.push(0);
-    response.push(0);
-    response.push(0);
-    response.push(60);
-
-    response.push(0);
-    response.push(4);
-
-    response.extend_from_slice(&DUMMY_IPV4.octets());
-
-    Ok(response)
-}
-
-fn find_query_end(packet: &[u8], start: usize) -> Result<usize> {
-    let mut pos = start;
-
-    while pos < packet.len() {
-        let len = packet[pos] as usize;
-        if len == 0 {
-            pos += 1;
-            break;
-        }
-        if len >= 0xC0 {
-            pos += 2;
-            break;
-        }
-        pos += len + 1;
+    // For each question, add a dummy A record response
+    for question in query.questions() {
+        // Only respond to A record queries (TYPE 1)
+        // But we'll respond to all queries with an A record anyway
+        // to prevent any DNS exfiltration attempts
+        let answer = ResourceRecord::new(
+            question.qname.clone(),
+            CLASS::IN,
+            60, // TTL in seconds
+            RData::A(DUMMY_IPV4.into()),
+        );
+        response.answers.push(answer);
     }
 
-    if pos + 4 > packet.len() {
-        anyhow::bail!("Malformed DNS query");
-    }
-
-    Ok(pos + 4)
+    // Build the response packet into bytes
+    response
+        .build_bytes_vec()
+        .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use simple_dns::{Name, Question};
 
     #[test]
     fn test_dns_response_builder() {
-        let query = vec![
-            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, b'g',
-            b'o', b'o', b'g', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
-        ];
+        // Create a test query using simple-dns
+        let mut query = Packet::new_query(0x1234);
+        let qname = Name::new("google.com").unwrap();
+        query.questions.push(Question::new(
+            qname.clone(),
+            TYPE::A.into(),
+            CLASS::IN.into(),
+            false,
+        ));
 
-        let response = build_dummy_response(&query).unwrap();
+        // Build the response
+        let response_packet = build_dummy_response(query.clone()).unwrap();
 
-        assert_eq!(response[0..2], query[0..2]);
+        // Parse the response back
+        let response = Packet::parse(&response_packet).unwrap();
 
-        assert_eq!(response[2] & 0x80, 0x80);
+        // Verify the response
+        assert_eq!(response.id(), 0x1234);
+        assert!(response.has_flags(PacketFlag::RESPONSE));
+        assert_eq!(response.questions.len(), 1);
+        assert_eq!(response.answers.len(), 1);
 
-        let answer_count = ((response[6] as u16) << 8) | (response[7] as u16);
-        assert_eq!(answer_count, 1);
-
-        let response_ip = &response[response.len() - 4..];
-        assert_eq!(response_ip, &[6, 6, 6, 6]);
+        // Check that the answer contains our dummy IP
+        if let Some(answer) = response.answers.first() {
+            if let RData::A(ip) = &answer.rdata {
+                assert_eq!(ip.a, 6);
+                assert_eq!(ip.b, 6);
+                assert_eq!(ip.c, 6);
+                assert_eq!(ip.d, 6);
+            } else {
+                panic!("Expected A record in response");
+            }
+        } else {
+            panic!("No answer in response");
+        }
     }
 }
