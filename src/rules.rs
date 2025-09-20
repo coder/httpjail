@@ -1,3 +1,4 @@
+pub mod common;
 pub mod script;
 pub mod v8_js;
 

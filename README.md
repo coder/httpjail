@@ -43,10 +43,9 @@ httpjail --js-file rules.js -- curl https://api.example.com/health
 httpjail --request-log requests.log --js "true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
-# Use custom script for request evaluation
-httpjail --sh /path/to/check.sh -- ./my-app
-# Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-# Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
+# Use custom script for request evaluation (line-based persistent process)
+httpjail --sh /path/to/filter.py -- ./my-app
+# Script receives JSON on stdin (one per line) and outputs allow/deny decisions
 
 # Run as standalone proxy server (no command execution) and allow all
 httpjail --server --js "true"
@@ -205,48 +204,57 @@ All request information is available via the `r` object:
 - JavaScript evaluation is generally faster than external script execution
 
 > [!NOTE]
-> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
+> The evaluation flags `--js`, `--js-file`, and `--sh` are mutually exclusive. Only one evaluation method can be used at a time.
 
 ## Script-Based Evaluation
 
-Instead of writing JavaScript, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
+The `--sh` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This is efficient as it keeps the process in memory and avoids spawn overhead.
 
 ```bash
-# Simple script example
-#!/bin/bash
-if [ "$HTTPJAIL_HOST" = "github.com" ] && [ "$HTTPJAIL_METHOD" = "GET" ]; then
-    exit 0  # Allow the request
-else
-    exit 1  # Block the request
-fi
+# Use a Python script that processes line-by-line JSON
+httpjail --sh ./filter.py -- curl https://github.com
 
-# Use the script
-httpjail --sh ./check_request.sh -- curl https://github.com
+# Example Python script (filter.py):
+#!/usr/bin/env python3
+import json
+import sys
 
-# Inline script (with spaces, executed via shell)
-httpjail --sh '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
+for line in sys.stdin:
+    request = json.loads(line)
+    # Request contains: url, method, scheme, host, path, requester_ip
+    
+    if 'github.com' in request['host']:
+        print('true')  # Allow
+    else:
+        print('false') # Deny
+    sys.stdout.flush()
 ```
 
-If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
+**Protocol:**
+- **Input**: JSON objects on stdin, one per line with fields:
+  - `url` - Full URL being requested
+  - `method` - HTTP method (GET, POST, etc.)
+  - `host` - Hostname from the URL
+  - `scheme` - URL scheme (http or https)
+  - `path` - Path component of the URL
+  - `requester_ip` - IP address of the client
 
-**Environment variables provided to the script:**
+- **Output**: One response per line, either:
+  - Simple: `"true"`, `"false"`, `"allow"`, `"deny"`, `"1"`, `"0"`
+  - JSON: `{"allow": true/false, "message": "optional context"}`
+  - Any other output is treated as deny with the output as the message
 
-- `HTTPJAIL_URL` - Full URL being requested
-- `HTTPJAIL_METHOD` - HTTP method (GET, POST, etc.)
-- `HTTPJAIL_HOST` - Hostname from the URL
-- `HTTPJAIL_SCHEME` - URL scheme (http or https)
-- `HTTPJAIL_PATH` - Path component of the URL
-- `HTTPJAIL_REQUESTER_IP` - IP address of the client making the request
+**Advantages:**
+- Process stays in memory, avoiding spawn overhead
+- Can maintain state between requests (e.g., rate limiting, caching)
+- Better performance for high-volume traffic
+- Supports languages with slow startup times (Python, Ruby, Node.js)
 
-**Script requirements:**
-
-- Exit code 0 allows the request
-- Any non-zero exit code blocks the request
-- stdout is captured and included in 403 responses as additional context
-- stderr is logged for debugging but not sent to the client
+> [!NOTE]
+> Make sure to flush stdout after each response in your script to ensure real-time processing!
 
 > [!TIP]
-> Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
+> Script-based evaluation can be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails.
 
 ## Advanced Options
 

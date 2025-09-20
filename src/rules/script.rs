@@ -1,18 +1,94 @@
+use super::common::RequestInfo;
 use super::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
+use serde_json;
+use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::debug;
-use url::Url;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex;
+use tracing::{debug, error, warn};
 
-#[derive(Clone)]
 pub struct ScriptRuleEngine {
     script: String,
+    process: Arc<Mutex<Option<ScriptProcess>>>,
+}
+
+struct ScriptProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
 }
 
 impl ScriptRuleEngine {
-    pub fn new(script: String) -> Self {
-        ScriptRuleEngine { script }
+    pub fn new(script: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ScriptRuleEngine {
+            script,
+            process: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    async fn ensure_process_running(&self) -> Result<(), String> {
+        let mut process_guard = self.process.lock().await;
+
+        if let Some(ref mut process_state) = *process_guard {
+            match process_state.child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!(
+                        "Script process exited with status: {:?}, restarting",
+                        status
+                    );
+                    *process_guard = None;
+                }
+                Ok(None) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("Failed to check process status: {}, restarting", e);
+                    *process_guard = None;
+                }
+            }
+        }
+
+        if process_guard.is_none() {
+            debug!("Starting script process: {}", self.script);
+
+            let mut cmd = if self.script.contains(' ') {
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c").arg(&self.script);
+                cmd
+            } else {
+                Command::new(&self.script)
+            };
+
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true);
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to spawn script: {}", e))?;
+
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "Failed to get stdin handle".to_string())?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "Failed to get stdout handle".to_string())?;
+
+            *process_guard = Some(ScriptProcess {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+            });
+        }
+
+        Ok(())
     }
 
     async fn execute_script(
@@ -20,84 +96,117 @@ impl ScriptRuleEngine {
         method: Method,
         url: &str,
         requester_ip: &str,
-    ) -> (bool, String) {
-        let parsed_url = match Url::parse(url) {
-            Ok(u) => u,
+    ) -> (bool, Option<String>) {
+        let request_info = match RequestInfo::from_request(&method, url, requester_ip) {
+            Ok(info) => info,
             Err(e) => {
-                debug!("Failed to parse URL '{}': {}", url, e);
-                return (false, format!("Failed to parse URL: {}", e));
+                debug!("Failed to parse request: {}", e);
+                return (false, Some(e));
             }
         };
 
-        let scheme = parsed_url.scheme();
-        let host = parsed_url.host_str().unwrap_or("");
-        let path = parsed_url.path();
+        if let Err(e) = self.ensure_process_running().await {
+            error!("Failed to ensure process is running: {}", e);
+            return (false, Some(format!("Script process error: {}", e)));
+        }
+
+        let json_request = match serde_json::to_string(&request_info) {
+            Ok(json) => json,
+            Err(e) => {
+                error!("Failed to serialize request: {}", e);
+                return (false, Some(format!("JSON serialization error: {}", e)));
+            }
+        };
 
         debug!(
-            "Executing script for {} {} from {} (host: {}, path: {})",
-            method, url, requester_ip, host, path
+            "Sending request to script for {} {} from {}",
+            method, url, requester_ip
         );
 
-        // Build the command
-        let mut cmd = if self.script.contains(' ') {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.arg("-c").arg(&self.script);
-            cmd
-        } else {
-            tokio::process::Command::new(&self.script)
-        };
+        let mut process_guard = self.process.lock().await;
+        if let Some(ref mut process_state) = *process_guard {
+            let mut request_line = json_request;
+            request_line.push('\n');
 
-        cmd.env("HTTPJAIL_URL", url)
-            .env("HTTPJAIL_METHOD", method.as_str())
-            .env("HTTPJAIL_SCHEME", scheme)
-            .env("HTTPJAIL_HOST", host)
-            .env("HTTPJAIL_PATH", path)
-            .env("HTTPJAIL_REQUESTER_IP", requester_ip)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true); // Ensure child is killed if dropped
-
-        // Spawn the child process
-        let child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                debug!("Failed to spawn script: {}", e);
-                return (false, format!("Script execution failed: {}", e));
+            if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
+                error!("Failed to write to script stdin: {}", e);
+                *process_guard = None;
+                return (false, Some(format!("Failed to write to script: {}", e)));
             }
-        };
 
-        // Wait for completion with timeout
-        let timeout = Duration::from_secs(30);
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if let Err(e) = process_state.stdin.flush().await {
+                error!("Failed to flush stdin: {}", e);
+                *process_guard = None;
+                return (false, Some(format!("Failed to flush script input: {}", e)));
+            }
 
-                if !stderr.is_empty() {
-                    debug!("Script stderr: {}", stderr);
+            let timeout = Duration::from_secs(5);
+            let mut response_line = String::new();
+            match tokio::time::timeout(timeout, process_state.stdout.read_line(&mut response_line))
+                .await
+            {
+                Ok(Ok(0)) => {
+                    warn!("Script closed stdout unexpectedly");
+                    *process_guard = None;
+                    (false, Some("Script closed unexpectedly".to_string()))
                 }
+                Ok(Ok(_)) => {
+                    let response = response_line.trim();
+                    debug!("Script response: {}", response);
 
-                let allowed = output.status.success();
+                    match response.to_lowercase().as_str() {
+                        "true" | "allow" | "1" => {
+                            debug!("ALLOW: {} {} (script allowed)", method, url);
+                            (true, None)
+                        }
+                        "false" | "deny" | "0" => {
+                            debug!("DENY: {} {} (script denied)", method, url);
+                            (false, None)
+                        }
+                        _ => {
+                            if response.starts_with('{')
+                                && let Ok(json_response) =
+                                    serde_json::from_str::<serde_json::Value>(response)
+                            {
+                                let allowed = json_response
+                                    .get("allow")
+                                    .or_else(|| json_response.get("allowed"))
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
 
-                debug!(
-                    "Script returned {} for {} {} (exit code: {:?})",
-                    if allowed { "ALLOW" } else { "DENY" },
-                    method,
-                    url,
-                    output.status.code()
-                );
+                                let message = json_response
+                                    .get("message")
+                                    .or_else(|| json_response.get("reason"))
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
 
-                (allowed, stdout)
+                                if allowed {
+                                    debug!("ALLOW: {} {} (script allowed via JSON)", method, url);
+                                } else {
+                                    debug!("DENY: {} {} (script denied via JSON)", method, url);
+                                }
+
+                                (allowed, message)
+                            } else {
+                                debug!("DENY: {} {} (script returned: {})", method, url, response);
+                                (false, Some(response.to_string()))
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!("Error reading from script: {}", e);
+                    *process_guard = None;
+                    (false, Some(format!("Script read error: {}", e)))
+                }
+                Err(_) => {
+                    warn!("Script response timeout after {:?}", timeout);
+                    *process_guard = None;
+                    (false, Some("Script response timeout".to_string()))
+                }
             }
-            Ok(Err(e)) => {
-                debug!("Error waiting for script: {}", e);
-                (false, format!("Script execution error: {}", e))
-            }
-            Err(_) => {
-                // Timeout elapsed - process will be killed automatically due to kill_on_drop
-                debug!("Script execution timed out after {:?}", timeout);
-                (false, "Script execution timed out".to_string())
-            }
+        } else {
+            (false, Some("Script process not available".to_string()))
         }
     }
 }
@@ -108,17 +217,15 @@ impl RuleEngineTrait for ScriptRuleEngine {
         let (allowed, context) = self.execute_script(method.clone(), url, requester_ip).await;
 
         if allowed {
-            debug!("ALLOW: {} {} (script allowed)", method, url);
             let mut result = EvaluationResult::allow();
-            if !context.is_empty() {
-                result = result.with_context(context);
+            if let Some(msg) = context {
+                result = result.with_context(msg);
             }
             result
         } else {
-            debug!("DENY: {} {} (script denied)", method, url);
             let mut result = EvaluationResult::deny();
-            if !context.is_empty() {
-                result = result.with_context(context);
+            if let Some(msg) = context {
+                result = result.with_context(msg);
             }
             result
         }
@@ -129,20 +236,32 @@ impl RuleEngineTrait for ScriptRuleEngine {
     }
 }
 
+impl Drop for ScriptRuleEngine {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.process.try_lock()
+            && let Some(ref mut process_state) = *guard
+        {
+            let _ = process_state.child.start_kill();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rules::Action;
     use std::fs;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[tokio::test]
-    async fn test_script_allow() {
+    async fn test_line_based_script_simple_true() {
         let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/sh
-exit 0
+        let script = r#"#!/bin/bash
+while IFS= read -r line; do
+    echo "true"
+done
 "#;
-        use std::io::Write;
         script_file.write_all(script.as_bytes()).unwrap();
         script_file.flush().unwrap();
 
@@ -156,121 +275,54 @@ exit 0
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
-            .await;
-
-        assert!(matches!(result.action, Action::Allow));
-        drop(script_path);
-    }
-
-    #[tokio::test]
-    async fn test_script_deny() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/sh
-exit 1
-"#;
-        use std::io::Write;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
-
-        let script_path = script_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
-        }
-
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
-            .await;
-
-        assert!(matches!(result.action, Action::Deny));
-        drop(script_path);
-    }
-
-    #[tokio::test]
-    async fn test_script_with_context() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/sh
-echo "Blocked by policy"
-exit 1
-"#;
-        use std::io::Write;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
-
-        let script_path = script_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
-        }
-
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
-            .await;
-
-        assert!(matches!(result.action, Action::Deny));
-        assert_eq!(result.context, Some("Blocked by policy".to_string()));
-        drop(script_path);
-    }
-
-    #[tokio::test]
-    async fn test_script_environment_variables() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/sh
-if [ "$HTTPJAIL_HOST" = "allowed.com" ]; then
-    exit 0
-else
-    echo "Host $HTTPJAIL_HOST not allowed"
-    exit 1
-fi
-"#;
-        use std::io::Write;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
-
-        let script_path = script_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
-        }
-
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-
-        let result = engine
-            .evaluate(Method::GET, "https://allowed.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
 
         let result = engine
-            .evaluate(Method::GET, "https://blocked.com/test", "127.0.0.1")
+            .evaluate(Method::POST, "https://github.com/api", "192.168.1.1")
             .await;
-        assert!(matches!(result.action, Action::Deny));
-        assert_eq!(
-            result.context,
-            Some("Host blocked.com not allowed".to_string())
-        );
+        assert!(matches!(result.action, Action::Allow));
+
         drop(script_path);
     }
 
     #[tokio::test]
-    async fn test_inline_script() {
-        let engine = ScriptRuleEngine::new("test \"$HTTPJAIL_HOST\" = \"github.com\"".to_string());
+    async fn test_line_based_script_json_filter() {
+        let mut script_file = NamedTempFile::new().unwrap();
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+        if request.get('host') == 'github.com':
+            print('true')
+        else:
+            print('false')
+        sys.stdout.flush()
+    except:
+        print('false')
+        sys.stdout.flush()
+"#;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
 
         let result = engine
             .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
@@ -281,5 +333,109 @@ fi
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Deny));
+
+        drop(script_path);
+    }
+
+    #[tokio::test]
+    async fn test_line_based_script_json_response() {
+        let mut script_file = NamedTempFile::new().unwrap();
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+        if 'blocked' in request.get('host', ''):
+            response = {'allow': False, 'message': f"Host {request['host']} is blocked"}
+        else:
+            response = {'allow': True}
+        print(json.dumps(response))
+        sys.stdout.flush()
+    except Exception as e:
+        print(json.dumps({'allow': False, 'message': str(e)}))
+        sys.stdout.flush()
+"#;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+        assert_eq!(result.context, None);
+
+        let result = engine
+            .evaluate(Method::GET, "https://blocked.com/test", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Deny));
+        assert_eq!(
+            result.context,
+            Some("Host blocked.com is blocked".to_string())
+        );
+
+        drop(script_path);
+    }
+
+    #[tokio::test]
+    async fn test_line_based_script_reuses_process() {
+        let mut script_file = NamedTempFile::new().unwrap();
+        let script = r#"#!/bin/bash
+counter=0
+while IFS= read -r line; do
+    counter=$((counter + 1))
+    if [ $counter -eq 1 ]; then
+        echo "true"
+    elif [ $counter -eq 2 ]; then
+        echo "false"
+    else
+        echo "true"
+    fi
+done
+"#;
+        script_file.write_all(script.as_bytes()).unwrap();
+        script_file.flush().unwrap();
+
+        let script_path = script_file.into_temp_path();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/2", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Deny));
+
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/3", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+
+        drop(script_path);
     }
 }
