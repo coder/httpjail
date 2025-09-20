@@ -175,11 +175,12 @@ table ip {} {{
         ip daddr {} udp dport {} accept
         ip daddr {} tcp dport {} accept
 
-        # Explicitly block all other UDP (e.g., QUIC on 443)
-        ip protocol udp drop
-
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {} tcp dport {{ {}, {} }} accept
+
+        # Explicitly block all other UDP (e.g., QUIC on 443)
+        # This must come AFTER allowing DNS traffic
+        ip protocol udp drop
     }}
 }}
 "#,
