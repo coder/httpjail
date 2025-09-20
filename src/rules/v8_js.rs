@@ -133,7 +133,7 @@ impl V8JsRuleEngine {
             let allow_key = v8::String::new(context_scope, "allow").unwrap();
             let allowed = obj
                 .get(context_scope, allow_key.into())
-                .and_then(|v| Some(v.boolean_value(context_scope)))
+                .map(|v| v.boolean_value(context_scope))
                 .unwrap_or(false);
 
             // Get 'message' property if present
