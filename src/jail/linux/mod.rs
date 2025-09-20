@@ -1,3 +1,4 @@
+mod dns;
 mod nftables;
 mod resources;
 
@@ -8,8 +9,10 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
+use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 // Linux namespace network configuration constants were previously fixed; the
@@ -64,6 +67,7 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
+    dns_server: Option<Arc<Mutex<DummyDnsServer>>>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -81,6 +85,7 @@ impl LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
+            dns_server: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -228,6 +233,7 @@ impl LinuxJail {
             cmd.args(["netns", "exec", &namespace_name]);
             cmd.args(&cmd_args);
 
+            debug!("Executing in namespace: {:?}", cmd);
             let output = cmd.output().context(format!(
                 "Failed to execute: ip netns exec {} {:?}",
                 namespace_name, cmd_args
@@ -322,12 +328,13 @@ impl LinuxJail {
         let namespace_name = self.namespace_name();
         let host_ip = format_ip(self.host_ip);
 
-        // Create namespace-side nftables rules
-        let _table = nftables::NFTable::new_namespace_table(
+        // Create namespace-side nftables rules with DNS redirection
+        let _table = nftables::NFTable::new_namespace_table_with_dns(
             &namespace_name,
             &host_ip,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
+            53, // DNS server port (unused but kept for API compatibility)
         )?;
 
         // The table will be cleaned up automatically when it goes out of scope
@@ -431,18 +438,20 @@ impl LinuxJail {
         )?);
 
         // Write custom resolv.conf that will be bind-mounted into the namespace
-        // Use Google's public DNS servers which are reliable and always accessible
+        // Point directly to the host's veth IP where our DNS server listens
         let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-        std::fs::write(
-            &resolv_conf_path,
+        let host_ip = format_ip(self.host_ip);
+        let resolv_conf_content = format!(
             "# Custom DNS for httpjail namespace\n\
-nameserver 8.8.8.8\n\
-nameserver 8.8.4.4\n",
-        )
-        .context("Failed to write namespace-specific resolv.conf")?;
+# Points to dummy DNS server on host to prevent exfiltration\n\
+nameserver {}\n",
+            host_ip
+        );
+        std::fs::write(&resolv_conf_path, &resolv_conf_content)
+            .context("Failed to write namespace-specific resolv.conf")?;
 
         info!(
-            "Created namespace-specific resolv.conf at {} with Google DNS servers",
+            "Created namespace-specific resolv.conf at {} pointing to local DNS server",
             resolv_conf_path
         );
 
@@ -455,6 +464,7 @@ nameserver 8.8.4.4\n",
     }
 
     /// Ensure DNS works in the namespace by copying resolv.conf if needed
+    #[allow(clippy::collapsible_if)]
     fn ensure_namespace_dns(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
 
@@ -504,7 +514,10 @@ nameserver 8.8.4.4\n",
             .join(format!("httpjail_resolv_{}.conf", &namespace_name))
             .to_string_lossy()
             .to_string();
-        std::fs::write(&temp_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        // Use the host veth IP where our dummy DNS server listens
+        let host_ip = format_ip(self.host_ip);
+        let dns_content = format!("nameserver {}\n", host_ip);
+        std::fs::write(&temp_resolv, &dns_content)
             .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
 
         // First, try to directly write to /etc/resolv.conf in the namespace using echo
@@ -515,7 +528,7 @@ nameserver 8.8.4.4\n",
                 &namespace_name,
                 "sh",
                 "-c",
-                "echo -e 'nameserver 8.8.8.8\\nnameserver 8.8.4.4\\nnameserver 1.1.1.1' > /etc/resolv.conf",
+                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
             ])
             .output();
 
@@ -572,6 +585,43 @@ nameserver 8.8.4.4\n",
 
         Ok(())
     }
+
+    /// Start the dummy DNS server in the namespace
+    fn start_dns_server(&mut self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+
+        info!("Starting dummy DNS server in namespace {}", namespace_name);
+
+        // Start the DNS server on the host side
+        let mut dns_server = DummyDnsServer::new();
+
+        // Bind directly to port 53 on the host IP - no redirection needed
+        let dns_bind_addr = format!("{}:53", format_ip(self.host_ip));
+        dns_server.start(&dns_bind_addr)?;
+
+        info!("Started dummy DNS server on {}", dns_bind_addr);
+
+        self.dns_server = Some(Arc::new(Mutex::new(dns_server)));
+
+        Ok(())
+    }
+
+    /// Stop the DNS server
+    fn stop_dns_server(&mut self) {
+        if let Some(dns_server_arc) = self.dns_server.take() {
+            if let Ok(mut dns_server) = dns_server_arc.lock() {
+                dns_server.stop();
+                info!("Stopped dummy DNS server");
+            }
+        }
+    }
+}
+
+impl Drop for LinuxJail {
+    fn drop(&mut self) {
+        // Stop the DNS server if running
+        self.stop_dns_server();
+    }
 }
 
 impl Jail for LinuxJail {
@@ -594,6 +644,9 @@ impl Jail for LinuxJail {
 
         // Configure namespace networking after host side is ready
         self.configure_namespace_networking()?;
+
+        // Start the dummy DNS server in the namespace
+        self.start_dns_server()?;
 
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;
@@ -742,6 +795,7 @@ impl Clone for LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
+            dns_server: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),
