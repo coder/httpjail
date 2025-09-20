@@ -196,7 +196,7 @@ impl ScriptRuleEngine {
                 Ok(Err(e)) => {
                     error!("Error reading from script: {}", e);
                     *process_guard = None;
-                    (false, Some(format!("Script read error: {}", e)))
+                    (false, Some("Script evaluation failed".to_string()))
                 }
                 Err(_) => {
                     warn!("Script response timeout after {:?}", timeout);

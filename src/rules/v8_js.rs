@@ -66,6 +66,20 @@ impl V8JsRuleEngine {
         }
     }
 
+    /// Helper function to set a property on a V8 object
+    fn set_object_property(
+        context_scope: &mut v8::ContextScope<v8::HandleScope>,
+        obj: v8::Local<v8::Object>,
+        key: &str,
+        value: &str,
+    ) {
+        if let Some(key_str) = v8::String::new(context_scope, key) {
+            if let Some(val_str) = v8::String::new(context_scope, value) {
+                obj.set(context_scope, key_str.into(), val_str.into());
+            }
+        }
+    }
+
     fn create_and_execute(
         &self,
         request_info: &RequestInfo,
@@ -82,36 +96,18 @@ impl V8JsRuleEngine {
         let r_key = v8::String::new(context_scope, "r").unwrap();
         global.set(context_scope, r_key.into(), r_obj.into());
 
-        // Set properties on the 'r' object
-        if let Some(url_str) = v8::String::new(context_scope, &request_info.url) {
-            let key = v8::String::new(context_scope, "url").unwrap();
-            r_obj.set(context_scope, key.into(), url_str.into());
-        }
-
-        if let Some(method_str) = v8::String::new(context_scope, &request_info.method) {
-            let key = v8::String::new(context_scope, "method").unwrap();
-            r_obj.set(context_scope, key.into(), method_str.into());
-        }
-
-        if let Some(scheme_str) = v8::String::new(context_scope, &request_info.scheme) {
-            let key = v8::String::new(context_scope, "scheme").unwrap();
-            r_obj.set(context_scope, key.into(), scheme_str.into());
-        }
-
-        if let Some(host_str) = v8::String::new(context_scope, &request_info.host) {
-            let key = v8::String::new(context_scope, "host").unwrap();
-            r_obj.set(context_scope, key.into(), host_str.into());
-        }
-
-        if let Some(path_str) = v8::String::new(context_scope, &request_info.path) {
-            let key = v8::String::new(context_scope, "path").unwrap();
-            r_obj.set(context_scope, key.into(), path_str.into());
-        }
-
-        if let Some(ip_str) = v8::String::new(context_scope, &request_info.requester_ip) {
-            let key = v8::String::new(context_scope, "requester_ip").unwrap();
-            r_obj.set(context_scope, key.into(), ip_str.into());
-        }
+        // Set properties on the 'r' object using helper function
+        Self::set_object_property(context_scope, r_obj, "url", &request_info.url);
+        Self::set_object_property(context_scope, r_obj, "method", &request_info.method);
+        Self::set_object_property(context_scope, r_obj, "scheme", &request_info.scheme);
+        Self::set_object_property(context_scope, r_obj, "host", &request_info.host);
+        Self::set_object_property(context_scope, r_obj, "path", &request_info.path);
+        Self::set_object_property(
+            context_scope,
+            r_obj,
+            "requester_ip",
+            &request_info.requester_ip,
+        );
 
         // Execute the JavaScript expression
         let source =

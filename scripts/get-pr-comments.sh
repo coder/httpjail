@@ -105,27 +105,23 @@ if [[ -z "$REVIEW_COMMENTS" ]]; then
 fi
 
 # Display review comments
-if [[ "$COMPACT_MODE" == "true" ]]; then
-    echo "$REVIEW_COMMENTS"
-else
-    echo -e "${GREEN}=== Code Review Comments (Resolvable) ===${NC}"
-    echo "$REVIEW_COMMENTS" | while IFS= read -r line; do
-        # Extract components for better formatting
-        if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]([^:]+):(.*)$ ]]; then
-            user="${BASH_REMATCH[1]}"
-            cid="${BASH_REMATCH[2]}"
-            location="${BASH_REMATCH[3]}"
-            comment="${BASH_REMATCH[4]}"
-            
-            echo -e "${YELLOW}@$user${NC} on ${BLUE}$location${NC} (ID: $cid)"
-            echo "$comment" | sed 's/^/  /'
-            echo ""
-        else
-            echo "$line"
-            echo ""
-        fi
-    done
-fi
+echo -e "${GREEN}=== Code Review Comments (Resolvable) ===${NC}"
+echo "$REVIEW_COMMENTS" | while IFS= read -r line; do
+    # Extract components for better formatting
+    if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]([^:]+):(.*)$ ]]; then
+        user="${BASH_REMATCH[1]}"
+        cid="${BASH_REMATCH[2]}"
+        location="${BASH_REMATCH[3]}"
+        comment="${BASH_REMATCH[4]}"
+        
+        echo -e "${YELLOW}@$user${NC} on ${BLUE}$location${NC} (ID: $cid)"
+        echo "$comment" | sed 's/^/  /'
+        echo ""
+    else
+        echo "$line"
+        echo ""
+    fi
+done
 
 # Summary
 REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
