@@ -389,13 +389,7 @@ async fn main() -> Result<()> {
 
     let rule_engine = if let Some(script) = &args.run_args.sh {
         info!("Using script-based rule evaluation: {}", script);
-        let script_engine = match ScriptRuleEngine::new(script.clone()) {
-            Ok(engine) => Box::new(engine),
-            Err(e) => {
-                eprintln!("Failed to create script engine: {}", e);
-                std::process::exit(1);
-            }
-        };
+        let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
         RuleEngine::from_trait(script_engine, request_log)
     } else if let Some(js_code) = &args.run_args.js {
         info!("Using V8 JavaScript rule evaluation");

@@ -7,7 +7,6 @@
 #
 # Options:
 #   -r, --raw      Output raw format without colors
-#   -c, --compact  Compact output (one line per comment)
 #   -h, --help     Show this help message
 #
 # Examples:
@@ -43,16 +42,11 @@ get_current_pr() {
 # Parse arguments
 PR_NUMBER=""
 RAW_MODE=false
-COMPACT_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -r|--raw)
             RAW_MODE=true
-            shift
-            ;;
-        -c|--compact)
-            COMPACT_MODE=true
             shift
             ;;
         -h|--help)
@@ -133,16 +127,14 @@ else
     done
 fi
 
-# Summary (skip in compact mode)
-if [[ "$COMPACT_MODE" != "true" ]]; then
-    REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
-    
-    echo -e "${BLUE}---${NC}"
-    echo -e "${BLUE}Summary: $REVIEW_COUNT resolvable code review comment(s)${NC}"
-fi
+# Summary
+REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
 
-# Provide hint for resolving comments (skip in compact or raw mode)
-if [[ "$COMPACT_MODE" != "true" ]] && [[ "$RAW_MODE" != "true" ]]; then
+echo -e "${BLUE}---${NC}"
+echo -e "${BLUE}Summary: $REVIEW_COUNT resolvable code review comment(s)${NC}"
+
+# Provide hint for resolving comments (skip in raw mode)
+if [[ "$RAW_MODE" != "true" ]]; then
     if [[ "$REVIEW_COUNT" -gt 0 ]]; then
         echo ""
         echo -e "${YELLOW}Tips:${NC}"

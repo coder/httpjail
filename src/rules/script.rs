@@ -23,11 +23,11 @@ struct ScriptProcess {
 }
 
 impl ScriptRuleEngine {
-    pub fn new(script: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(ScriptRuleEngine {
+    pub fn new(script: String) -> Self {
+        ScriptRuleEngine {
             script,
             process: Arc::new(Mutex::new(None)),
-        })
+        }
     }
 
     async fn ensure_process_running(&self) -> Result<(), String> {
@@ -107,14 +107,14 @@ impl ScriptRuleEngine {
 
         if let Err(e) = self.ensure_process_running().await {
             error!("Failed to ensure process is running: {}", e);
-            return (false, Some(format!("Script process error: {}", e)));
+            return (false, Some("Script evaluation failed".to_string()));
         }
 
         let json_request = match serde_json::to_string(&request_info) {
             Ok(json) => json,
             Err(e) => {
                 error!("Failed to serialize request: {}", e);
-                return (false, Some(format!("JSON serialization error: {}", e)));
+                return (false, Some("Script evaluation failed".to_string()));
             }
         };
 
@@ -131,13 +131,13 @@ impl ScriptRuleEngine {
             if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
                 error!("Failed to write to script stdin: {}", e);
                 *process_guard = None;
-                return (false, Some(format!("Failed to write to script: {}", e)));
+                return (false, Some("Script evaluation failed".to_string()));
             }
 
             if let Err(e) = process_state.stdin.flush().await {
                 error!("Failed to flush stdin: {}", e);
                 *process_guard = None;
-                return (false, Some(format!("Failed to flush script input: {}", e)));
+                return (false, Some("Script evaluation failed".to_string()));
             }
 
             let timeout = Duration::from_secs(5);
@@ -164,9 +164,9 @@ impl ScriptRuleEngine {
                             (false, None)
                         }
                         _ => {
-                            if response.starts_with('{')
-                                && let Ok(json_response) =
-                                    serde_json::from_str::<serde_json::Value>(response)
+                            // Try to parse as JSON first
+                            if let Ok(json_response) =
+                                serde_json::from_str::<serde_json::Value>(response)
                             {
                                 let allowed = json_response
                                     .get("allow")
@@ -186,6 +186,7 @@ impl ScriptRuleEngine {
 
                                 (allowed, message)
                             } else {
+                                // Not JSON, treat the output as a deny message
                                 debug!("DENY: {} {} (script returned: {})", method, url, response);
                                 (false, Some(response.to_string()))
                             }
@@ -273,7 +274,7 @@ done
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -320,7 +321,7 @@ for line in sys.stdin:
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
@@ -368,7 +369,7 @@ for line in sys.stdin:
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -417,7 +418,7 @@ done
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string()).unwrap();
+        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")

@@ -43,6 +43,13 @@ impl EvaluationResult {
     }
 }
 
+/// Trait for rule engines that evaluate HTTP requests.
+///
+/// # Security Note
+/// Implementations MUST NOT expose detailed error information in denial messages
+/// that could leak system information to jailed applications. Use generic error
+/// messages like "Request denied" or "Script evaluation failed" instead of
+/// including system paths, error codes, or internal details.
 #[async_trait]
 pub trait RuleEngineTrait: Send + Sync {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult;
