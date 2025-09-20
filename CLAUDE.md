@@ -172,6 +172,19 @@ To find comment IDs, use:
 ./scripts/get-pr-comments.sh --raw | grep CID
 ```
 
+**Best Practices for Replies:**
+- Always include the commit hash that fixes the issue (e.g., "Fixed in a5813f3")
+- If the commit includes multiple unrelated changes, include a diff snippet showing just the relevant fix:
+  ```
+  Fixed in commit a5813f3. Relevant change:
+  \`\`\`diff
+  - old line
+  + new line
+  \`\`\`
+  ```
+- Use `git log --oneline -n 5` to find recent commit hashes
+- Use `git show <hash> -- <file>` to get the diff for a specific file
+
 **Note:** The reply script automatically marks all messages with "🤖 Automated 🤖" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
 
 ### Manual Testing on CI
