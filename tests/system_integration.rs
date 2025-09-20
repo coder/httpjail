@@ -775,3 +775,56 @@ pub fn test_public_dns_blocked<P: JailTestPlatform>() {
         stderr
     );
 }
+
+/// Test that non-HTTP TCP connections are blocked (e.g., SSH)
+pub fn test_non_http_tcp_services_blocked<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Try to connect to GitHub's SSH port - this should be blocked
+    // GitHub SSH always responds with "SSH-2.0-babeld-" banner
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--js")
+        .arg("true")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        // Use timeout to prevent hanging, nc will try to connect to SSH port
+        .arg("timeout 3 nc -v github.com 22 2>&1 || echo 'SSH_BLOCKED'");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] SSH connection test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] SSH connection test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // The connection should be blocked - we should NOT see the SSH banner
+    assert!(
+        !stdout.contains("SSH-2.0"),
+        "[{}] SSH connection should be blocked but got SSH banner in stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    // Should either timeout or be explicitly blocked
+    assert!(
+        stdout.contains("SSH_BLOCKED")
+            || stdout.contains("Connection timed out")
+            || stdout.contains("Connection refused")
+            || stdout.contains("No route to host")
+            || stderr.contains("Connection timed out")
+            || stderr.contains("Connection refused"),
+        "[{}] Expected SSH connection to be blocked, but got stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout,
+        stderr
+    );
+}

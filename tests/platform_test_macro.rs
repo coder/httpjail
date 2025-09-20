@@ -94,5 +94,10 @@ macro_rules! platform_tests {
         fn test_public_dns_blocked() {
             system_integration::test_public_dns_blocked::<$platform>();
         }
+
+        #[test]
+        fn test_non_http_tcp_services_blocked() {
+            system_integration::test_non_http_tcp_services_blocked::<$platform>();
+        }
     };
 }
