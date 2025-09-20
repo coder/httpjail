@@ -464,6 +464,7 @@ nameserver {}\n",
     }
 
     /// Ensure DNS works in the namespace by copying resolv.conf if needed
+    #[allow(clippy::collapsible_if)]
     fn ensure_namespace_dns(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
 
