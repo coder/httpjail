@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use anyhow::{Context, Result};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
@@ -67,6 +65,7 @@ impl Drop for DummyDnsServer {
     }
 }
 
+#[allow(clippy::collapsible_if)]
 fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
     let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
 
