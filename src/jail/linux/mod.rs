@@ -585,37 +585,7 @@ nameserver 127.0.0.1\n",
 
         info!("Starting dummy DNS server in namespace {}", namespace_name);
 
-        // Create the DNS server
-        let mut dns_server = DummyDnsServer::new();
-
-        // We need to start the DNS server inside the namespace
-        // The server will bind to 127.0.0.1:53 inside the namespace
-        let ns_path = format!("/var/run/netns/{}", namespace_name);
-
-        // Use a thread to run the DNS server in the namespace context
-        let dns_server_arc = Arc::new(Mutex::new(dns_server));
-        let dns_server_clone = Arc::clone(&dns_server_arc);
-        let ns_name_clone = namespace_name.clone();
-
-        // Start DNS server in a separate thread that enters the namespace
-        std::thread::spawn(move || {
-            // Enter the network namespace
-            let output = Command::new("ip")
-                .args([
-                    "netns",
-                    "exec",
-                    &ns_name_clone,
-                    "sh",
-                    "-c",
-                    "exec 3<>/dev/tcp/127.0.0.1/53 2>/dev/null || echo 'port available'",
-                ])
-                .output();
-
-            // The DNS server will actually run in the host, but we'll redirect traffic to it
-            // For now, we'll start it on the host and use nftables to redirect
-        });
-
-        // Actually, let's simplify - start the DNS server on the host side
+        // Start the DNS server on the host side
         // and use nftables to redirect DNS traffic from the namespace
         let mut dns_server = DummyDnsServer::new();
 

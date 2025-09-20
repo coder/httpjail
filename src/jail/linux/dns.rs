@@ -119,7 +119,7 @@ fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
     response.push((flags >> 8) as u8);
     response.push((flags & 0xFF) as u8);
 
-    let qdcount = ((query[4] as u16) << 8) | (query[5] as u16);
+    // Copy question count from query
     response.extend_from_slice(&query[4..6]);
 
     response.push(0);
@@ -130,8 +130,7 @@ fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
     response.push(0);
     response.push(0);
 
-    let mut pos = 12;
-    let query_end = find_query_end(query, pos)?;
+    let query_end = find_query_end(query, 12)?;
     response.extend_from_slice(&query[12..query_end]);
 
     response.push(0xC0);
