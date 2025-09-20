@@ -6,7 +6,6 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-const DNS_PORT: u16 = 53;
 const DUMMY_IPV4: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
 const MAX_DNS_PACKET_SIZE: usize = 512;
 

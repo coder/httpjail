@@ -126,16 +126,6 @@ table ip {} {{
     }
 
     /// Create namespace-side nftables rules for traffic redirection and egress filtering
-    pub fn new_namespace_table(
-        namespace: &str,
-        host_ip: &str,
-        http_port: u16,
-        https_port: u16,
-    ) -> Result<Self> {
-        Self::new_namespace_table_with_dns(namespace, host_ip, http_port, https_port, 5353)
-    }
-
-    /// Create namespace-side nftables rules for traffic redirection and egress filtering
     pub fn new_namespace_table_with_dns(
         namespace: &str,
         host_ip: &str,
