@@ -20,6 +20,7 @@ Or download a pre-built binary from the [releases page](https://github.com/coder
 
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
+- 🛡️ **DNS exfiltration protection** - Prevents data leakage through DNS queries
 - 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
 - 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
@@ -70,7 +71,7 @@ httpjail creates an isolated network environment for the target process, interce
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
 │  2. Setup nftables rules                        │
-│  3. Start embedded proxy                        │
+│  3. Start embedded proxy + DNS server           │
 │  4. Export CA trust env vars                    │
 │  5. Execute target process in namespace         │
 └─────────────────────────────────────────────────┘
@@ -79,6 +80,7 @@ httpjail creates an isolated network environment for the target process, interce
 │              Target Process                     │
 │  • Isolated in network namespace                │
 │  • All HTTP/HTTPS → local proxy                 │
+│  • All DNS queries → dummy resolver (6.6.6.6)   │
 │  • CA cert trusted via env vars                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -113,6 +115,19 @@ httpjail creates an isolated network environment for the target process, interce
 | TLS interception  | ✅ Transparent MITM + env CA | ✅ Env variables            | 🚧 Cert store |
 | Sudo required     | ⚠️ Yes                       | ✅ No                       | 🚧            |
 | Force all traffic | ✅ Yes                       | ❌ No (apps must cooperate) | 🚧            |
+
+## DNS Exfiltration Protection
+
+httpjail includes built-in protection against DNS exfiltration attacks. In isolated environments (Linux strong mode), all DNS queries are intercepted and answered with a dummy response (6.6.6.6), preventing data leakage through DNS subdomain encoding.
+
+**Attack Prevention**: Without this protection, malicious code could exfiltrate sensitive data (environment variables, secrets, etc.) by encoding it in DNS queries like `secret-data.attacker.com`. Our dummy DNS server ensures:
+
+1. All DNS queries receive the same response (6.6.6.6)
+2. External DNS servers (1.1.1.1, 8.8.8.8) cannot be reached
+3. HTTP/HTTPS traffic still works as it's redirected through our proxy
+4. No actual DNS resolution occurs, preventing data leakage
+
+This approach blocks DNS tunneling while maintaining full HTTP/HTTPS functionality through transparent proxy redirection.
 
 ## Prerequisites
 
