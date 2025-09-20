@@ -41,11 +41,9 @@ enum Command {
 
 #[derive(Parser, Debug)]
 struct RunArgs {
-    /// Use script for evaluating requests
-    /// The script receives environment variables:
-    ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-    /// Exit code 0 allows the request, non-zero blocks it
-    /// stdout becomes additional context in the 403 response
+    /// Use script for evaluating requests (line-based persistent process)
+    /// The script receives JSON on stdin (one request per line) and outputs per line.
+    /// Output: "true"/"false" or JSON {"allow": bool, "message": "..."}
     #[arg(long = "sh", value_name = "PROG")]
     sh: Option<String>,
 
@@ -391,7 +389,13 @@ async fn main() -> Result<()> {
 
     let rule_engine = if let Some(script) = &args.run_args.sh {
         info!("Using script-based rule evaluation: {}", script);
-        let script_engine = Box::new(ScriptRuleEngine::new(script.clone()));
+        let script_engine = match ScriptRuleEngine::new(script.clone()) {
+            Ok(engine) => Box::new(engine),
+            Err(e) => {
+                eprintln!("Failed to create script engine: {}", e);
+                std::process::exit(1);
+            }
+        };
         RuleEngine::from_trait(script_engine, request_log)
     } else if let Some(js_code) = &args.run_args.js {
         info!("Using V8 JavaScript rule evaluation");

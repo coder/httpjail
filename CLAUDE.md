@@ -131,6 +131,62 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 ./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify PR and repo explicitly
 ```
 
+### PR Review Scripts
+
+Two helper scripts are available for managing GitHub PR code review comments:
+
+#### Getting PR Comments
+
+```bash
+# Get all resolvable code review comments for the current PR
+./scripts/get-pr-comments.sh
+
+# Get raw output (useful for extracting comment IDs)
+./scripts/get-pr-comments.sh --raw
+
+# Get compact output (one line per comment)
+./scripts/get-pr-comments.sh --compact
+
+# Get comments for a specific PR
+./scripts/get-pr-comments.sh 54
+```
+
+The script shows comments with line numbers in the format:
+```
+username [CID=12345678] path/to/file.rs#L42: Comment text
+```
+
+#### Replying to PR Comments
+
+```bash
+# Reply to a specific comment (auto-marks as automated)
+./scripts/reply-to-comment.sh <COMMENT_ID> <MESSAGE>
+
+# Examples:
+./scripts/reply-to-comment.sh 2365688250 "Fixed in commit abc123"
+./scripts/reply-to-comment.sh 2365688250 "Thanks for the feedback - addressed this issue"
+```
+
+To find comment IDs, use:
+```bash
+./scripts/get-pr-comments.sh --raw | grep CID
+```
+
+**Best Practices for Replies:**
+- Always include the commit hash that fixes the issue (e.g., "Fixed in a5813f3")
+- If the commit includes multiple unrelated changes, include a diff snippet showing just the relevant fix:
+  ```
+  Fixed in commit a5813f3. Relevant change:
+  \`\`\`diff
+  - old line
+  + new line
+  \`\`\`
+  ```
+- Use `git log --oneline -n 5` to find recent commit hashes
+- Use `git show <hash> -- <file>` to get the diff for a specific file
+
+**Note:** The reply script automatically marks all messages with "🤖 Automated 🤖" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
+
 ### Manual Testing on CI
 
 ```bash

@@ -1,11 +1,11 @@
 #[cfg(test)]
 use super::Action;
+use super::common::RequestInfo;
 use super::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
 use std::sync::{Once, OnceLock};
 use tracing::{debug, warn};
-use url::Url;
 
 /// V8 JavaScript rule engine that creates a fresh context for each evaluation
 /// to ensure thread safety. While this is less performant than reusing contexts,
@@ -69,26 +69,22 @@ impl V8JsRuleEngine {
         url: &str,
         requester_ip: &str,
     ) -> (bool, Option<String>) {
-        let parsed_url = match Url::parse(url) {
-            Ok(u) => u,
+        let request_info = match RequestInfo::from_request(method, url, requester_ip) {
+            Ok(info) => info,
             Err(e) => {
-                debug!("Failed to parse URL '{}': {}", url, e);
-                return (false, Some(format!("Failed to parse URL: {}", e)));
+                debug!("Failed to parse request: {}", e);
+                return (false, Some(e));
             }
         };
 
-        let scheme = parsed_url.scheme();
-        let host = parsed_url.host_str().unwrap_or("");
-        let path = parsed_url.path();
-
         debug!(
             "Executing JS rule for {} {} (host: {}, path: {})",
-            method, url, host, path
+            request_info.method, request_info.url, request_info.host, request_info.path
         );
 
         // Create a new isolate and context for this evaluation
         // This ensures thread safety at the cost of some performance
-        match self.create_and_execute(method.as_str(), url, scheme, host, path, requester_ip) {
+        match self.create_and_execute(&request_info) {
             Ok(result) => result,
             Err(e) => {
                 warn!("JavaScript execution failed: {}", e);
@@ -99,12 +95,7 @@ impl V8JsRuleEngine {
 
     fn create_and_execute(
         &self,
-        method: &str,
-        url: &str,
-        scheme: &str,
-        host: &str,
-        path: &str,
-        requester_ip: &str,
+        request_info: &RequestInfo,
     ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
         let handle_scope = &mut v8::HandleScope::new(&mut isolate);
@@ -119,32 +110,32 @@ impl V8JsRuleEngine {
         global.set(context_scope, r_key.into(), r_obj.into());
 
         // Set properties on the 'r' object
-        if let Some(url_str) = v8::String::new(context_scope, url) {
+        if let Some(url_str) = v8::String::new(context_scope, &request_info.url) {
             let key = v8::String::new(context_scope, "url").unwrap();
             r_obj.set(context_scope, key.into(), url_str.into());
         }
 
-        if let Some(method_str) = v8::String::new(context_scope, method) {
+        if let Some(method_str) = v8::String::new(context_scope, &request_info.method) {
             let key = v8::String::new(context_scope, "method").unwrap();
             r_obj.set(context_scope, key.into(), method_str.into());
         }
 
-        if let Some(scheme_str) = v8::String::new(context_scope, scheme) {
+        if let Some(scheme_str) = v8::String::new(context_scope, &request_info.scheme) {
             let key = v8::String::new(context_scope, "scheme").unwrap();
             r_obj.set(context_scope, key.into(), scheme_str.into());
         }
 
-        if let Some(host_str) = v8::String::new(context_scope, host) {
+        if let Some(host_str) = v8::String::new(context_scope, &request_info.host) {
             let key = v8::String::new(context_scope, "host").unwrap();
             r_obj.set(context_scope, key.into(), host_str.into());
         }
 
-        if let Some(path_str) = v8::String::new(context_scope, path) {
+        if let Some(path_str) = v8::String::new(context_scope, &request_info.path) {
             let key = v8::String::new(context_scope, "path").unwrap();
             r_obj.set(context_scope, key.into(), path_str.into());
         }
 
-        if let Some(ip_str) = v8::String::new(context_scope, requester_ip) {
+        if let Some(ip_str) = v8::String::new(context_scope, &request_info.requester_ip) {
             let key = v8::String::new(context_scope, "requester_ip").unwrap();
             r_obj.set(context_scope, key.into(), ip_str.into());
         }
@@ -185,8 +176,8 @@ impl V8JsRuleEngine {
         debug!(
             "JS rule returned {} for {} {}",
             if allowed { "ALLOW" } else { "DENY" },
-            method,
-            url
+            request_info.method,
+            request_info.url
         );
 
         if let Some(ref msg) = block_message {
