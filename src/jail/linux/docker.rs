@@ -284,6 +284,7 @@ impl DockerLinux {
         &["-e", "-v", "-p", "--name", "--entrypoint", "-w", "--user"];
 
     /// Build the docker command with isolated network
+    #[allow(clippy::collapsible_if)]
     fn build_docker_command(
         &self,
         docker_args: &[String],
