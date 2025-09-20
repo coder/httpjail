@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use anyhow::{Context, Result};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
