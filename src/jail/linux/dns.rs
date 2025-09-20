@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use simple_dns::rdata::RData;
-use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE};
+use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -144,7 +144,7 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simple_dns::{Name, Question};
+    use simple_dns::{Name, Question, TYPE};
 
     #[test]
     fn test_dns_response_builder() {
