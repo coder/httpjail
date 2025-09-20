@@ -218,41 +218,22 @@ impl LinuxJail {
         let host_ip = format_ip(self.host_ip);
 
         // Commands to run inside the namespace
-        // Each is a tuple of (use_ip_netns, command_args)
         let commands = vec![
-            // Bring up loopback (using ip netns exec ip ...)
-            (true, vec!["ip", "link", "set", "lo", "up"]),
-            // Enable route_localnet to allow DNAT on loopback (using ip netns exec sysctl ...)
-            (
-                false,
-                vec!["sysctl", "-w", "net.ipv4.conf.all.route_localnet=1"],
-            ),
-            (
-                false,
-                vec!["sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1"],
-            ),
+            // Bring up loopback
+            vec!["ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            (
-                true,
-                vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
-            ),
-            (true, vec!["ip", "link", "set", &veth_ns, "up"]),
+            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
+            vec!["ip", "link", "set", &veth_ns, "up"],
             // Add default route pointing to host
-            (true, vec!["ip", "route", "add", "default", "via", &host_ip]),
+            vec!["ip", "route", "add", "default", "via", &host_ip],
         ];
 
-        for (use_ip_prefix, cmd_args) in commands {
+        for cmd_args in commands {
             let mut cmd = Command::new("ip");
             cmd.args(["netns", "exec", &namespace_name]);
-            // Add the actual command to run in the namespace
-            if !use_ip_prefix {
-                // For non-ip commands like sysctl, add them directly
-                cmd.args(&cmd_args);
-            } else {
-                // For ip commands, the args already include "ip" at the start
-                cmd.args(&cmd_args);
-            }
+            cmd.args(&cmd_args);
 
+            debug!("Executing in namespace: {:?}", cmd);
             let output = cmd.output().context(format!(
                 "Failed to execute: ip netns exec {} {:?}",
                 namespace_name, cmd_args
@@ -457,15 +438,17 @@ impl LinuxJail {
         )?);
 
         // Write custom resolv.conf that will be bind-mounted into the namespace
-        // Point to localhost where our dummy DNS server will run
+        // Point directly to the host's veth IP where our DNS server listens
         let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-        std::fs::write(
-            &resolv_conf_path,
+        let host_ip = format_ip(self.host_ip);
+        let resolv_conf_content = format!(
             "# Custom DNS for httpjail namespace\n\
-# Points to local dummy DNS server to prevent exfiltration\n\
-nameserver 127.0.0.1\n",
-        )
-        .context("Failed to write namespace-specific resolv.conf")?;
+# Points to dummy DNS server on host to prevent exfiltration\n\
+nameserver {}\n",
+            host_ip
+        );
+        std::fs::write(&resolv_conf_path, &resolv_conf_content)
+            .context("Failed to write namespace-specific resolv.conf")?;
 
         info!(
             "Created namespace-specific resolv.conf at {} pointing to local DNS server",
@@ -606,11 +589,10 @@ nameserver 127.0.0.1\n",
         info!("Starting dummy DNS server in namespace {}", namespace_name);
 
         // Start the DNS server on the host side
-        // and use nftables to redirect DNS traffic from the namespace
         let mut dns_server = DummyDnsServer::new();
 
-        // Bind to the host IP on a high port, we'll redirect port 53 to it
-        let dns_bind_addr = format!("{}:5353", format_ip(self.host_ip));
+        // Bind directly to port 53 on the host IP - no redirection needed
+        let dns_bind_addr = format!("{}:53", format_ip(self.host_ip));
         dns_server.start(&dns_bind_addr)?;
 
         info!("Started dummy DNS server on {}", dns_bind_addr);

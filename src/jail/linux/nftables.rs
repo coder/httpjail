@@ -50,8 +50,8 @@ table ip {} {{
     chain input {{
         type filter hook input priority -100; policy accept;
         iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
-        iifname "{}" udp dport 5353 accept comment "httpjail_{} dns"
-        iifname "{}" tcp dport 5353 accept comment "httpjail_{} dns tcp"
+        iifname "{}" udp dport 53 accept comment "httpjail_{} dns"
+        iifname "{}" tcp dport 53 accept comment "httpjail_{} dns tcp"
         iifname "{}" accept comment "httpjail_{} all"
     }}
     
@@ -135,13 +135,13 @@ table ip {} {{
         Self::new_namespace_table_with_dns(namespace, host_ip, http_port, https_port, 5353)
     }
 
-    /// Create namespace-side nftables rules for traffic redirection and egress filtering with DNS redirection
+    /// Create namespace-side nftables rules for traffic redirection and egress filtering
     pub fn new_namespace_table_with_dns(
         namespace: &str,
         host_ip: &str,
         http_port: u16,
         https_port: u16,
-        dns_port: u16,
+        _dns_port: u16, // No longer needed but kept for compatibility
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
@@ -149,13 +149,9 @@ table ip {} {{
         let ruleset = format!(
             r#"
 table ip {} {{
-    # NAT output chain: redirect HTTP/HTTPS and DNS to host proxy
+    # NAT output chain: redirect HTTP/HTTPS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
-
-        # Redirect DNS traffic to our dummy DNS server on host
-        udp dport 53 dnat to {}:{}
-        tcp dport 53 dnat to {}:{}
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {}:{}
@@ -171,9 +167,9 @@ table ip {} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow redirected DNS traffic to the host
-        ip daddr {} udp dport {} accept
-        ip daddr {} tcp dport {} accept
+        # Allow DNS traffic directly to the host (no DNAT needed)
+        ip daddr {} udp dport 53 accept
+        ip daddr {} tcp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {} tcp dport {{ {}, {} }} accept
@@ -186,17 +182,11 @@ table ip {} {{
 "#,
             table_name,
             host_ip,
-            dns_port, // UDP DNS redirect
-            host_ip,
-            dns_port, // TCP DNS redirect
-            host_ip,
             http_port, // HTTP redirect
             host_ip,
             https_port, // HTTPS redirect
-            host_ip,
-            dns_port, // Allow UDP DNS to host
-            host_ip,
-            dns_port, // Allow TCP DNS to host
+            host_ip,    // Allow DNS to host IP
+            host_ip,    // Allow DNS to host IP
             host_ip,
             http_port,
             https_port // Allow HTTP/HTTPS to host
