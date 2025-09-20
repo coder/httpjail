@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 pub mod dangerous_verifier;
 pub mod jail;
 pub mod macos_keychain;
