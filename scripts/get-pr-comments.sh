@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Get PR review comments with line numbers
+# Get PR code review comments (resolvable comments on specific lines)
 #
 # Usage:
 #   ./scripts/get-pr-comments.sh [PR_NUMBER] [OPTIONS]
@@ -14,6 +14,9 @@
 #   ./scripts/get-pr-comments.sh           # Auto-detect PR from current branch
 #   ./scripts/get-pr-comments.sh 54        # Get comments for PR #54
 #   ./scripts/get-pr-comments.sh 54 --raw  # Get raw output for piping
+#
+# Note: Only shows code review comments (resolvable comments on specific lines),
+#       not general PR comments
 #
 # If PR_NUMBER is not provided, attempts to detect from current branch
 
@@ -93,86 +96,58 @@ fi
 # Repository detection
 REPO="${GITHUB_REPOSITORY:-coder/httpjail}"
 
-echo -e "${BLUE}Fetching comments for PR #$PR_NUMBER in $REPO...${NC}"
+echo -e "${BLUE}Fetching code review comments for PR #$PR_NUMBER in $REPO...${NC}"
 echo ""
 
 # Fetch and format review comments (comments on specific lines of code)
+# These are the resolvable comments that appear in the "Files changed" tab
 REVIEW_COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate \
   -q '.[] | select(.line != null) | "\(.user.login) [CID=\(.id)] \(.path)#L\(.line): \(.body)"' 2>/dev/null)
 
-# Fetch and format issue comments (general PR comments)
-ISSUE_COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-  -q '.[] | "\(.user.login) [CID=\(.id)] [General]: \(.body)"' 2>/dev/null)
-
 # Check if any comments were found
-if [[ -z "$REVIEW_COMMENTS" ]] && [[ -z "$ISSUE_COMMENTS" ]]; then
-    echo -e "${YELLOW}No comments found for PR #$PR_NUMBER${NC}"
+if [[ -z "$REVIEW_COMMENTS" ]]; then
+    echo -e "${YELLOW}No code review comments found for PR #$PR_NUMBER${NC}"
     exit 0
 fi
 
 # Display review comments
-if [[ -n "$REVIEW_COMMENTS" ]]; then
-    if [[ "$COMPACT_MODE" == "true" ]]; then
-        echo "$REVIEW_COMMENTS"
-    else
-        echo -e "${GREEN}=== Code Review Comments ===${NC}"
-        echo "$REVIEW_COMMENTS" | while IFS= read -r line; do
-            # Extract components for better formatting
-            if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]([^:]+):(.*)$ ]]; then
-                user="${BASH_REMATCH[1]}"
-                cid="${BASH_REMATCH[2]}"
-                location="${BASH_REMATCH[3]}"
-                comment="${BASH_REMATCH[4]}"
-                
-                echo -e "${YELLOW}@$user${NC} on ${BLUE}$location${NC} (ID: $cid)"
-                echo "$comment" | sed 's/^/  /'
-                echo ""
-            else
-                echo "$line"
-                echo ""
-            fi
-        done
-    fi
-fi
-
-# Display issue comments
-if [[ -n "$ISSUE_COMMENTS" ]]; then
-    if [[ "$COMPACT_MODE" == "true" ]]; then
-        echo "$ISSUE_COMMENTS"
-    else
-        echo -e "${GREEN}=== General PR Comments ===${NC}"
-        echo "$ISSUE_COMMENTS" | while IFS= read -r line; do
-            if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]\[General\]:(.*)$ ]]; then
-                user="${BASH_REMATCH[1]}"
-                cid="${BASH_REMATCH[2]}"
-                comment="${BASH_REMATCH[3]}"
-                
-                echo -e "${YELLOW}@$user${NC} (ID: $cid)"
-                echo "$comment" | sed 's/^/  /'
-                echo ""
-            else
-                echo "$line"
-                echo ""
-            fi
-        done
-    fi
+if [[ "$COMPACT_MODE" == "true" ]]; then
+    echo "$REVIEW_COMMENTS"
+else
+    echo -e "${GREEN}=== Code Review Comments (Resolvable) ===${NC}"
+    echo "$REVIEW_COMMENTS" | while IFS= read -r line; do
+        # Extract components for better formatting
+        if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]([^:]+):(.*)$ ]]; then
+            user="${BASH_REMATCH[1]}"
+            cid="${BASH_REMATCH[2]}"
+            location="${BASH_REMATCH[3]}"
+            comment="${BASH_REMATCH[4]}"
+            
+            echo -e "${YELLOW}@$user${NC} on ${BLUE}$location${NC} (ID: $cid)"
+            echo "$comment" | sed 's/^/  /'
+            echo ""
+        else
+            echo "$line"
+            echo ""
+        fi
+    done
 fi
 
 # Summary (skip in compact mode)
 if [[ "$COMPACT_MODE" != "true" ]]; then
     REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
-    ISSUE_COUNT=$(echo "$ISSUE_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
     
     echo -e "${BLUE}---${NC}"
-    echo -e "${BLUE}Summary: $REVIEW_COUNT code review comment(s), $ISSUE_COUNT general comment(s)${NC}"
+    echo -e "${BLUE}Summary: $REVIEW_COUNT resolvable code review comment(s)${NC}"
 fi
 
 # Provide hint for resolving comments (skip in compact or raw mode)
 if [[ "$COMPACT_MODE" != "true" ]] && [[ "$RAW_MODE" != "true" ]]; then
-    if [[ "$REVIEW_COUNT" -gt 0 ]] || [[ "$ISSUE_COUNT" -gt 0 ]]; then
+    if [[ "$REVIEW_COUNT" -gt 0 ]]; then
         echo ""
-        echo -e "${YELLOW}Tip: To reply to a comment, use:${NC}"
-        echo "  gh pr comment $PR_NUMBER --body 'Your reply here'"
-        echo "  gh pr review $PR_NUMBER --comment --body 'Your review comment'"
+        echo -e "${YELLOW}Tips:${NC}"
+        echo "  • View in browser: gh pr view $PR_NUMBER --web"
+        echo "  • Reply to comment: gh pr review $PR_NUMBER --comment --body 'Your reply'"
+        echo "  • Mark as resolved: Use GitHub web interface"
     fi
 fi
