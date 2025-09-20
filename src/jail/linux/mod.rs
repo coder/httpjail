@@ -218,24 +218,40 @@ impl LinuxJail {
         let host_ip = format_ip(self.host_ip);
 
         // Commands to run inside the namespace
+        // Each is a tuple of (use_ip_netns, command_args)
         let commands = vec![
-            // Bring up loopback
-            vec!["ip", "link", "set", "lo", "up"],
-            // Enable route_localnet to allow DNAT on loopback (needed for DNS redirection)
-            vec!["sysctl", "-w", "net.ipv4.conf.all.route_localnet=1"],
-            vec!["sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1"],
+            // Bring up loopback (using ip netns exec ip ...)
+            (true, vec!["ip", "link", "set", "lo", "up"]),
+            // Enable route_localnet to allow DNAT on loopback (using ip netns exec sysctl ...)
+            (
+                false,
+                vec!["sysctl", "-w", "net.ipv4.conf.all.route_localnet=1"],
+            ),
+            (
+                false,
+                vec!["sysctl", "-w", "net.ipv4.conf.lo.route_localnet=1"],
+            ),
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
-            vec!["ip", "link", "set", &veth_ns, "up"],
+            (
+                true,
+                vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
+            ),
+            (true, vec!["ip", "link", "set", &veth_ns, "up"]),
             // Add default route pointing to host
-            vec!["ip", "route", "add", "default", "via", &host_ip],
+            (true, vec!["ip", "route", "add", "default", "via", &host_ip]),
         ];
 
-        for cmd_args in commands {
+        for (use_ip_prefix, cmd_args) in commands {
             let mut cmd = Command::new("ip");
             cmd.args(["netns", "exec", &namespace_name]);
-            // First element is the actual command to run in the namespace
-            cmd.args(&cmd_args);
+            // Add the actual command to run in the namespace
+            if !use_ip_prefix {
+                // For non-ip commands like sysctl, add them directly
+                cmd.args(&cmd_args);
+            } else {
+                // For ip commands, the args already include "ip" at the start
+                cmd.args(&cmd_args);
+            }
 
             let output = cmd.output().context(format!(
                 "Failed to execute: ip netns exec {} {:?}",
