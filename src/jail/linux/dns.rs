@@ -117,12 +117,12 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
     response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
 
     // Copy all questions from the query to the response
-    for question in query.questions() {
+    for question in &query.questions {
         response.questions.push(question.clone());
     }
 
     // For each question, add a dummy A record response
-    for question in query.questions() {
+    for question in &query.questions {
         // Only respond to A record queries (TYPE 1)
         // But we'll respond to all queries with an A record anyway
         // to prevent any DNS exfiltration attempts
