@@ -74,13 +74,13 @@ fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
             Ok((size, src)) => {
                 debug!("Received DNS query from {}: {} bytes", src, size);
 
-                if size >= 12 {
-                    if let Ok(response) = build_dummy_response(&buf[..size]) {
-                        if let Err(e) = socket.send_to(&response, src) {
-                            warn!("Failed to send DNS response to {}: {}", src, e);
-                        } else {
-                            debug!("Sent dummy DNS response to {}", src);
-                        }
+                if size >= 12
+                    && let Ok(response) = build_dummy_response(&buf[..size])
+                {
+                    if let Err(e) = socket.send_to(&response, src) {
+                        warn!("Failed to send DNS response to {}: {}", src, e);
+                    } else {
+                        debug!("Sent dummy DNS response to {}", src);
                     }
                 }
             }
