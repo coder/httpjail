@@ -73,10 +73,10 @@ impl V8JsRuleEngine {
         key: &str,
         value: &str,
     ) {
-        if let Some(key_str) = v8::String::new(context_scope, key) {
-            if let Some(val_str) = v8::String::new(context_scope, value) {
-                obj.set(context_scope, key_str.into(), val_str.into());
-            }
+        if let Some(key_str) = v8::String::new(context_scope, key)
+            && let Some(val_str) = v8::String::new(context_scope, value)
+        {
+            obj.set(context_scope, key_str.into(), val_str.into());
         }
     }
 
