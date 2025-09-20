@@ -154,12 +154,12 @@ impl ScriptRuleEngine {
                     let response = response_line.trim();
                     debug!("Script response: {}", response);
 
-                    match response.to_lowercase().as_str() {
-                        "true" | "allow" | "1" => {
+                    match response {
+                        "true" => {
                             debug!("ALLOW: {} {} (script allowed)", method, url);
                             (true, None)
                         }
-                        "false" | "deny" | "0" => {
+                        "false" => {
                             debug!("DENY: {} {} (script denied)", method, url);
                             (false, None)
                         }
@@ -170,13 +170,11 @@ impl ScriptRuleEngine {
                             {
                                 let allowed = json_response
                                     .get("allow")
-                                    .or_else(|| json_response.get("allowed"))
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
 
                                 let message = json_response
                                     .get("message")
-                                    .or_else(|| json_response.get("reason"))
                                     .and_then(|v| v.as_str())
                                     .map(String::from);
 

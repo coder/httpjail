@@ -46,6 +46,8 @@ httpjail --request-log requests.log --js "true" -- npm install
 # Use custom script for request evaluation (line-based persistent process)
 httpjail --sh /path/to/filter.py -- ./my-app
 # Script receives JSON on stdin (one per line) and outputs allow/deny decisions
+# stdin  -> {"method": "GET", "url": "https://api.github.com", "host": "api.github.com", ...}
+# stdout -> true
 
 # Run as standalone proxy server (no command execution) and allow all
 httpjail --server --js "true"
@@ -208,7 +210,7 @@ All request information is available via the `r` object:
 
 ## Script-Based Evaluation
 
-The `--sh` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This is efficient as it keeps the process in memory and avoids spawn overhead.
+The `--sh` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This was chosen over process-per-request because it keeps the process in memory and avoids spawn overhead.
 
 ```bash
 # Use a Python script that processes line-by-line JSON
@@ -240,15 +242,9 @@ for line in sys.stdin:
   - `requester_ip` - IP address of the client
 
 - **Output**: One response per line, either:
-  - Simple: `"true"`, `"false"`, `"allow"`, `"deny"`, `"1"`, `"0"`
+  - Simple: `true` or `false` (matching JS boolean semantics)
   - JSON: `{"allow": true/false, "message": "optional context"}`
   - Any other output is treated as deny with the output as the message
-
-**Advantages:**
-- Process stays in memory, avoiding spawn overhead
-- Can maintain state between requests (e.g., rate limiting, caching)
-- Better performance for high-volume traffic
-- Supports languages with slow startup times (Python, Ruby, Node.js)
 
 > [!NOTE]
 > Make sure to flush stdout after each response in your script to ensure real-time processing!
