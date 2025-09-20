@@ -1,3 +1,4 @@
+mod dns;
 mod nftables;
 mod resources;
 
@@ -8,8 +9,10 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
+use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 // Linux namespace network configuration constants were previously fixed; the
@@ -64,6 +67,7 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
+    dns_server: Option<Arc<Mutex<DummyDnsServer>>>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -81,6 +85,7 @@ impl LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
+            dns_server: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -322,12 +327,13 @@ impl LinuxJail {
         let namespace_name = self.namespace_name();
         let host_ip = format_ip(self.host_ip);
 
-        // Create namespace-side nftables rules
-        let _table = nftables::NFTable::new_namespace_table(
+        // Create namespace-side nftables rules with DNS redirection
+        let _table = nftables::NFTable::new_namespace_table_with_dns(
             &namespace_name,
             &host_ip,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
+            5353, // DNS server port
         )?;
 
         // The table will be cleaned up automatically when it goes out of scope
@@ -431,18 +437,18 @@ impl LinuxJail {
         )?);
 
         // Write custom resolv.conf that will be bind-mounted into the namespace
-        // Use Google's public DNS servers which are reliable and always accessible
+        // Point to localhost where our dummy DNS server will run
         let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
         std::fs::write(
             &resolv_conf_path,
             "# Custom DNS for httpjail namespace\n\
-nameserver 8.8.8.8\n\
-nameserver 8.8.4.4\n",
+# Points to local dummy DNS server to prevent exfiltration\n\
+nameserver 127.0.0.1\n",
         )
         .context("Failed to write namespace-specific resolv.conf")?;
 
         info!(
-            "Created namespace-specific resolv.conf at {} with Google DNS servers",
+            "Created namespace-specific resolv.conf at {} pointing to local DNS server",
             resolv_conf_path
         );
 
@@ -572,6 +578,74 @@ nameserver 8.8.4.4\n",
 
         Ok(())
     }
+
+    /// Start the dummy DNS server in the namespace
+    fn start_dns_server(&mut self) -> Result<()> {
+        let namespace_name = self.namespace_name();
+
+        info!("Starting dummy DNS server in namespace {}", namespace_name);
+
+        // Create the DNS server
+        let mut dns_server = DummyDnsServer::new();
+
+        // We need to start the DNS server inside the namespace
+        // The server will bind to 127.0.0.1:53 inside the namespace
+        let ns_path = format!("/var/run/netns/{}", namespace_name);
+
+        // Use a thread to run the DNS server in the namespace context
+        let dns_server_arc = Arc::new(Mutex::new(dns_server));
+        let dns_server_clone = Arc::clone(&dns_server_arc);
+        let ns_name_clone = namespace_name.clone();
+
+        // Start DNS server in a separate thread that enters the namespace
+        std::thread::spawn(move || {
+            // Enter the network namespace
+            let output = Command::new("ip")
+                .args([
+                    "netns",
+                    "exec",
+                    &ns_name_clone,
+                    "sh",
+                    "-c",
+                    "exec 3<>/dev/tcp/127.0.0.1/53 2>/dev/null || echo 'port available'",
+                ])
+                .output();
+
+            // The DNS server will actually run in the host, but we'll redirect traffic to it
+            // For now, we'll start it on the host and use nftables to redirect
+        });
+
+        // Actually, let's simplify - start the DNS server on the host side
+        // and use nftables to redirect DNS traffic from the namespace
+        let mut dns_server = DummyDnsServer::new();
+
+        // Bind to the host IP on a high port, we'll redirect port 53 to it
+        let dns_bind_addr = format!("{}:5353", format_ip(self.host_ip));
+        dns_server.start(&dns_bind_addr)?;
+
+        info!("Started dummy DNS server on {}", dns_bind_addr);
+
+        self.dns_server = Some(Arc::new(Mutex::new(dns_server)));
+
+        Ok(())
+    }
+
+    /// Stop the DNS server
+    fn stop_dns_server(&mut self) {
+        if let Some(dns_server_arc) = self.dns_server.take() {
+            if let Ok(mut dns_server) = dns_server_arc.lock() {
+                dns_server.stop();
+                info!("Stopped dummy DNS server");
+            }
+        }
+    }
+}
+
+impl Drop for LinuxJail {
+    fn drop(&mut self) {
+        // Stop the DNS server if running
+        self.stop_dns_server();
+    }
 }
 
 impl Jail for LinuxJail {
@@ -594,6 +668,9 @@ impl Jail for LinuxJail {
 
         // Configure namespace networking after host side is ready
         self.configure_namespace_networking()?;
+
+        // Start the dummy DNS server in the namespace
+        self.start_dns_server()?;
 
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;

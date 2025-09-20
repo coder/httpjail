@@ -85,5 +85,11 @@ macro_rules! platform_tests {
         fn test_jail_dns_resolution() {
             system_integration::test_jail_dns_resolution::<$platform>();
         }
+
+        #[test]
+        #[::serial_test::serial]
+        fn test_dns_exfiltration_prevention() {
+            system_integration::test_dns_exfiltration_prevention::<$platform>();
+        }
     };
 }
