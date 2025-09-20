@@ -175,6 +175,11 @@ To find comment IDs, use:
 ```
 
 **Best Practices for Replies:**
+- **IMPORTANT**: Push your commits to the remote branch BEFORE replying with commit hashes. GitHub needs the commits to be on the remote to create clickable links.
+  ```bash
+  git push origin branch-name  # Push commits first
+  ./scripts/reply-to-comment.sh CID "Fixed in abc123"  # Then reply
+  ```
 - Always include the commit hash that fixes the issue (e.g., "Fixed in a5813f3")
 - If the commit includes multiple unrelated changes, include a diff snippet showing just the relevant fix:
   ```
