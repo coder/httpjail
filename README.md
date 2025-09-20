@@ -129,6 +129,32 @@ httpjail includes built-in protection against DNS exfiltration attacks. In isola
 
 This approach blocks DNS tunneling while maintaining full HTTP/HTTPS functionality through transparent proxy redirection.
 
+```mermaid
+sequenceDiagram
+    participant J as Jailed Process
+    participant S as Jail Server
+    participant I as Internet
+    
+    Note over J,I: DNS Exfiltration Attempt
+    J->>S: DNS Query: secret-data.attacker.com
+    S-->>J: Response: 6.6.6.6 (dummy)
+    Note over S,I: ❌ Query never reaches Internet
+    
+    Note over J,I: Normal HTTP Request Flow
+    J->>S: HTTP GET http://example.com
+    Note over S: Rule evaluation: allowed?
+    alt Rule allows (r.host === 'example.com')
+        S->>I: Forward HTTP request
+        I-->>S: HTTP response
+        S-->>J: Forward response
+    else Rule denies
+        S-->>J: 403 Forbidden
+        Note over S,I: ❌ Request blocked
+    end
+```
+
+The diagram shows how DNS queries are always answered locally with a dummy IP (6.6.6.6), preventing any data from reaching external DNS servers. Meanwhile, HTTP/HTTPS traffic is evaluated by rules and only forwarded to the Internet if explicitly allowed.
+
 ## Prerequisites
 
 ### Linux
