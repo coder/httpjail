@@ -131,6 +131,49 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 ./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify PR and repo explicitly
 ```
 
+### PR Review Scripts
+
+Two helper scripts are available for managing GitHub PR code review comments:
+
+#### Getting PR Comments
+
+```bash
+# Get all resolvable code review comments for the current PR
+./scripts/get-pr-comments.sh
+
+# Get raw output (useful for extracting comment IDs)
+./scripts/get-pr-comments.sh --raw
+
+# Get compact output (one line per comment)
+./scripts/get-pr-comments.sh --compact
+
+# Get comments for a specific PR
+./scripts/get-pr-comments.sh 54
+```
+
+The script shows comments with line numbers in the format:
+```
+username [CID=12345678] path/to/file.rs#L42: Comment text
+```
+
+#### Replying to PR Comments
+
+```bash
+# Reply to a specific comment (auto-prefixes with "Claude Code:")
+./scripts/reply-to-comment.sh <COMMENT_ID> <MESSAGE>
+
+# Examples:
+./scripts/reply-to-comment.sh 2365688250 "Fixed in commit abc123"
+./scripts/reply-to-comment.sh 2365688250 "Thanks for the feedback - addressed this issue"
+```
+
+To find comment IDs, use:
+```bash
+./scripts/get-pr-comments.sh --raw | grep CID
+```
+
+**Note:** The reply script automatically prefixes all messages with "Claude Code:" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
+
 ### Manual Testing on CI
 
 ```bash
