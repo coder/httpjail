@@ -81,9 +81,23 @@ macro_rules! platform_tests {
         }
 
         #[test]
-        #[::serial_test::serial]
         fn test_jail_dns_resolution() {
             system_integration::test_jail_dns_resolution::<$platform>();
+        }
+
+        #[test]
+        fn test_dns_exfiltration_prevention() {
+            system_integration::test_dns_exfiltration_prevention::<$platform>();
+        }
+
+        #[test]
+        fn test_public_dns_blocked() {
+            system_integration::test_public_dns_blocked::<$platform>();
+        }
+
+        #[test]
+        fn test_non_http_tcp_services_blocked() {
+            system_integration::test_non_http_tcp_services_blocked::<$platform>();
         }
     };
 }

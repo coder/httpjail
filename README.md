@@ -20,6 +20,7 @@ Or download a pre-built binary from the [releases page](https://github.com/coder
 
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
+- 🛡️ **DNS exfiltration protection** - Prevents data leakage through DNS queries
 - 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
 - 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine
 - 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
@@ -71,7 +72,7 @@ httpjail creates an isolated network environment for the target process, interce
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
 │  2. Setup nftables rules                        │
-│  3. Start embedded proxy                        │
+│  3. Start embedded proxy + DNS server           │
 │  4. Export CA trust env vars                    │
 │  5. Execute target process in namespace         │
 └─────────────────────────────────────────────────┘
@@ -80,6 +81,7 @@ httpjail creates an isolated network environment for the target process, interce
 │              Target Process                     │
 │  • Isolated in network namespace                │
 │  • All HTTP/HTTPS → local proxy                 │
+│  • All DNS queries → dummy resolver (6.6.6.6)   │
 │  • CA cert trusted via env vars                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -114,6 +116,50 @@ httpjail creates an isolated network environment for the target process, interce
 | TLS interception  | ✅ Transparent MITM + env CA | ✅ Env variables            | 🚧 Cert store |
 | Sudo required     | ⚠️ Yes                       | ✅ No                       | 🚧            |
 | Force all traffic | ✅ Yes                       | ❌ No (apps must cooperate) | 🚧            |
+
+## DNS Exfiltration Protection
+
+httpjail includes built-in protection against DNS exfiltration attacks. In isolated environments (Linux strong mode), all DNS queries are intercepted and answered with a dummy response (6.6.6.6), preventing data leakage through DNS subdomain encoding.
+
+**Attack Prevention**: Without this protection, malicious code could exfiltrate sensitive data (environment variables, secrets, etc.) by encoding it in DNS queries like `secret-data.attacker.com`. Our dummy DNS server ensures:
+
+1. All DNS queries receive the same response (6.6.6.6)
+2. External DNS servers (1.1.1.1, 8.8.8.8) cannot be reached
+3. HTTP/HTTPS traffic still works as it's redirected through our proxy
+4. No actual DNS resolution occurs, preventing data leakage
+
+This approach blocks DNS tunneling while maintaining full HTTP/HTTPS functionality through transparent proxy redirection.
+
+```mermaid
+sequenceDiagram
+    participant J as Jailed Process
+    participant S as Jail Server
+    participant D as Public DNS Resolvers
+    
+    Note over J,D: DNS Exfiltration Attempt
+    J->>S: DNS Query: secret-data.attacker.com
+    S-->>J: Response: 6.6.6.6 (dummy)
+    Note over S,D: ❌ Query never reaches public resolvers
+    
+    Note over J,D: Blocked HTTP Flow
+    J->>S: HTTP GET http://blocked.com
+    Note over S: Rule evaluation: denied
+    S-->>J: 403 Forbidden
+    Note over S,D: ❌ No DNS resolution needed
+    
+    Note over J,D: Allowed HTTP Flow
+    J->>S: HTTP GET http://example.com
+    Note over S: Rule evaluation: allowed
+    S->>D: DNS Query: example.com (only if needed)
+    D-->>S: Real IP address
+    S->>S: Forward to upstream server
+    S-->>J: HTTP response
+```
+
+The diagram illustrates three key scenarios:
+1. **DNS Exfiltration Prevention**: All DNS queries from the jailed process receive a dummy response (6.6.6.6), never reaching public resolvers
+2. **Blocked HTTP Traffic**: Requests to denied domains are rejected without any DNS resolution
+3. **Allowed HTTP Traffic**: Only when rules permit, the server performs actual DNS resolution and forwards the request
 
 ## Prerequisites
 

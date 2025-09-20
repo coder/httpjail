@@ -30,58 +30,46 @@ impl NFTable {
         // Generate the ruleset for host-side NAT, forwarding, and input acceptance
         let ruleset = format!(
             r#"
-table ip {} {{
+table ip {table_name} {{
     chain prerouting {{
         type filter hook prerouting priority -150; policy accept;
-        iifname "{}" accept comment "httpjail_{} prerouting"
+        iifname "{veth_host}" accept comment "httpjail_{jail_id} prerouting"
     }}
     
     chain postrouting {{
         type nat hook postrouting priority 100; policy accept;
-        ip saddr {} masquerade comment "httpjail_{}"
+        ip saddr {subnet_cidr} masquerade comment "httpjail_{jail_id}"
     }}
     
     chain forward {{
         type filter hook forward priority -100; policy accept;
-        ip saddr {} accept comment "httpjail_{} out"
-        ip daddr {} accept comment "httpjail_{} in"
+        ip saddr {subnet_cidr} accept comment "httpjail_{jail_id} out"
+        ip daddr {subnet_cidr} accept comment "httpjail_{jail_id} in"
     }}
     
     chain input {{
         type filter hook input priority -100; policy accept;
-        iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
-        iifname "{}" udp dport 53 accept comment "httpjail_{} dns"
-        iifname "{}" accept comment "httpjail_{} all"
+        iifname "{veth_host}" tcp dport {{ {http_port}, {https_port} }} accept comment "httpjail_{jail_id} proxy"
+        iifname "{veth_host}" udp dport 53 accept comment "httpjail_{jail_id} dns"
+        iifname "{veth_host}" accept comment "httpjail_{jail_id} all"
     }}
     
     chain output {{
         type filter hook output priority -100; policy accept;
-        oifname "{}" accept comment "httpjail_{} out"
+        oifname "{veth_host}" accept comment "httpjail_{jail_id} out"
     }}
 }}
 "#,
-            table_name,
-            veth_host,
-            jail_id,
-            subnet_cidr,
-            jail_id,
-            subnet_cidr,
-            jail_id,
-            subnet_cidr,
-            jail_id,
-            veth_host,
-            http_port,
-            https_port,
-            jail_id,
-            veth_host,
-            jail_id,
-            veth_host,
-            jail_id,
-            veth_host,
-            jail_id
+            table_name = table_name,
+            veth_host = veth_host,
+            jail_id = jail_id,
+            subnet_cidr = subnet_cidr,
+            http_port = http_port,
+            https_port = https_port,
         );
 
         debug!("Creating nftables table: {}", table_name);
+        debug!("Ruleset placeholders count check - ensuring format args match");
 
         // Apply the ruleset atomically
         use std::io::Write;
@@ -122,31 +110,28 @@ table ip {} {{
     }
 
     /// Create namespace-side nftables rules for traffic redirection and egress filtering
-    pub fn new_namespace_table(
+    pub fn new_namespace_table_with_dns(
         namespace: &str,
         host_ip: &str,
         http_port: u16,
         https_port: u16,
+        _dns_port: u16, // No longer needed but kept for compatibility
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
         // Generate the ruleset for namespace-side DNAT + FILTER
         let ruleset = format!(
             r#"
-table ip {} {{
+table ip {table_name} {{
     # NAT output chain: redirect HTTP/HTTPS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
 
-        # Skip DNS traffic from NAT processing
-        udp dport 53 return
-        tcp dport 53 return
-
         # Redirect HTTP to proxy running on host
-        tcp dport 80 dnat to {}:{}
+        tcp dport 80 dnat to {host_ip}:{http_port}
 
         # Redirect HTTPS to proxy running on host
-        tcp dport 443 dnat to {}:{}
+        tcp dport 443 dnat to {host_ip}:{https_port}
     }}
 
     # FILTER output chain: block non-HTTP/HTTPS egress
@@ -156,19 +141,26 @@ table ip {} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS to anywhere
-        udp dport 53 accept
-        tcp dport 53 accept
-
-        # Explicitly block all other UDP (e.g., QUIC on 443)
-        ip protocol udp drop
+        # Allow DNS traffic directly to the host (UDP only)
+        ip daddr {host_ip} udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
-        ip daddr {} tcp dport {{ {}, {} }} accept
+        ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
+
+        # Explicitly block all other UDP (e.g., QUIC on 443)
+        # This must come AFTER allowing DNS traffic
+        ip protocol udp drop
+        
+        # Explicitly block all other TCP traffic
+        # This must come AFTER allowing HTTP/HTTPS traffic
+        ip protocol tcp drop
     }}
 }}
 "#,
-            table_name, host_ip, http_port, host_ip, https_port, host_ip, http_port, https_port
+            table_name = table_name,
+            host_ip = host_ip,
+            http_port = http_port,
+            https_port = https_port,
         );
 
         debug!(
