@@ -731,3 +731,47 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
         );
     }
 }
+
+/// Test that attempts to use public DNS servers are blocked
+pub fn test_public_dns_blocked<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Try to use Cloudflare's public DNS (1.1.1.1) directly
+    // This should fail as all outbound DNS traffic should be blocked
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--js")
+        .arg("true")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("dig @1.1.1.1 +short +timeout=2 google.com 2>&1 || echo 'PUBLIC_DNS_BLOCKED'");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] Public DNS test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] Public DNS test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // The query to 1.1.1.1 should fail - either timeout or show blocked
+    assert!(
+        stdout.contains("PUBLIC_DNS_BLOCKED")
+            || stdout.contains("timed out")
+            || stdout.contains("no servers could be reached")
+            || stdout.contains("6.6.6.6")
+            || stderr.contains("timed out")
+            || stderr.contains("no servers could be reached"),
+        "[{}] Expected public DNS (1.1.1.1) to be blocked, but got stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout,
+        stderr
+    );
+}

@@ -51,7 +51,6 @@ table ip {} {{
         type filter hook input priority -100; policy accept;
         iifname "{}" tcp dport {{ {}, {} }} accept comment "httpjail_{} proxy"
         iifname "{}" udp dport 53 accept comment "httpjail_{} dns"
-        iifname "{}" tcp dport 53 accept comment "httpjail_{} dns tcp"
         iifname "{}" accept comment "httpjail_{} all"
     }}
     
@@ -73,8 +72,6 @@ table ip {} {{
             veth_host,
             http_port,
             https_port,
-            jail_id,
-            veth_host,
             jail_id,
             veth_host,
             jail_id,
@@ -157,9 +154,8 @@ table ip {} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic directly to the host (no DNAT needed)
+        # Allow DNS traffic directly to the host (UDP only)
         ip daddr {} udp dport 53 accept
-        ip daddr {} tcp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {} tcp dport {{ {}, {} }} accept
@@ -175,8 +171,7 @@ table ip {} {{
             http_port, // HTTP redirect
             host_ip,
             https_port, // HTTPS redirect
-            host_ip,    // Allow DNS to host IP
-            host_ip,    // Allow DNS to host IP
+            host_ip,    // Allow DNS to host IP (UDP only)
             host_ip,
             http_port,
             https_port // Allow HTTP/HTTPS to host
