@@ -334,7 +334,7 @@ impl LinuxJail {
             &host_ip,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
-            5353, // DNS server port
+            53, // DNS server port (unused but kept for API compatibility)
         )?;
 
         // The table will be cleaned up automatically when it goes out of scope
@@ -513,7 +513,10 @@ nameserver {}\n",
             .join(format!("httpjail_resolv_{}.conf", &namespace_name))
             .to_string_lossy()
             .to_string();
-        std::fs::write(&temp_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        // Use the host veth IP where our dummy DNS server listens
+        let host_ip = format_ip(self.host_ip);
+        let dns_content = format!("nameserver {}\n", host_ip);
+        std::fs::write(&temp_resolv, &dns_content)
             .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
 
         // First, try to directly write to /etc/resolv.conf in the namespace using echo
@@ -524,7 +527,7 @@ nameserver {}\n",
                 &namespace_name,
                 "sh",
                 "-c",
-                "echo -e 'nameserver 8.8.8.8\\nnameserver 8.8.4.4\\nnameserver 1.1.1.1' > /etc/resolv.conf",
+                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
             ])
             .output();
 
