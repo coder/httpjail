@@ -173,7 +173,7 @@ mod tests {
         // Check that the answer contains our dummy IP
         if let Some(answer) = response.answers.first() {
             if let RData::A(ip) = &answer.rdata {
-                assert_eq!(ip.address, DUMMY_IPV4);
+                assert_eq!(Ipv4Addr::from(ip.address), DUMMY_IPV4);
             } else {
                 panic!("Expected A record in response");
             }
