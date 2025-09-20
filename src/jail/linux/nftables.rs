@@ -163,6 +163,10 @@ table ip {} {{
         # Explicitly block all other UDP (e.g., QUIC on 443)
         # This must come AFTER allowing DNS traffic
         ip protocol udp drop
+        
+        # Explicitly block all other TCP traffic
+        # This must come AFTER allowing HTTP/HTTPS traffic
+        ip protocol tcp drop
     }}
 }}
 "#,
