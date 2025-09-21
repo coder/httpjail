@@ -417,19 +417,41 @@ impl LinuxJail {
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
     fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
-        // With transparent DNS redirect, we no longer need to modify resolv.conf.
-        // DNS queries will be intercepted at the nftables level regardless of
-        // what nameserver is configured in resolv.conf.
+        let namespace_name = self.namespace_name();
 
-        // Create namespace config resource for cleanup tracking
+        // We still need to handle systemd-resolved's 127.0.0.53 because
+        // nftables DNAT doesn't work properly for localhost destinations.
+        // However, with transparent redirect, we can use ANY non-localhost
+        // nameserver - it will all get redirected to our DNS proxy anyway.
+
+        info!(
+            "Setting up namespace {} for transparent DNS redirect",
+            namespace_name
+        );
+
+        // Ensure /etc/netns directory exists
+        let netns_dir = "/etc/netns";
+        if !std::path::Path::new(netns_dir).exists() {
+            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
+            debug!("Created /etc/netns directory");
+        }
+
+        // Create namespace config resource
         self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
             &self.config.jail_id,
         )?);
 
-        info!(
-            "Namespace {} will use transparent DNS redirect on port 53",
-            self.namespace_name()
-        );
+        // Write a minimal resolv.conf that just avoids localhost
+        // We use 8.8.8.8 but it will be redirected to our DNS proxy anyway
+        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
+        let resolv_conf_content = "# Transparent DNS redirect - actual server doesn't matter\n\
+             # Using non-localhost to avoid nftables DNAT limitations\n\
+             nameserver 8.8.8.8\n";
+
+        std::fs::write(&resolv_conf_path, resolv_conf_content)
+            .context("Failed to write namespace-specific resolv.conf")?;
+
+        info!("Created namespace resolv.conf for transparent DNS redirect",);
 
         Ok(())
     }

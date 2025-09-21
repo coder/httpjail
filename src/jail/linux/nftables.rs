@@ -130,6 +130,7 @@ table ip {table_name} {{
         type nat hook output priority -100; policy accept;
 
         # Redirect DNS to proxy running on host (transparent DNS intercept)
+        # This catches ALL UDP port 53 traffic including to localhost (127.0.0.53)
         udp dport 53 dnat to {host_ip}:{dns_port}
 
         # Redirect HTTP to proxy running on host
