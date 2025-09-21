@@ -334,7 +334,7 @@ impl LinuxJail {
             &host_ip,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
-            53, // DNS server port (unused but kept for API compatibility)
+            self.config.dns_proxy_port,
         )?;
 
         // The table will be cleaned up automatically when it goes out of scope
@@ -356,6 +356,7 @@ impl LinuxJail {
                 &self.subnet_cidr,
                 self.config.http_proxy_port,
                 self.config.https_proxy_port,
+                self.config.dns_proxy_port,
             )?;
             table_wrapper.set_table(table);
 
@@ -416,173 +417,31 @@ impl LinuxJail {
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
     fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
-        let namespace_name = self.namespace_name();
+        // With transparent DNS redirect, we no longer need to modify resolv.conf.
+        // DNS queries will be intercepted at the nftables level regardless of
+        // what nameserver is configured in resolv.conf.
 
-        // Always create namespace config resource and custom resolv.conf
-        // This ensures DNS works in all environments, not just systemd-resolved
-        info!(
-            "Setting up DNS for namespace {} with custom resolv.conf",
-            namespace_name
-        );
-
-        // Ensure /etc/netns directory exists
-        let netns_dir = "/etc/netns";
-        if !std::path::Path::new(netns_dir).exists() {
-            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
-            debug!("Created /etc/netns directory");
-        }
-
-        // Create namespace config resource
+        // Create namespace config resource for cleanup tracking
         self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
             &self.config.jail_id,
         )?);
 
-        // Write custom resolv.conf that will be bind-mounted into the namespace
-        // Point directly to the host's veth IP where our DNS server listens
-        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-        let host_ip = format_ip(self.host_ip);
-        let resolv_conf_content = format!(
-            "# Custom DNS for httpjail namespace\n\
-# Points to dummy DNS server on host to prevent exfiltration\n\
-nameserver {}\n",
-            host_ip
-        );
-        std::fs::write(&resolv_conf_path, &resolv_conf_content)
-            .context("Failed to write namespace-specific resolv.conf")?;
-
         info!(
-            "Created namespace-specific resolv.conf at {} pointing to local DNS server",
-            resolv_conf_path
+            "Namespace {} will use transparent DNS redirect on port 53",
+            self.namespace_name()
         );
-
-        // Verify the file was created
-        if !std::path::Path::new(&resolv_conf_path).exists() {
-            anyhow::bail!("Failed to create resolv.conf at {}", resolv_conf_path);
-        }
 
         Ok(())
     }
 
-    /// Ensure DNS works in the namespace by copying resolv.conf if needed
-    #[allow(clippy::collapsible_if)]
+    /// With transparent DNS redirect, we no longer need to ensure specific DNS configuration.
+    /// All DNS queries on port 53 will be intercepted regardless of resolv.conf contents.
     fn ensure_namespace_dns(&self) -> Result<()> {
-        let namespace_name = self.namespace_name();
-
-        // Check if DNS is already working by testing /etc/resolv.conf in namespace
-        let check_cmd = Command::new("ip")
-            .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
-            .output();
-
-        let needs_fix = if let Ok(output) = check_cmd {
-            if !output.status.success() {
-                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
-                true
-            } else {
-                let content = String::from_utf8_lossy(&output.stdout);
-                // Check if it's pointing to systemd-resolved or is empty
-                if content.is_empty() || content.contains("127.0.0.53") {
-                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
-                    true
-                } else if content.contains("nameserver") {
-                    info!("DNS already configured in namespace {}", namespace_name);
-                    false
-                } else {
-                    info!("No nameserver found in namespace resolv.conf, will fix");
-                    true
-                }
-            }
-        } else {
-            info!("Failed to check DNS in namespace, will attempt fix");
-            true
-        };
-
-        if !needs_fix {
-            return Ok(());
-        }
-
-        // DNS not working, try to fix it by copying a working resolv.conf
-        info!(
-            "Fixing DNS in namespace {} by copying resolv.conf",
-            namespace_name
+        // No action needed - DNS is handled via transparent redirect
+        debug!(
+            "DNS configuration not needed for {} - using transparent redirect on port 53",
+            self.namespace_name()
         );
-
-        // Setup DNS for the namespace
-        // Create a temporary resolv.conf before running the nsenter command
-        let temp_dir = crate::jail::get_temp_dir();
-        std::fs::create_dir_all(&temp_dir).ok();
-        let temp_resolv = temp_dir
-            .join(format!("httpjail_resolv_{}.conf", &namespace_name))
-            .to_string_lossy()
-            .to_string();
-        // Use the host veth IP where our dummy DNS server listens
-        let host_ip = format_ip(self.host_ip);
-        let dns_content = format!("nameserver {}\n", host_ip);
-        std::fs::write(&temp_resolv, &dns_content)
-            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
-
-        // First, try to directly write to /etc/resolv.conf in the namespace using echo
-        let write_cmd = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "sh",
-                "-c",
-                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
-            ])
-            .output();
-
-        if let Ok(output) = write_cmd {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to write resolv.conf into namespace: {}", stderr);
-
-                // Try another approach - mount bind
-                let mount_cmd = Command::new("ip")
-                    .args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "mount",
-                        "--bind",
-                        &temp_resolv,
-                        "/etc/resolv.conf",
-                    ])
-                    .output();
-
-                if let Ok(mount_output) = mount_cmd {
-                    if mount_output.status.success() {
-                        info!("Successfully bind-mounted resolv.conf in namespace");
-                    } else {
-                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
-                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
-
-                        // Last resort - try copying the file content
-                        let cp_cmd = Command::new("cp")
-                            .args([
-                                &temp_resolv,
-                                &format!(
-                                    "/proc/self/root/etc/netns/{}/resolv.conf",
-                                    namespace_name
-                                ),
-                            ])
-                            .output();
-
-                        if let Ok(cp_output) = cp_cmd
-                            && cp_output.status.success()
-                        {
-                            info!("Successfully copied resolv.conf via /proc");
-                        }
-                    }
-                }
-            } else {
-                info!("Successfully wrote resolv.conf into namespace");
-            }
-        }
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_resolv);
-
         Ok(())
     }
 
@@ -595,8 +454,9 @@ nameserver {}\n",
         // Start the DNS server on the host side
         let mut dns_server = DummyDnsServer::new();
 
-        // Bind directly to port 53 on the host IP - no redirection needed
-        let dns_bind_addr = format!("{}:53", format_ip(self.host_ip));
+        // Bind to the configured DNS proxy port on the host IP
+        // Traffic from the namespace will be redirected to this port via nftables DNAT
+        let dns_bind_addr = format!("{}:{}", format_ip(self.host_ip), self.config.dns_proxy_port);
         dns_server.start(&dns_bind_addr)?;
 
         info!("Started dummy DNS server on {}", dns_bind_addr);
@@ -655,10 +515,11 @@ impl Jail for LinuxJail {
         self.setup_namespace_nftables()?;
 
         info!(
-            "Linux jail setup complete using namespace {} with HTTP proxy on port {} and HTTPS proxy on port {}",
+            "Linux jail setup complete using namespace {} with HTTP proxy on port {}, HTTPS proxy on port {}, and DNS transparent redirect on port {}",
             self.namespace_name(),
             self.config.http_proxy_port,
-            self.config.https_proxy_port
+            self.config.https_proxy_port,
+            self.config.dns_proxy_port
         );
         Ok(())
     }
