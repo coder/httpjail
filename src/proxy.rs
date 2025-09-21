@@ -96,6 +96,13 @@ pub fn prepare_upstream_request(
         );
     }
 
+    // TODO: Future improvement - Use the type system to ensure security guarantees
+    // We should eventually refactor this to use types that guarantee all request
+    // information passed to upstream has been validated by the RuleEngine.
+    // For example, we could have a `ValidatedRequest` type that can only be
+    // constructed after passing through rule evaluation, making it impossible
+    // to accidentally forward unvalidated or modified headers to the upstream.
+
     // Convert incoming body to boxed body
     let boxed_request_body = incoming_body.boxed();
 
