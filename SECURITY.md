@@ -4,7 +4,7 @@
 
 **Most security issues** should be reported directly on our [issue tracker](https://github.com/coder/httpjail/issues). Given the early stage of this tool, we encourage clear and public disclosure to help the community stay informed and protected.
 
-**Particularly sensitive issues** that could lead to immediate exploitation should be reported privately to: `security@coder.com`
+**Particularly sensitive issues** (e.g. those that could lead to arbitrary code execution on the host) should be reported privately to: `security@coder.com`
 
 ### Disclosure Preference
 
