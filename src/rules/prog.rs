@@ -11,7 +11,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
-pub struct ScriptRuleEngine {
+pub struct ProgRuleEngine {
     script: String,
     process: Arc<Mutex<Option<ScriptProcess>>>,
 }
@@ -22,9 +22,9 @@ struct ScriptProcess {
     stdout: BufReader<ChildStdout>,
 }
 
-impl ScriptRuleEngine {
+impl ProgRuleEngine {
     pub fn new(script: String) -> Self {
-        ScriptRuleEngine {
+        ProgRuleEngine {
             script,
             process: Arc::new(Mutex::new(None)),
         }
@@ -211,7 +211,7 @@ impl ScriptRuleEngine {
 }
 
 #[async_trait]
-impl RuleEngineTrait for ScriptRuleEngine {
+impl RuleEngineTrait for ProgRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
         let (allowed, context) = self.execute_script(method.clone(), url, requester_ip).await;
 
@@ -235,7 +235,7 @@ impl RuleEngineTrait for ScriptRuleEngine {
     }
 }
 
-impl Drop for ScriptRuleEngine {
+impl Drop for ProgRuleEngine {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.process.try_lock()
             && let Some(ref mut process_state) = *guard
@@ -274,7 +274,7 @@ done
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProgRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -321,7 +321,7 @@ for line in sys.stdin:
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProgRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
@@ -369,7 +369,7 @@ for line in sys.stdin:
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProgRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -418,7 +418,7 @@ done
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProgRuleEngine::new(script_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
