@@ -23,6 +23,7 @@ impl NFTable {
         subnet_cidr: &str,
         http_port: u16,
         https_port: u16,
+        dns_port: u16,
     ) -> Result<Self> {
         let table_name = format!("httpjail_{}", jail_id);
         let veth_host = format!("vh_{}", jail_id);
@@ -50,7 +51,7 @@ table ip {table_name} {{
     chain input {{
         type filter hook input priority -100; policy accept;
         iifname "{veth_host}" tcp dport {{ {http_port}, {https_port} }} accept comment "httpjail_{jail_id} proxy"
-        iifname "{veth_host}" udp dport 53 accept comment "httpjail_{jail_id} dns"
+        iifname "{veth_host}" udp dport {dns_port} accept comment "httpjail_{jail_id} dns"
         iifname "{veth_host}" accept comment "httpjail_{jail_id} all"
     }}
     
@@ -66,6 +67,7 @@ table ip {table_name} {{
             subnet_cidr = subnet_cidr,
             http_port = http_port,
             https_port = https_port,
+            dns_port = dns_port,
         );
 
         debug!("Creating nftables table: {}", table_name);
@@ -115,7 +117,7 @@ table ip {table_name} {{
         host_ip: &str,
         http_port: u16,
         https_port: u16,
-        _dns_port: u16, // No longer needed but kept for compatibility
+        dns_port: u16,
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
@@ -123,9 +125,12 @@ table ip {table_name} {{
         let ruleset = format!(
             r#"
 table ip {table_name} {{
-    # NAT output chain: redirect HTTP/HTTPS to host proxy
+    # NAT output chain: redirect HTTP/HTTPS/DNS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
+
+        # Redirect DNS to proxy running on host (transparent DNS intercept)
+        udp dport 53 dnat to {host_ip}:{dns_port}
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -134,15 +139,15 @@ table ip {table_name} {{
         tcp dport 443 dnat to {host_ip}:{https_port}
     }}
 
-    # FILTER output chain: block non-HTTP/HTTPS egress
+    # FILTER output chain: block non-HTTP/HTTPS/DNS egress
     chain outfilter {{
         type filter hook output priority 0; policy drop;
 
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic directly to the host (UDP only)
-        ip daddr {host_ip} udp dport 53 accept
+        # Allow DNS traffic to the host proxy port after DNAT
+        ip daddr {host_ip} udp dport {dns_port} accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
@@ -161,6 +166,7 @@ table ip {table_name} {{
             host_ip = host_ip,
             http_port = http_port,
             https_port = https_port,
+            dns_port = dns_port,
         );
 
         debug!(
