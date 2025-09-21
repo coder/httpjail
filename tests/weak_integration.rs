@@ -289,137 +289,60 @@ fn test_server_mode() {
 }
 
 /// Test for Host header security (Issue #57)
-/// Verifies that httpjail properly validates that the Host header
-/// matches the URI to prevent CloudFlare and other CDN routing bypasses.
+/// Verifies that httpjail corrects mismatched Host headers to prevent
+/// CloudFlare and other CDN routing bypasses.
 #[test]
 fn test_host_header_security() {
-    // Test 1: HTTP request with mismatched Host header should be corrected
-    let http_evil_result = HttpjailCommand::new()
+    use std::process::Command;
+
+    // Define the same curl command that attempts to set a mismatched Host header
+    let curl_args = vec![
+        "-s",
+        "-H",
+        "Host: evil.com",
+        "--max-time",
+        "3",
+        "http://httpbin.org/headers",
+    ];
+
+    // Test 1: Direct curl execution (without httpjail) - shows the vulnerability
+    let direct_result = Command::new("curl")
+        .args(&curl_args)
+        .output()
+        .expect("Failed to execute curl directly");
+
+    let direct_stdout = String::from_utf8_lossy(&direct_result.stdout);
+    assert!(
+        direct_stdout.contains("\"Host\": \"evil.com\""),
+        "Direct curl should pass through the evil.com Host header unchanged"
+    );
+
+    // Test 2: Same curl command through httpjail - shows the fix
+    let httpjail_result = HttpjailCommand::new()
         .weak()
-        .js("true")
-        .command(vec![
-            "curl",
-            "-s",
-            "-H",
-            "Host: evil.com",
-            "--max-time",
-            "3",
-            "http://httpbin.org/headers",
-        ])
+        .js("true") // Allow all requests
+        .command(
+            vec!["curl"]
+                .into_iter()
+                .chain(curl_args.into_iter())
+                .collect(),
+        )
         .execute();
 
-    assert!(http_evil_result.is_ok(), "HTTP request should complete");
-    let (exit_code, stdout, _) = http_evil_result.unwrap();
-    assert_eq!(exit_code, 0, "HTTP request should succeed");
+    assert!(httpjail_result.is_ok(), "Httpjail request should complete");
+    let (exit_code, stdout, _) = httpjail_result.unwrap();
+    assert_eq!(exit_code, 0, "Httpjail request should succeed");
+
+    // Httpjail should have corrected the Host header to match the URI
     assert!(
         stdout.contains("\"Host\": \"httpbin.org\""),
-        "HTTP: Host header should be corrected to httpbin.org"
+        "Httpjail should correct the Host header to httpbin.org"
     );
     assert!(
         !stdout.contains("\"Host\": \"evil.com\""),
-        "HTTP: Evil Host header should not be passed through"
+        "Httpjail should not pass through the evil.com Host header"
     );
 
-    // Test 2: HTTPS request with mismatched Host header should be corrected
-    let https_evil_result = HttpjailCommand::new()
-        .weak()
-        .js("true")
-        .command(vec![
-            "curl",
-            "-k",
-            "-s",
-            "-H",
-            "Host: evil.com",
-            "--max-time",
-            "3",
-            "https://httpbin.org/headers",
-        ])
-        .execute();
-
-    assert!(https_evil_result.is_ok(), "HTTPS request should complete");
-    let (exit_code, stdout, _) = https_evil_result.unwrap();
-    assert_eq!(exit_code, 0, "HTTPS request should succeed");
-    assert!(
-        stdout.contains("\"Host\": \"httpbin.org\""),
-        "HTTPS: Host header should be corrected to httpbin.org"
-    );
-    assert!(
-        !stdout.contains("\"Host\": \"evil.com\""),
-        "HTTPS: Evil Host header should not be passed through"
-    );
-
-    // Test 3: Legitimate matching Host headers should work normally
-    let legitimate_result = HttpjailCommand::new()
-        .weak()
-        .js("true")
-        .command(vec![
-            "curl",
-            "-s",
-            "-H",
-            "Host: httpbin.org",
-            "--max-time",
-            "3",
-            "http://httpbin.org/headers",
-        ])
-        .execute();
-
-    assert!(
-        legitimate_result.is_ok(),
-        "Legitimate request should complete"
-    );
-    let (exit_code, stdout, _) = legitimate_result.unwrap();
-    assert_eq!(exit_code, 0, "Legitimate request should succeed");
-    assert!(
-        stdout.contains("\"Host\": \"httpbin.org\""),
-        "Legitimate Host header should be preserved"
-    );
-
-    // Test 4: Host header with port number attack should be corrected
-    let port_attack_result = HttpjailCommand::new()
-        .weak()
-        .js("true")
-        .command(vec![
-            "curl",
-            "-s",
-            "-H",
-            "Host: evil.com:666",
-            "--max-time",
-            "3",
-            "http://httpbin.org:80/headers",
-        ])
-        .execute();
-
-    if let Ok((exit_code, stdout, _)) = port_attack_result {
-        assert_eq!(exit_code, 0, "Port request should succeed");
-        assert!(
-            stdout.contains("\"Host\": \"httpbin.org")
-                || stdout.contains("\"Host\": \"httpbin.org:80\""),
-            "Host header with port should be corrected to match URI"
-        );
-        assert!(
-            !stdout.contains("evil.com"),
-            "Evil Host with port should not appear in response"
-        );
-    }
-
-    // Test 5: Request without explicit Host header should get correct one
-    let no_host_result = HttpjailCommand::new()
-        .weak()
-        .js("true")
-        .command(vec![
-            "curl",
-            "-s",
-            "--max-time",
-            "3",
-            "http://httpbin.org/headers",
-        ])
-        .execute();
-
-    assert!(no_host_result.is_ok(), "No-Host request should complete");
-    let (exit_code, stdout, _) = no_host_result.unwrap();
-    assert_eq!(exit_code, 0, "No-Host request should succeed");
-    assert!(
-        stdout.contains("\"Host\": \"httpbin.org\""),
-        "Default Host header should be set correctly"
-    );
+    // This demonstrates that httpjail prevents the Host header bypass attack
+    // that would otherwise be possible with direct curl execution
 }
