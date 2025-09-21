@@ -287,3 +287,139 @@ fn test_server_mode() {
     let _ = server.kill();
     let _ = server.wait();
 }
+
+/// Test for Host header security (Issue #57)
+/// Verifies that httpjail properly validates that the Host header
+/// matches the URI to prevent CloudFlare and other CDN routing bypasses.
+#[test]
+fn test_host_header_security() {
+    // Test 1: HTTP request with mismatched Host header should be corrected
+    let http_evil_result = HttpjailCommand::new()
+        .weak()
+        .js("true")
+        .command(vec![
+            "curl",
+            "-s",
+            "-H",
+            "Host: evil.com",
+            "--max-time",
+            "3",
+            "http://httpbin.org/headers",
+        ])
+        .execute();
+
+    assert!(http_evil_result.is_ok(), "HTTP request should complete");
+    let (exit_code, stdout, _) = http_evil_result.unwrap();
+    assert_eq!(exit_code, 0, "HTTP request should succeed");
+    assert!(
+        stdout.contains("\"Host\": \"httpbin.org\""),
+        "HTTP: Host header should be corrected to httpbin.org"
+    );
+    assert!(
+        !stdout.contains("\"Host\": \"evil.com\""),
+        "HTTP: Evil Host header should not be passed through"
+    );
+
+    // Test 2: HTTPS request with mismatched Host header should be corrected
+    let https_evil_result = HttpjailCommand::new()
+        .weak()
+        .js("true")
+        .command(vec![
+            "curl",
+            "-k",
+            "-s",
+            "-H",
+            "Host: evil.com",
+            "--max-time",
+            "3",
+            "https://httpbin.org/headers",
+        ])
+        .execute();
+
+    assert!(https_evil_result.is_ok(), "HTTPS request should complete");
+    let (exit_code, stdout, _) = https_evil_result.unwrap();
+    assert_eq!(exit_code, 0, "HTTPS request should succeed");
+    assert!(
+        stdout.contains("\"Host\": \"httpbin.org\""),
+        "HTTPS: Host header should be corrected to httpbin.org"
+    );
+    assert!(
+        !stdout.contains("\"Host\": \"evil.com\""),
+        "HTTPS: Evil Host header should not be passed through"
+    );
+
+    // Test 3: Legitimate matching Host headers should work normally
+    let legitimate_result = HttpjailCommand::new()
+        .weak()
+        .js("true")
+        .command(vec![
+            "curl",
+            "-s",
+            "-H",
+            "Host: httpbin.org",
+            "--max-time",
+            "3",
+            "http://httpbin.org/headers",
+        ])
+        .execute();
+
+    assert!(
+        legitimate_result.is_ok(),
+        "Legitimate request should complete"
+    );
+    let (exit_code, stdout, _) = legitimate_result.unwrap();
+    assert_eq!(exit_code, 0, "Legitimate request should succeed");
+    assert!(
+        stdout.contains("\"Host\": \"httpbin.org\""),
+        "Legitimate Host header should be preserved"
+    );
+
+    // Test 4: Host header with port number attack should be corrected
+    let port_attack_result = HttpjailCommand::new()
+        .weak()
+        .js("true")
+        .command(vec![
+            "curl",
+            "-s",
+            "-H",
+            "Host: evil.com:666",
+            "--max-time",
+            "3",
+            "http://httpbin.org:80/headers",
+        ])
+        .execute();
+
+    if let Ok((exit_code, stdout, _)) = port_attack_result {
+        assert_eq!(exit_code, 0, "Port request should succeed");
+        assert!(
+            stdout.contains("\"Host\": \"httpbin.org")
+                || stdout.contains("\"Host\": \"httpbin.org:80\""),
+            "Host header with port should be corrected to match URI"
+        );
+        assert!(
+            !stdout.contains("evil.com"),
+            "Evil Host with port should not appear in response"
+        );
+    }
+
+    // Test 5: Request without explicit Host header should get correct one
+    let no_host_result = HttpjailCommand::new()
+        .weak()
+        .js("true")
+        .command(vec![
+            "curl",
+            "-s",
+            "--max-time",
+            "3",
+            "http://httpbin.org/headers",
+        ])
+        .execute();
+
+    assert!(no_host_result.is_ok(), "No-Host request should complete");
+    let (exit_code, stdout, _) = no_host_result.unwrap();
+    assert_eq!(exit_code, 0, "No-Host request should succeed");
+    assert!(
+        stdout.contains("\"Host\": \"httpbin.org\""),
+        "Default Host header should be set correctly"
+    );
+}

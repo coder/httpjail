@@ -72,13 +72,29 @@ pub fn prepare_upstream_request(
     let (mut parts, incoming_body) = req.into_parts();
 
     // Update the URI
-    parts.uri = target_uri;
+    parts.uri = target_uri.clone();
 
     // Remove proxy-specific headers only
     // Don't remove connection-related headers as the client will handle them
     parts.headers.remove("proxy-connection");
     parts.headers.remove("proxy-authorization");
     parts.headers.remove("proxy-authenticate");
+
+    // SECURITY: Ensure the Host header matches the URI to prevent routing bypasses (Issue #57)
+    // This prevents attacks where an attacker sends a request to one domain but sets
+    // the Host header to another domain, potentially bypassing security controls in
+    // CDNs like CloudFlare that route based on the Host header.
+    if let Some(authority) = target_uri.authority() {
+        debug!(
+            "Setting Host header to match URI authority: {}",
+            authority.as_str()
+        );
+        parts.headers.insert(
+            hyper::header::HOST,
+            hyper::header::HeaderValue::from_str(authority.as_str())
+                .unwrap_or_else(|_| hyper::header::HeaderValue::from_static("unknown")),
+        );
+    }
 
     // Convert incoming body to boxed body
     let boxed_request_body = incoming_body.boxed();
