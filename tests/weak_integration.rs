@@ -321,12 +321,7 @@ fn test_host_header_security() {
     let httpjail_result = HttpjailCommand::new()
         .weak()
         .js("true") // Allow all requests
-        .command(
-            vec!["curl"]
-                .into_iter()
-                .chain(curl_args.into_iter())
-                .collect(),
-        )
+        .command(vec!["curl"].into_iter().chain(curl_args).collect())
         .execute();
 
     assert!(httpjail_result.is_ok(), "Httpjail request should complete");
