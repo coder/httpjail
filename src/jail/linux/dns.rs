@@ -254,33 +254,14 @@ impl ForkedDnsProcess {
 
     /// Stop the forked DNS server
     pub fn stop(&mut self) {
-        // Clean kill of the process if it's still running
         if let Some(pid) = self.child_pid.take() {
             use nix::sys::signal::{Signal, kill};
-            use nix::sys::wait::{WaitPidFlag, waitpid};
+            use nix::sys::wait::waitpid;
 
-            // Try graceful termination
-            let _ = kill(pid, Signal::SIGTERM);
-
-            // Wait briefly for clean exit
-            let start = std::time::Instant::now();
-            while start.elapsed() < std::time::Duration::from_millis(100) {
-                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(nix::sys::wait::WaitStatus::Exited(..))
-                    | Ok(nix::sys::wait::WaitStatus::Signaled(..)) => {
-                        info!("Stopped in-namespace DNS server");
-                        return;
-                    }
-                    _ => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                }
-            }
-
-            // Force kill if needed
+            // Just kill the process - it's only sleeping, nothing to clean up
             let _ = kill(pid, Signal::SIGKILL);
             let _ = waitpid(pid, None);
-            info!("Force-stopped in-namespace DNS server");
+            debug!("Stopped in-namespace DNS server (pid {})", pid);
         }
     }
 }
