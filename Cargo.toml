@@ -1,6 +1,6 @@
 [package]
 name = "httpjail"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "CC0-1.0"
 description = "Monitor and restrict HTTP/HTTPS requests from processes"
@@ -38,6 +38,7 @@ filetime = "0.2"
 ctrlc = "3.4"
 url = "2.5"
 v8 = "129"
+simple-dns = "0.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

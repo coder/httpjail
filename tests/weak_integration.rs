@@ -287,3 +287,57 @@ fn test_server_mode() {
     let _ = server.kill();
     let _ = server.wait();
 }
+
+/// Test for Host header security (Issue #57)
+/// Verifies that httpjail corrects mismatched Host headers to prevent
+/// CloudFlare and other CDN routing bypasses.
+#[test]
+fn test_host_header_security() {
+    use std::process::Command;
+
+    // Define the same curl command that attempts to set a mismatched Host header
+    let curl_args = vec![
+        "-s",
+        "-H",
+        "Host: evil.com",
+        "--max-time",
+        "3",
+        "http://httpbin.org/headers",
+    ];
+
+    // Test 1: Direct curl execution (without httpjail) - shows the vulnerability
+    let direct_result = Command::new("curl")
+        .args(&curl_args)
+        .output()
+        .expect("Failed to execute curl directly");
+
+    let direct_stdout = String::from_utf8_lossy(&direct_result.stdout);
+    assert!(
+        direct_stdout.contains("\"Host\": \"evil.com\""),
+        "Direct curl should pass through the evil.com Host header unchanged"
+    );
+
+    // Test 2: Same curl command through httpjail - shows the fix
+    let httpjail_result = HttpjailCommand::new()
+        .weak()
+        .js("true") // Allow all requests
+        .command(vec!["curl"].into_iter().chain(curl_args).collect())
+        .execute();
+
+    assert!(httpjail_result.is_ok(), "Httpjail request should complete");
+    let (exit_code, stdout, _) = httpjail_result.unwrap();
+    assert_eq!(exit_code, 0, "Httpjail request should succeed");
+
+    // Httpjail should have corrected the Host header to match the URI
+    assert!(
+        stdout.contains("\"Host\": \"httpbin.org\""),
+        "Httpjail should correct the Host header to httpbin.org"
+    );
+    assert!(
+        !stdout.contains("\"Host\": \"evil.com\""),
+        "Httpjail should not pass through the evil.com Host header"
+    );
+
+    // This demonstrates that httpjail prevents the Host header bypass attack
+    // that would otherwise be possible with direct curl execution
+}
