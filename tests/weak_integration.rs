@@ -292,7 +292,6 @@ fn test_server_mode() {
 /// Verifies that httpjail corrects mismatched Host headers to prevent
 /// CloudFlare and other CDN routing bypasses.
 #[test]
-#[ignore = "Depends on external httpbin.org service which may behave differently across environments"]
 fn test_host_header_security() {
     use std::process::Command;
 
