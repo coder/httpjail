@@ -515,7 +515,7 @@ impl LinuxJail {
                 info!("Started in-namespace DNS server (pid {})", pid);
                 Ok(())
             }
-            _ => bail!("Fork failed"),
+            _ => anyhow::bail!("Fork failed"),
         }
     }
 
