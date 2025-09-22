@@ -274,7 +274,9 @@ r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 - V8 engine provides fast JavaScript execution with minimal overhead
 - Fresh isolate creation per request ensures thread safety
 - JavaScript evaluation is significantly faster than shell script execution (--sh)
-- Line processor mode (--proc) can approach JavaScript performance for compiled languages, and future versions may support parallel instances and stateful caching
+- Line processor mode (--proc) should be considered the fastest mode.
+    - Stateful programs can use state such as caching
+    - We may parallelize this mode in the future
 
 > [!NOTE]
 > The evaluation flags `--js`, `--js-file`, `--sh`, and `--proc` are mutually exclusive. Only one evaluation method can be used at a time.
