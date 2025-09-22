@@ -19,9 +19,15 @@ pub struct ForkedDnsProcess {
     child_pid: Option<nix::unistd::Pid>,
 }
 
+impl Default for ForkedDnsProcess {
+    fn default() -> Self {
+        Self { child_pid: None }
+    }
+}
+
 impl ForkedDnsProcess {
     pub fn new() -> Self {
-        Self { child_pid: None }
+        Self::default()
     }
 
     /// Start a DNS server in a forked process within the specified namespace
@@ -60,7 +66,7 @@ impl ForkedDnsProcess {
                     .unwrap_or_else(|_| std::path::PathBuf::from("/proc/self/exe"));
 
                 let namespace_arg = format!("--__internal-dns-server={}", namespace_name);
-                let args = vec![exe_path.to_string_lossy().into_owned(), namespace_arg];
+                let args = [exe_path.to_string_lossy().into_owned(), namespace_arg];
 
                 // Convert args to C strings
                 let c_args: Vec<std::ffi::CString> = args
