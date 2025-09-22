@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use simple_dns::rdata::RData;
 use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord};
 use std::net::{Ipv4Addr, UdpSocket};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -139,6 +140,147 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
     response
         .build_bytes_vec()
         .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
+}
+
+/// A DNS server that runs in a forked process inside a network namespace
+pub struct NamespaceDnsServer {
+    /// PID of the forked DNS server process
+    dns_forwarder_pid: Option<libc::pid_t>,
+    /// File descriptor of the pipe used to signal shutdown
+    dns_cleanup_pipe: Option<RawFd>,
+}
+
+impl NamespaceDnsServer {
+    pub fn new() -> Self {
+        Self {
+            dns_forwarder_pid: None,
+            dns_cleanup_pipe: None,
+        }
+    }
+
+    /// Start a DNS server in a forked process within the specified namespace
+    pub fn start(&mut self, namespace_name: &str) -> Result<()> {
+        info!("Starting in-namespace DNS server for {}", namespace_name);
+
+        // Create pipe for cleanup detection
+        let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
+
+        match unsafe { libc::fork() } {
+            0 => {
+                // Child: Run DNS server in namespace
+                drop(write_fd);
+                let read_raw = read_fd.as_raw_fd();
+
+                // Die if parent dies
+                unsafe {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                    if libc::getppid() == 1 {
+                        libc::exit(1);
+                    }
+                }
+
+                // Enter the namespace
+                let ns_path = format!("/var/run/netns/{}", namespace_name);
+                let ns_fd = std::fs::File::open(&ns_path).unwrap_or_else(|e| {
+                    eprintln!("Failed to open namespace {}: {}", ns_path, e);
+                    std::process::exit(1);
+                });
+
+                let ret = unsafe { libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET) };
+                if ret != 0 {
+                    eprintln!("Failed to setns into {}", namespace_name);
+                    std::process::exit(1);
+                }
+
+                // Ensure loopback interface is up
+                std::process::Command::new("ip")
+                    .args(["link", "set", "lo", "up"])
+                    .output()
+                    .ok();
+
+                // Start DNS server on all interfaces (requires root for privileged port)
+                let mut server = DummyDnsServer::new();
+                if let Err(e) = server.start("0.0.0.0:53") {
+                    eprintln!("Failed to start DNS server: {}", e);
+                    std::process::exit(1);
+                }
+
+                // Drop privileges to nobody after binding
+                unsafe {
+                    libc::setgroups(0, std::ptr::null());
+                    libc::setgid(65534); // nogroup
+                    libc::setuid(65534); // nobody
+                }
+
+                info!("In-namespace DNS server listening on 0.0.0.0:53");
+
+                // Monitor parent lifecycle
+                loop {
+                    let mut buf = [0u8; 1];
+                    let n =
+                        unsafe { libc::read(read_raw, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+                    if n == 0 {
+                        // EOF - parent died
+                        std::process::exit(0);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            pid if pid > 0 => {
+                // Parent: Store cleanup info
+                drop(read_fd);
+                let write_raw = write_fd.as_raw_fd();
+                self.dns_forwarder_pid = Some(pid);
+                self.dns_cleanup_pipe = Some(write_raw);
+                // Keep write_fd alive by not dropping it
+                std::mem::forget(write_fd);
+
+                info!("Started in-namespace DNS server (pid {})", pid);
+                Ok(())
+            }
+            _ => anyhow::bail!("Fork failed"),
+        }
+    }
+
+    /// Stop the forked DNS server
+    pub fn stop(&mut self) {
+        // Close pipe to signal shutdown
+        if let Some(fd) = self.dns_cleanup_pipe.take() {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+
+        // Clean kill of the process
+        if let Some(pid) = self.dns_forwarder_pid.take() {
+            unsafe {
+                // Try graceful termination
+                libc::kill(pid, libc::SIGTERM);
+
+                // Wait briefly for clean exit
+                let start = std::time::Instant::now();
+                let mut status = 0;
+                while start.elapsed() < std::time::Duration::from_millis(100) {
+                    if libc::waitpid(pid, &mut status, libc::WNOHANG) == pid {
+                        info!("Stopped in-namespace DNS server");
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                // Force kill if needed
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+                info!("Force-stopped in-namespace DNS server");
+            }
+        }
+    }
+}
+
+impl Drop for NamespaceDnsServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[cfg(test)]
