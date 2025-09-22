@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use simple_dns::rdata::RData;
 use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord};
 use std::net::{Ipv4Addr, UdpSocket};
-use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
