@@ -13,9 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
-#[cfg(target_os = "linux")]
-use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
-
 #[derive(Parser, Debug)]
 #[command(name = "httpjail")]
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
@@ -375,21 +372,24 @@ fn run_namespace_dns_server(namespace_name: &str) -> Result<()> {
 fn build_dns_response(query: &[u8]) -> Result<Vec<u8>> {
     use std::net::Ipv4Addr;
 
-    let query_packet = Packet::parse(query)?;
-    let mut response = Packet::new_reply(query_packet.id());
+    let query_packet = simple_dns::Packet::parse(query)?;
+    let mut response = simple_dns::Packet::new_reply(query_packet.id());
 
     // Copy query flags
-    response.set_flags(PacketFlag::RESPONSE | PacketFlag::AUTHORITATIVE_ANSWER);
+    response
+        .set_flags(simple_dns::PacketFlag::RESPONSE | simple_dns::PacketFlag::AUTHORITATIVE_ANSWER);
     response.questions = query_packet.questions.clone();
 
     // Add dummy answer for all A record queries
     for question in &query_packet.questions {
-        if question.qtype == TYPE::A && question.qclass == CLASS::IN {
-            let mut answer = ResourceRecord::new(question.qname.clone());
-            answer.set_type(TYPE::A);
-            answer.set_class(CLASS::IN);
+        if question.qtype == simple_dns::TYPE::A && question.qclass == simple_dns::CLASS::IN {
+            let mut answer = simple_dns::ResourceRecord::new(question.qname.clone());
+            answer.set_type(simple_dns::TYPE::A);
+            answer.set_class(simple_dns::CLASS::IN);
             answer.set_ttl(300);
-            answer.set_data(RData::A(Ipv4Addr::new(6, 6, 6, 6).into()))?;
+            answer.set_data(simple_dns::rdata::RData::A(
+                Ipv4Addr::new(6, 6, 6, 6).into(),
+            ))?;
             response.answers.push(answer);
         }
     }
