@@ -71,16 +71,17 @@ httpjail creates an isolated network environment for the target process, interce
 ├─────────────────────────────────────────────────┤
 │  1. Create network namespace                    │
 │  2. Setup nftables rules                        │
-│  3. Start embedded proxy + DNS server           │
-│  4. Export CA trust env vars                    │
-│  5. Execute target process in namespace         │
+│  3. Fork DNS server into namespace              │
+│  4. Start HTTP/HTTPS proxy servers              │
+│  5. Export CA trust env vars                    │
+│  6. Execute target process in namespace         │
 └─────────────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────┐
 │              Target Process                     │
 │  • Isolated in network namespace                │
-│  • All HTTP/HTTPS → local proxy                 │
-│  • All DNS queries → dummy resolver (6.6.6.6)   │
+│  • All HTTP/HTTPS → proxy via nftables DNAT     │
+│  • All DNS queries → in-namespace DNS (6.6.6.6) │
 │  • CA cert trusted via env vars                 │
 └─────────────────────────────────────────────────┘
 ```
@@ -118,16 +119,40 @@ httpjail creates an isolated network environment for the target process, interce
 
 ## DNS Exfiltration Protection
 
-httpjail includes built-in protection against DNS exfiltration attacks. In isolated environments (Linux strong mode), all DNS queries are intercepted and answered with a dummy response (6.6.6.6), preventing data leakage through DNS subdomain encoding.
+httpjail provides comprehensive DNS exfiltration protection in Linux strong mode by intercepting all DNS queries and returning dummy responses, preventing data leakage through DNS subdomain encoding.
 
-**Attack Prevention**: Without this protection, malicious code could exfiltrate sensitive data (environment variables, secrets, etc.) by encoding it in DNS queries like `secret-data.attacker.com`. Our dummy DNS server ensures:
+### How It Works
 
-1. All DNS queries receive the same response (6.6.6.6)
-2. External DNS servers (1.1.1.1, 8.8.8.8) cannot be reached
-3. HTTP/HTTPS traffic still works as it's redirected through our proxy
-4. No actual DNS resolution occurs, preventing data leakage
+1. **Transparent Interception**: nftables rules redirect all UDP port 53 traffic to our in-namespace DNS server
+2. **Dummy Responses**: All DNS queries receive a fixed response (6.6.6.6), making DNS tunneling impossible
+3. **Process Isolation**: The DNS server runs in a dedicated forked process within the network namespace
+4. **Automatic Cleanup**: Uses Linux's `PR_SET_PDEATHSIG` to ensure DNS server terminates when parent dies
 
-This approach blocks DNS tunneling while maintaining full HTTP/HTTPS functionality through transparent proxy redirection.
+<details>
+<summary><b>Technical Implementation Details</b></summary>
+
+The DNS protection is implemented through a `ForkedDnsProcess` that manages a child process running inside the network namespace:
+
+```rust
+// Simplified architecture
+ForkedDnsProcess {
+    child_pid: Pid,  // Forked process running DummyDnsServer
+}
+```
+
+**Key Features:**
+- **Fork Safety**: Child process closes all inherited file descriptors (3-1024) to avoid tokio runtime issues
+- **Privilege Dropping**: After binding to port 53, drops to nobody:nogroup
+- **Automatic Termination**: `PR_SET_PDEATHSIG(SIGTERM)` ensures cleanup when parent dies
+- **Simple Protocol**: Returns 6.6.6.6 for all A record queries
+- **No External Dependencies**: Pure Rust implementation using `simple-dns` crate
+
+**Security Guarantees:**
+- External DNS servers (1.1.1.1, 8.8.8.8) cannot be reached
+- DNS-over-HTTPS/TLS attempts are blocked at the network level
+- All DNS exfiltration vectors are eliminated while maintaining HTTP/HTTPS functionality
+
+</details>
 
 ```mermaid
 sequenceDiagram
