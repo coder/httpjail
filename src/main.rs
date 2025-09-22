@@ -370,7 +370,7 @@ fn run_namespace_dns_server(namespace_name: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn build_dns_response(query: &[u8]) -> Result<Vec<u8>> {
-    use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, rdata::RData};
+    use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
     use std::net::Ipv4Addr;
 
     let query_packet = Packet::parse(query)?;
@@ -382,9 +382,9 @@ fn build_dns_response(query: &[u8]) -> Result<Vec<u8>> {
 
     // Add dummy answer for all A record queries
     for question in &query_packet.questions {
-        if question.qtype == simple_dns::TYPE::A && question.qclass == CLASS::IN {
+        if question.qtype == TYPE::A && question.qclass == CLASS::IN {
             let mut answer = ResourceRecord::new(question.qname.clone());
-            answer.set_type(simple_dns::TYPE::A);
+            answer.set_type(TYPE::A);
             answer.set_class(CLASS::IN);
             answer.set_ttl(300);
             answer.set_data(RData::A(Ipv4Addr::new(6, 6, 6, 6).into()))?;
