@@ -219,12 +219,19 @@ impl ForkedDnsProcess {
                     .output()
                     .ok();
 
-                // Start DNS server on all interfaces (requires root for privileged port)
-                let mut server = DummyDnsServer::new();
-                if let Err(e) = server.start("0.0.0.0:53") {
-                    eprintln!("Failed to start DNS server: {}", e);
-                    std::process::exit(1);
-                }
+                // Bind DNS socket before dropping privileges
+                let socket = match UdpSocket::bind("0.0.0.0:53") {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Failed to bind DNS server to 0.0.0.0:53: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Set read timeout to avoid blocking forever
+                socket
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .ok();
 
                 // Drop privileges to nobody after binding
                 let nobody_uid = nix::unistd::Uid::from_raw(65534);
@@ -234,14 +241,11 @@ impl ForkedDnsProcess {
                 nix::unistd::setgid(nogroup_gid).ok();
                 nix::unistd::setuid(nobody_uid).ok();
 
-                info!("In-namespace DNS server listening on 0.0.0.0:53");
-
-                // The DNS server runs forever. When parent dies, kernel sends SIGTERM
-                // due to PR_SET_PDEATHSIG, which terminates this process cleanly.
-                // IMPORTANT: Keep the server alive by not letting it go out of scope
-                let _server = server;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                // Run DNS server directly in this process
+                let shutdown = Arc::new(AtomicBool::new(false));
+                if let Err(e) = run_dns_server(socket, shutdown) {
+                    eprintln!("DNS server error: {}", e);
+                    std::process::exit(1);
                 }
             }
             ForkResult::Parent { child } => {
