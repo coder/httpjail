@@ -143,9 +143,16 @@ impl V8JsRuleEngine {
 
             // Get 'allow' property - if not present but deny_message exists, default to false
             let allow_key = v8::String::new(context_scope, "allow").unwrap();
-            let allow_value = obj.get(context_scope, allow_key.into());
-            let allowed = if allow_value.is_some() && !allow_value.unwrap().is_undefined() {
-                allow_value.unwrap().boolean_value(context_scope)
+            let allowed = if let Some(allow_value) = obj.get(context_scope, allow_key.into()) {
+                if !allow_value.is_undefined() {
+                    allow_value.boolean_value(context_scope)
+                } else if deny_message.is_some() {
+                    // Shorthand: if only deny_message is present, it implies allow: false
+                    false
+                } else {
+                    // Default to false if neither is properly set
+                    false
+                }
             } else if deny_message.is_some() {
                 // Shorthand: if only deny_message is present, it implies allow: false
                 false
