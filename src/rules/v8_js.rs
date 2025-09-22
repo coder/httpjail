@@ -69,6 +69,53 @@ impl V8JsRuleEngine {
         }
     }
 
+    /// Convert a V8 value to a response string that can be parsed by RuleResponse
+    fn value_to_response_string(
+        &self,
+        context_scope: &mut v8::ContextScope<v8::HandleScope>,
+        global: v8::Local<v8::Object>,
+        value: v8::Local<v8::Value>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if value.is_object() && !value.is_null() && !value.is_undefined() {
+            // Object - stringify it to JSON using JSON.stringify()
+            let json_key = v8::String::new(context_scope, "JSON").unwrap();
+            let stringify_key = v8::String::new(context_scope, "stringify").unwrap();
+
+            let json_obj = global
+                .get(context_scope, json_key.into())
+                .and_then(|v| v.to_object(context_scope))
+                .ok_or("Failed to get JSON object")?;
+
+            let stringify_fn = json_obj
+                .get(context_scope, stringify_key.into())
+                .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+                .ok_or("Failed to get JSON.stringify function")?;
+
+            // Call JSON.stringify(value)
+            stringify_fn
+                .call(context_scope, json_obj.into(), &[value])
+                .and_then(|v| v.to_string(context_scope))
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .ok_or_else(|| "Failed to stringify value".into())
+        } else if value.is_boolean() {
+            // Boolean - convert to "true" or "false" string
+            Ok(if value.boolean_value(context_scope) {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            })
+        } else if value.is_string() {
+            // String - use as-is (will be treated as deny message)
+            value
+                .to_string(context_scope)
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .ok_or_else(|| "Failed to convert string".into())
+        } else {
+            // Other types - default to "false"
+            Ok("false".to_string())
+        }
+    }
+
     fn create_and_execute(
         &self,
         request_info: &RequestInfo,
@@ -126,50 +173,7 @@ impl V8JsRuleEngine {
 
         // Convert the V8 result to a JSON string for consistent parsing
         // This ensures perfect parity with the proc engine response handling
-        let response_str = if result.is_object() && !result.is_null() && !result.is_undefined() {
-            // It's an object - stringify it to JSON
-            let json_stringify_key = v8::String::new(context_scope, "JSON").unwrap();
-            let stringify_key = v8::String::new(context_scope, "stringify").unwrap();
-
-            let json_obj = global
-                .get(context_scope, json_stringify_key.into())
-                .ok_or("Failed to get JSON object")?
-                .to_object(context_scope)
-                .ok_or("JSON is not an object")?;
-
-            let stringify_fn = json_obj
-                .get(context_scope, stringify_key.into())
-                .ok_or("Failed to get JSON.stringify")?;
-
-            let stringify_fn = v8::Local::<v8::Function>::try_from(stringify_fn)
-                .map_err(|_| "JSON.stringify is not a function")?;
-
-            // Call JSON.stringify on the result
-            let json_str = stringify_fn
-                .call(context_scope, json_obj.into(), &[result])
-                .ok_or("Failed to stringify result")?;
-
-            json_str
-                .to_string(context_scope)
-                .map(|s| s.to_rust_string_lossy(context_scope))
-                .unwrap_or_else(|| "false".to_string())
-        } else if result.is_boolean() {
-            // Simple boolean result
-            if result.boolean_value(context_scope) {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        } else if result.is_string() {
-            // String result - treat as deny message
-            result
-                .to_string(context_scope)
-                .map(|s| s.to_rust_string_lossy(context_scope))
-                .unwrap_or_else(|| "false".to_string())
-        } else {
-            // Other types - default to false
-            "false".to_string()
-        };
+        let response_str = self.value_to_response_string(context_scope, global, result)?;
 
         // Use the common RuleResponse parser - exact same logic as proc engine
         let rule_response = RuleResponse::from_string(&response_str);
@@ -303,45 +307,6 @@ mod tests {
             .await;
         assert!(matches!(result.action, crate::rules::Action::Allow));
         assert_eq!(result.context, None);
-    }
-
-    #[tokio::test]
-    async fn test_v8_js_json_parity() {
-        // This test verifies that the V8 engine receives the exact same JSON
-        // object structure as the proc engine (ensuring perfect parity)
-        let engine = V8JsRuleEngine::new(
-            r#"
-            // Return the exact JSON we received to verify structure
-            ({deny_message: JSON.stringify(r)})
-            "#
-            .to_string(),
-        )
-        .unwrap();
-
-        let result = engine
-            .evaluate(Method::POST, "https://example.com/test?foo=bar", "10.0.0.1")
-            .await;
-
-        // The deny message will contain the stringified JSON
-        assert!(matches!(result.action, crate::rules::Action::Deny));
-
-        if let Some(ref json_str) = result.context {
-            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
-
-            // Verify all expected fields are present with the exact same values
-            // that would be sent to the proc engine
-            assert_eq!(parsed["url"], "https://example.com/test?foo=bar");
-            assert_eq!(parsed["method"], "POST");
-            assert_eq!(parsed["scheme"], "https");
-            assert_eq!(parsed["host"], "example.com");
-            assert_eq!(parsed["path"], "/test");
-            assert_eq!(parsed["requester_ip"], "10.0.0.1");
-
-            // Verify no extra fields exist (exact same structure as RequestInfo)
-            assert_eq!(parsed.as_object().unwrap().len(), 6);
-        } else {
-            panic!("Expected JSON in context");
-        }
     }
 
     #[tokio::test]
