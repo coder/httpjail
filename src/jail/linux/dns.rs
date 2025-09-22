@@ -176,16 +176,17 @@ fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
     // Add dummy answer for all A record queries
     for question in &query_packet.questions {
         if question.qtype == QTYPE::TYPE(TYPE::A) && question.qclass == QCLASS::CLASS(CLASS::IN) {
-            let mut answer = ResourceRecord::new(question.qname.clone());
-            answer.set_type(TYPE::A);
-            answer.set_class(CLASS::IN);
-            answer.set_ttl(300);
-            answer.set_data(RData::A(DUMMY_IPV4.into()))?;
+            let answer = ResourceRecord::new(
+                question.qname.clone(),
+                CLASS::IN,
+                300, // TTL
+                RData::A(DUMMY_IPV4.into()),
+            );
             response.answers.push(answer);
         }
     }
 
-    Ok(response.build()?)
+    Ok(response.build_bytes_vec()?)
 }
 
 #[cfg(test)]
@@ -206,7 +207,8 @@ mod tests {
         ));
 
         // Build the response
-        let response_packet = build_dummy_response(query.clone()).unwrap();
+        let query_bytes = query.build_bytes_vec().unwrap();
+        let response_packet = build_dummy_response(&query_bytes).unwrap();
 
         // Parse the response back
         let response = Packet::parse(&response_packet).unwrap();
