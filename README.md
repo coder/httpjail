@@ -205,6 +205,27 @@ Use the config:
 httpjail --js-file rules.js -- ./my-application
 ```
 
+## Shell Script Mode (--sh)
+
+The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
+
+```bash
+# Use a shell script for request evaluation
+httpjail --sh "./allow-github.sh" -- curl https://github.com
+
+# Example shell script (allow-github.sh):
+#!/bin/sh
+# Environment variables available:
+# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+
+if [ "$HTTPJAIL_HOST" = "github.com" ]; then
+    exit 0  # Allow
+else
+    echo "Blocked: not github.com"
+    exit 1  # Deny (stdout becomes error message)
+fi
+```
+
 ## JavaScript (V8) Evaluation
 
 httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
@@ -329,47 +350,8 @@ for line in sys.stdin:
 > [!NOTE]
 > Make sure to flush stdout after each response in your script to ensure real-time processing!
 
-## Shell Script Mode (--sh)
 
-The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
 
-```bash
-# Use a shell script for request evaluation
-httpjail --sh "./allow-github.sh" -- curl https://github.com
-
-# Example shell script (allow-github.sh):
-#!/bin/sh
-# Environment variables available:
-# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-
-if [ "$HTTPJAIL_HOST" = "github.com" ]; then
-    exit 0  # Allow
-else
-    echo "Blocked: not github.com"
-    exit 1  # Deny (stdout becomes error message)
-fi
-```
-
-> [!TIP]
-> Line Processor Mode can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails while maintaining high performance.
-
-## Advanced Options
-
-```bash
-# Verbose logging
-httpjail -vvv --js "true" -- curl https://example.com
-
-# Server mode - run as standalone proxy without executing commands
-httpjail --server --js "true"
-# Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
-
-# Server mode with custom ports (format: port or ip:port)
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
-# Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
-
-# Bind to specific interface
-HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "true"
-```
 
 ## Server Mode
 
