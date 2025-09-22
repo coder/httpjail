@@ -12,20 +12,20 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 pub struct ProcRuleEngine {
-    script: String,
-    process: Arc<Mutex<Option<ScriptProcess>>>,
+    program: String,
+    process: Arc<Mutex<Option<ProcessState>>>,
 }
 
-struct ScriptProcess {
+struct ProcessState {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
 
 impl ProcRuleEngine {
-    pub fn new(script: String) -> Self {
+    pub fn new(program: String) -> Self {
         ProcRuleEngine {
-            script,
+            program,
             process: Arc::new(Mutex::new(None)),
         }
     }
@@ -37,7 +37,7 @@ impl ProcRuleEngine {
             match process_state.child.try_wait() {
                 Ok(Some(status)) => {
                     warn!(
-                        "Script process exited with status: {:?}, restarting",
+                        "Program process exited with status: {:?}, restarting",
                         status
                     );
                     *process_guard = None;
@@ -53,15 +53,9 @@ impl ProcRuleEngine {
         }
 
         if process_guard.is_none() {
-            debug!("Starting script process: {}", self.script);
+            debug!("Starting program process: {}", self.program);
 
-            let mut cmd = if self.script.contains(' ') {
-                let mut cmd = Command::new("sh");
-                cmd.arg("-c").arg(&self.script);
-                cmd
-            } else {
-                Command::new(&self.script)
-            };
+            let mut cmd = Command::new(&self.program);
 
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -70,7 +64,7 @@ impl ProcRuleEngine {
 
             let mut child = cmd
                 .spawn()
-                .map_err(|e| format!("Failed to spawn script: {}", e))?;
+                .map_err(|e| format!("Failed to spawn program: {}", e))?;
 
             let stdin = child
                 .stdin
@@ -81,7 +75,7 @@ impl ProcRuleEngine {
                 .take()
                 .ok_or_else(|| "Failed to get stdout handle".to_string())?;
 
-            *process_guard = Some(ScriptProcess {
+            *process_guard = Some(ProcessState {
                 child,
                 stdin,
                 stdout: BufReader::new(stdout),
@@ -91,7 +85,7 @@ impl ProcRuleEngine {
         Ok(())
     }
 
-    async fn execute_script(
+    async fn execute_program(
         &self,
         method: Method,
         url: &str,
@@ -107,19 +101,19 @@ impl ProcRuleEngine {
 
         if let Err(e) = self.ensure_process_running().await {
             error!("Failed to ensure process is running: {}", e);
-            return (false, Some("Script evaluation failed".to_string()));
+            return (false, Some("Program evaluation failed".to_string()));
         }
 
         let json_request = match serde_json::to_string(&request_info) {
             Ok(json) => json,
             Err(e) => {
                 error!("Failed to serialize request: {}", e);
-                return (false, Some("Script evaluation failed".to_string()));
+                return (false, Some("Program evaluation failed".to_string()));
             }
         };
 
         debug!(
-            "Sending request to script for {} {} from {}",
+            "Sending request to program for {} {} from {}",
             method, url, requester_ip
         );
 
@@ -129,15 +123,15 @@ impl ProcRuleEngine {
             request_line.push('\n');
 
             if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
-                error!("Failed to write to script stdin: {}", e);
+                error!("Failed to write to program stdin: {}", e);
                 *process_guard = None;
-                return (false, Some("Script evaluation failed".to_string()));
+                return (false, Some("Program evaluation failed".to_string()));
             }
 
             if let Err(e) = process_state.stdin.flush().await {
                 error!("Failed to flush stdin: {}", e);
                 *process_guard = None;
-                return (false, Some("Script evaluation failed".to_string()));
+                return (false, Some("Program evaluation failed".to_string()));
             }
 
             let timeout = Duration::from_secs(5);
@@ -146,21 +140,21 @@ impl ProcRuleEngine {
                 .await
             {
                 Ok(Ok(0)) => {
-                    warn!("Script closed stdout unexpectedly");
+                    warn!("Program closed stdout unexpectedly");
                     *process_guard = None;
-                    (false, Some("Script closed unexpectedly".to_string()))
+                    (false, Some("Program closed unexpectedly".to_string()))
                 }
                 Ok(Ok(_)) => {
                     let response = response_line.trim();
-                    debug!("Script response: {}", response);
+                    debug!("Program response: {}", response);
 
                     match response {
                         "true" => {
-                            debug!("ALLOW: {} {} (script allowed)", method, url);
+                            debug!("ALLOW: {} {} (program allowed)", method, url);
                             (true, None)
                         }
                         "false" => {
-                            debug!("DENY: {} {} (script denied)", method, url);
+                            debug!("DENY: {} {} (program denied)", method, url);
                             (false, None)
                         }
                         _ => {
@@ -185,33 +179,33 @@ impl ProcRuleEngine {
                                 };
 
                                 if allowed {
-                                    debug!("ALLOW: {} {} (script allowed via JSON)", method, url);
+                                    debug!("ALLOW: {} {} (program allowed via JSON)", method, url);
                                     (allowed, None) // No message when allowing
                                 } else {
-                                    debug!("DENY: {} {} (script denied via JSON)", method, url);
+                                    debug!("DENY: {} {} (program denied via JSON)", method, url);
                                     (allowed, deny_message)
                                 }
                             } else {
                                 // Not JSON, treat the output as a deny message
-                                debug!("DENY: {} {} (script returned: {})", method, url, response);
+                                debug!("DENY: {} {} (program returned: {})", method, url, response);
                                 (false, Some(response.to_string()))
                             }
                         }
                     }
                 }
                 Ok(Err(e)) => {
-                    error!("Error reading from script: {}", e);
+                    error!("Error reading from program: {}", e);
                     *process_guard = None;
-                    (false, Some("Script evaluation failed".to_string()))
+                    (false, Some("Program evaluation failed".to_string()))
                 }
                 Err(_) => {
-                    warn!("Script response timeout after {:?}", timeout);
+                    warn!("Program response timeout after {:?}", timeout);
                     *process_guard = None;
-                    (false, Some("Script response timeout".to_string()))
+                    (false, Some("Program response timeout".to_string()))
                 }
             }
         } else {
-            (false, Some("Script process not available".to_string()))
+            (false, Some("Program process not available".to_string()))
         }
     }
 }
@@ -219,7 +213,9 @@ impl ProcRuleEngine {
 #[async_trait]
 impl RuleEngineTrait for ProcRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
-        let (allowed, context) = self.execute_script(method.clone(), url, requester_ip).await;
+        let (allowed, context) = self
+            .execute_program(method.clone(), url, requester_ip)
+            .await;
 
         if allowed {
             let mut result = EvaluationResult::allow();
@@ -237,7 +233,7 @@ impl RuleEngineTrait for ProcRuleEngine {
     }
 
     fn name(&self) -> &str {
-        "script"
+        "proc"
     }
 }
 
@@ -260,27 +256,27 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[tokio::test]
-    async fn test_line_based_script_simple_true() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/bash
+    async fn test_line_based_program_simple_true() {
+        let mut program_file = NamedTempFile::new().unwrap();
+        let program = r#"#!/bin/bash
 while IFS= read -r line; do
     echo "true"
 done
 "#;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
+        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.flush().unwrap();
 
-        let script_path = script_file.into_temp_path();
+        let program_path = program_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            let mut perms = fs::metadata(&program_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
+            fs::set_permissions(&program_path, perms).unwrap();
         }
 
-        let engine = ProcRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -292,13 +288,13 @@ done
             .await;
         assert!(matches!(result.action, Action::Allow));
 
-        drop(script_path);
+        drop(program_path);
     }
 
     #[tokio::test]
-    async fn test_line_based_script_json_filter() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/usr/bin/env python3
+    async fn test_line_based_program_json_filter() {
+        let mut program_file = NamedTempFile::new().unwrap();
+        let program = r#"#!/usr/bin/env python3
 import json
 import sys
 
@@ -314,20 +310,20 @@ for line in sys.stdin:
         print('false')
         sys.stdout.flush()
 "#;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
+        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.flush().unwrap();
 
-        let script_path = script_file.into_temp_path();
+        let program_path = program_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            let mut perms = fs::metadata(&program_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
+            fs::set_permissions(&program_path, perms).unwrap();
         }
 
-        let engine = ProcRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
@@ -339,13 +335,13 @@ for line in sys.stdin:
             .await;
         assert!(matches!(result.action, Action::Deny));
 
-        drop(script_path);
+        drop(program_path);
     }
 
     #[tokio::test]
-    async fn test_line_based_script_json_response() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/usr/bin/env python3
+    async fn test_line_based_program_json_response() {
+        let mut program_file = NamedTempFile::new().unwrap();
+        let program = r#"#!/usr/bin/env python3
 import json
 import sys
 
@@ -362,20 +358,20 @@ for line in sys.stdin:
         print(json.dumps({'allow': False, 'deny_message': str(e)}))
         sys.stdout.flush()
 "#;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
+        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.flush().unwrap();
 
-        let script_path = script_file.into_temp_path();
+        let program_path = program_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            let mut perms = fs::metadata(&program_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
+            fs::set_permissions(&program_path, perms).unwrap();
         }
 
-        let engine = ProcRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
@@ -392,13 +388,13 @@ for line in sys.stdin:
             Some("Host blocked.com is blocked".to_string())
         );
 
-        drop(script_path);
+        drop(program_path);
     }
 
     #[tokio::test]
-    async fn test_line_based_script_reuses_process() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/bash
+    async fn test_line_based_program_reuses_process() {
+        let mut program_file = NamedTempFile::new().unwrap();
+        let program = r#"#!/bin/bash
 counter=0
 while IFS= read -r line; do
     counter=$((counter + 1))
@@ -411,20 +407,20 @@ while IFS= read -r line; do
     fi
 done
 "#;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
+        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.flush().unwrap();
 
-        let script_path = script_file.into_temp_path();
+        let program_path = program_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            let mut perms = fs::metadata(&program_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
+            fs::set_permissions(&program_path, perms).unwrap();
         }
 
-        let engine = ProcRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
             .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
@@ -441,14 +437,14 @@ done
             .await;
         assert!(matches!(result.action, Action::Allow));
 
-        drop(script_path);
+        drop(program_path);
     }
 
     #[tokio::test]
-    async fn test_line_based_script_restart_on_exit() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        // Script that exits after handling 2 requests
-        let script = r#"#!/usr/bin/env python3
+    async fn test_line_based_program_restart_on_exit() {
+        let mut program_file = NamedTempFile::new().unwrap();
+        // Program that exits after handling 2 requests
+        let program = r#"#!/usr/bin/env python3
 import json
 import sys
 
@@ -474,20 +470,20 @@ for line in sys.stdin:
         print(json.dumps(response))
         sys.stdout.flush()
 "#;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
+        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.flush().unwrap();
 
-        let script_path = script_file.into_temp_path();
+        let program_path = program_file.into_temp_path();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            let mut perms = fs::metadata(&program_path).unwrap().permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
+            fs::set_permissions(&program_path, perms).unwrap();
         }
 
-        let engine = ProcRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         // First request - should be allowed
         let result = engine
@@ -530,7 +526,7 @@ for line in sys.stdin:
                 .is_some_and(|c| c.contains("Request 2 denied"))
         );
 
-        drop(script_path);
+        drop(program_path);
     }
 
     // Note: This test verifies that when a process crashes unexpectedly,
