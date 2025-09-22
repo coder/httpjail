@@ -389,7 +389,7 @@ impl LinuxJail {
 impl Drop for LinuxJail {
     fn drop(&mut self) {
         // The DNS server will be automatically stopped when dns_server is dropped
-        // due to NamespaceDnsServer's Drop implementation
+        // due to ForkedDnsProcess's Drop implementation
     }
 }
 
@@ -538,6 +538,30 @@ impl Jail for LinuxJail {
         Self: Sized,
     {
         debug!("Cleaning up orphaned Linux jail: {}", jail_id);
+
+        // Kill any orphaned DNS server processes
+        // The DNS server runs as nobody (uid 65534) and we can identify it by checking
+        // for processes in the namespace that are listening on port 53
+        let namespace_name = format!("httpjail_{}", jail_id);
+        let output = Command::new("ip")
+            .args(["netns", "pids", &namespace_name])
+            .output()
+            .ok();
+
+        if let Some(output) = output {
+            if output.status.success() {
+                let pids = String::from_utf8_lossy(&output.stdout);
+                for pid_str in pids.lines() {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        // Try to kill the process (it might be the DNS server)
+                        unsafe {
+                            libc::kill(pid, libc::SIGTERM);
+                        }
+                        debug!("Killed process {} in namespace {}", pid, namespace_name);
+                    }
+                }
+            }
+        }
 
         // Create managed resources for existing system resources
         // When these go out of scope, they will clean themselves up

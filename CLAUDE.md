@@ -132,6 +132,51 @@ on both targets.
 
 After modifying code, run `cargo fmt` to ensure consistent formatting before committing changes.
 
+## System Resource Cleanup
+
+**CRITICAL: All global system resources MUST be properly cleaned up to prevent resource leaks.**
+
+### Linux System Resources
+
+The following system resources are created for each jail and MUST be cleaned up:
+
+1. **Network Namespace** (`NetworkNamespace`) - `/var/run/netns/httpjail_<jail_id>`
+2. **Virtual Ethernet Pairs** (`VethPair`) - `veth_host_<jail_id>` and `veth_ns_<jail_id>`
+3. **NFTables Rules** (`NFTable`) - iptables/nftables rules for traffic redirection
+4. **DNS Server Process** (`ForkedDnsProcess`) - Child process running in namespace
+5. **Any namespace-specific configuration** - e.g., `/etc/netns/<namespace>` if created
+
+### Cleanup Mechanisms
+
+1. **Normal Exit**: Resources implement `Drop` trait for automatic cleanup
+2. **Orphan Cleanup**: `cleanup_orphaned()` handles resources from crashed instances
+3. **Process Cleanup**: Must kill ALL processes in namespace before deletion
+4. **Order Matters**: Clean processes first, then network resources, then namespace
+
+### Implementation Requirements
+
+When adding new system resources:
+- Implement `SystemResource` trait with proper `cleanup()` method
+- Add to `cleanup_orphaned()` for crash recovery
+- Ensure `Drop` implementation for normal cleanup
+- Test with `--no-jail-cleanup` flag to verify cleanup works
+- Use `ManagedResource<T>` wrapper for automatic cleanup on drop
+
+### Testing Cleanup
+
+```bash
+# Test orphan cleanup
+sudo ./target/debug/httpjail --js "true" -- sleep 100 &
+PID=$!
+sudo kill -9 $PID  # Simulate crash
+sudo ./target/debug/httpjail --cleanup  # Should clean up orphaned resources
+
+# Verify no resources left
+ip netns list | grep httpjail  # Should be empty
+ip link show | grep veth_      # Should show no jail veths
+sudo iptables -L -t nat | grep httpjail  # Should show no jail rules
+```
+
 ## Logging
 
 In regular operation of the CLI-only jail (non-server mode), info and warn logs are not permitted as they would interfere with the underlying process output. Only use debug level logs for normal operation and error logs for actual errors. The server mode (`--server`) may use info/warn logs as appropriate since it has no underlying process.
