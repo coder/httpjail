@@ -105,6 +105,10 @@ struct RunArgs {
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
+    /// Run internal DNS server for namespace (hidden, for internal use only)
+    #[arg(long = "__internal-dns-server", value_name = "NAMESPACE", hide = true)]
+    internal_dns_server: Option<String>,
+
     /// Run as standalone proxy server (without executing a command)
     #[arg(
         long = "server",
@@ -304,6 +308,93 @@ fn cleanup_orphans() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn run_namespace_dns_server(namespace_name: &str) -> Result<()> {
+    use std::net::UdpSocket;
+    use std::os::unix::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+
+    // Enter the namespace
+    let ns_path = format!("/var/run/netns/{}", namespace_name);
+    let ns_fd = OpenOptions::new()
+        .read(true)
+        .open(&ns_path)
+        .with_context(|| format!("Failed to open namespace {}", ns_path))?;
+
+    // Use raw syscall to setns (async-signal-safe)
+    unsafe {
+        let ret = libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET);
+        if ret != 0 {
+            std::process::exit(1);
+        }
+    }
+
+    // Bring up loopback interface
+    std::process::Command::new("ip")
+        .args(["link", "set", "lo", "up"])
+        .output()
+        .context("Failed to bring up loopback")?;
+
+    // Bind DNS socket
+    let socket =
+        UdpSocket::bind("0.0.0.0:53").context("Failed to bind DNS server to 0.0.0.0:53")?;
+
+    socket.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+
+    // Drop privileges to nobody
+    unsafe {
+        libc::setgroups(0, std::ptr::null());
+        libc::setgid(65534); // nogroup
+        libc::setuid(65534); // nobody
+    }
+
+    // Run simple DNS server loop
+    let mut buf = [0u8; 512];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((size, src)) => {
+                // Build minimal DNS response with dummy IP
+                if let Ok(response) = build_dns_response(&buf[..size]) {
+                    let _ = socket.send_to(&response, src);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn build_dns_response(query: &[u8]) -> Result<Vec<u8>> {
+    use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, rdata::RData};
+    use std::net::Ipv4Addr;
+
+    let query_packet = Packet::parse(query)?;
+    let mut response = Packet::new_reply(query_packet.id());
+
+    // Copy query flags
+    response.set_flags(PacketFlag::RESPONSE | PacketFlag::AUTHORITATIVE_ANSWER);
+    response.questions = query_packet.questions.clone();
+
+    // Add dummy answer for all A record queries
+    for question in &query_packet.questions {
+        if question.qtype == simple_dns::TYPE::A && question.qclass == CLASS::IN {
+            let mut answer = ResourceRecord::new(question.qname.clone());
+            answer.set_type(simple_dns::TYPE::A);
+            answer.set_class(CLASS::IN);
+            answer.set_ttl(300);
+            answer.set_data(RData::A(Ipv4Addr::new(6, 6, 6, 6).into()))?;
+            response.answers.push(answer);
+        }
+    }
+
+    Ok(response.build()?)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -375,6 +466,14 @@ async fn main() -> Result<()> {
 
         info!("Cleanup completed successfully");
         return Ok(());
+    }
+
+    // Handle internal DNS server mode (for Linux namespace DNS)
+    #[cfg(target_os = "linux")]
+    if let Some(namespace_name) = args.run_args.internal_dns_server {
+        // This is executed after exec() in the child process
+        // Run the DNS server directly without any unsafe operations
+        return run_namespace_dns_server(&namespace_name);
     }
 
     // Handle server mode

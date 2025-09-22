@@ -1,149 +1,5 @@
 use anyhow::{Context, Result};
-use simple_dns::rdata::RData;
-use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord};
-use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
-use tracing::{debug, error, info, warn};
-
-const DUMMY_IPV4: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
-const MAX_DNS_PACKET_SIZE: usize = 512;
-
-pub struct DummyDnsServer {
-    socket: Option<UdpSocket>,
-    shutdown: Arc<AtomicBool>,
-    thread_handle: Option<thread::JoinHandle<()>>,
-}
-
-impl DummyDnsServer {
-    pub fn new() -> Self {
-        Self {
-            socket: None,
-            shutdown: Arc::new(AtomicBool::new(false)),
-            thread_handle: None,
-        }
-    }
-
-    pub fn start(&mut self, bind_addr: &str) -> Result<()> {
-        let socket = UdpSocket::bind(bind_addr)
-            .with_context(|| format!("Failed to bind DNS server to {}", bind_addr))?;
-
-        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-
-        info!("Starting dummy DNS server on {}", bind_addr);
-
-        let socket_clone = socket.try_clone()?;
-        let shutdown_clone = self.shutdown.clone();
-
-        let thread_handle = thread::spawn(move || {
-            if let Err(e) = run_dns_server(socket_clone, shutdown_clone) {
-                error!("DNS server error: {}", e);
-            }
-        });
-
-        self.socket = Some(socket);
-        self.thread_handle = Some(thread_handle);
-
-        Ok(())
-    }
-
-    pub fn stop(&mut self) {
-        debug!("Stopping dummy DNS server");
-        self.shutdown.store(true, Ordering::Relaxed);
-
-        if let Some(handle) = self.thread_handle.take() {
-            let _ = handle.join();
-        }
-
-        self.socket = None;
-    }
-}
-
-impl Drop for DummyDnsServer {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
-    let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
-
-    while !shutdown.load(Ordering::Relaxed) {
-        match socket.recv_from(&mut buf) {
-            Ok((size, src)) => {
-                debug!("Received DNS query from {}: {} bytes", src, size);
-
-                // Parse the DNS query using simple-dns
-                match Packet::parse(&buf[..size]) {
-                    Ok(query) => {
-                        if let Ok(response) = build_dummy_response(query) {
-                            if let Err(e) = socket.send_to(&response, src) {
-                                warn!("Failed to send DNS response to {}: {}", src, e);
-                            } else {
-                                debug!("Sent dummy DNS response to {}", src);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to parse DNS query: {}", e);
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                continue;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                // EINTR can happen when signals are received, just retry
-                continue;
-            }
-            Err(e) => {
-                if !shutdown.load(Ordering::Relaxed) {
-                    error!("DNS server receive error: {}", e);
-                }
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
-    // Create a response packet based on the query
-    let mut response = Packet::new_reply(query.id());
-
-    // Set standard response flags
-    response.set_flags(PacketFlag::RESPONSE | PacketFlag::RECURSION_AVAILABLE);
-
-    // Copy all questions from the query to the response
-    for question in &query.questions {
-        response.questions.push(question.clone());
-    }
-
-    // For each question, add a dummy A record response
-    for question in &query.questions {
-        // Only respond to A record queries (TYPE 1)
-        // But we'll respond to all queries with an A record anyway
-        // to prevent any DNS exfiltration attempts
-        let answer = ResourceRecord::new(
-            question.qname.clone(),
-            CLASS::IN,
-            60, // TTL in seconds
-            RData::A(DUMMY_IPV4.into()),
-        );
-        response.answers.push(answer);
-    }
-
-    // Build the response packet into bytes
-    response
-        .build_bytes_vec()
-        .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
-}
+use tracing::{debug, info};
 
 /// Manages a forked child process that runs a DNS server inside a network namespace
 ///
@@ -168,109 +24,53 @@ impl ForkedDnsProcess {
 
         info!("Starting in-namespace DNS server for {}", namespace_name);
 
-        // SAFETY: While forking from a tokio runtime, the child immediately:
-        // - Closes unnecessary file descriptors
-        // - Sets PR_SET_PDEATHSIG for automatic cleanup when parent dies
-        // - Never returns to Rust/tokio code
-        // - Runs until terminated by signal
+        // SAFETY: Fork is safe here because the child immediately execs,
+        // avoiding any issues with locks or multi-threaded state
         match unsafe { nix::unistd::fork() }.context("Failed to fork DNS process")? {
             ForkResult::Child => {
-                // Child process: Run DNS server in namespace
+                // Child process: Immediately exec to avoid multi-threaded fork issues
 
                 // Close all unnecessary file descriptors inherited from parent
-                // Keep only stdin(0), stdout(1), stderr(2)
+                // This is async-signal-safe
                 for fd in 3..1024 {
-                    let _ = nix::unistd::close(fd);
-                }
-
-                // Request SIGTERM when parent dies
-                #[cfg(target_os = "linux")]
-                {
-                    use nix::sys::signal::Signal;
-                    if let Err(e) = nix::sys::prctl::set_pdeathsig(Signal::SIGTERM) {
-                        eprintln!("Failed to set parent death signal: {}", e);
-                        std::process::exit(1);
+                    unsafe {
+                        libc::close(fd);
                     }
                 }
 
-                // Check if parent already died
-                if nix::unistd::getppid() == nix::unistd::Pid::from_raw(1) {
+                // Request SIGTERM when parent dies (async-signal-safe)
+                unsafe {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                }
+
+                // Check if parent already died (async-signal-safe)
+                if unsafe { libc::getppid() } == 1 {
                     std::process::exit(1);
                 }
 
-                // Enter the namespace
-                let ns_path = format!("/var/run/netns/{}", namespace_name);
-                let ns_fd = std::fs::File::open(&ns_path).unwrap_or_else(|e| {
-                    eprintln!("Failed to open namespace {}: {}", ns_path, e);
-                    std::process::exit(1);
-                });
+                // Exec ourselves with the DNS server flag
+                // This avoids all unsafe operations after fork in a multi-threaded runtime
+                let exe_path = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/proc/self/exe"));
 
-                // Use nix for setns
-                nix::sched::setns(&ns_fd, nix::sched::CloneFlags::CLONE_NEWNET).unwrap_or_else(
-                    |e| {
-                        eprintln!("Failed to setns into {}: {}", namespace_name, e);
-                        std::process::exit(1);
-                    },
-                );
+                let namespace_arg = format!("--__internal-dns-server={}", namespace_name);
+                let args = vec![exe_path.to_string_lossy().into_owned(), namespace_arg];
 
-                // Ensure loopback interface is up
-                std::process::Command::new("ip")
-                    .args(["link", "set", "lo", "up"])
-                    .output()
-                    .ok();
+                // Convert args to C strings
+                let c_args: Vec<std::ffi::CString> = args
+                    .iter()
+                    .map(|s| std::ffi::CString::new(s.as_str()).unwrap())
+                    .collect();
 
-                // Bind DNS socket before dropping privileges
-                let socket = match UdpSocket::bind("0.0.0.0:53") {
-                    Ok(s) => {
-                        eprintln!("DNS server successfully bound to 0.0.0.0:53 in namespace");
-                        s
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to bind DNS server to 0.0.0.0:53: {}", e);
-                        std::process::exit(1);
-                    }
-                };
+                let mut argv: Vec<*const libc::c_char> =
+                    c_args.iter().map(|s| s.as_ptr()).collect();
+                argv.push(std::ptr::null());
 
-                // Set read timeout to avoid blocking forever
-                socket
-                    .set_read_timeout(Some(Duration::from_millis(100)))
-                    .ok();
-
-                // Drop privileges to nobody after binding
-                let nobody_uid = nix::unistd::Uid::from_raw(65534);
-                let nogroup_gid = nix::unistd::Gid::from_raw(65534);
-
-                nix::unistd::setgroups(&[]).ok();
-                nix::unistd::setgid(nogroup_gid).ok();
-                nix::unistd::setuid(nobody_uid).ok();
-
-                eprintln!("DNS server ready, entering receive loop...");
-
-                // Run DNS server loop directly in this process
-                let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
-                let mut first_query = true;
-                loop {
-                    match socket.recv_from(&mut buf) {
-                        Ok((size, src)) => {
-                            if first_query {
-                                eprintln!("DNS server received first query from {}", src);
-                                first_query = false;
-                            }
-                            // Parse and respond to DNS query
-                            if let Ok(query) = Packet::parse(&buf[..size]) {
-                                if let Ok(response) = build_dummy_response(query) {
-                                    let _ = socket.send_to(&response, src);
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => {
-                            eprintln!("DNS server error: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
+                // Exec (this never returns on success)
+                unsafe {
+                    libc::execv(c_args[0].as_ptr(), argv.as_ptr());
+                    // If we get here, exec failed
+                    libc::_exit(1);
                 }
             }
             ForkResult::Parent { child } => {
