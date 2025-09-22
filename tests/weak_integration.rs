@@ -355,14 +355,21 @@ fn test_proc_js_json_parity() {
     // Create a proc program that echoes back the JSON it receives
     // Use sh instead of Python for better portability
     let mut proc_program = NamedTempFile::new().unwrap();
-    // Simple sed-based approach for JSON escaping using printf for better portability
+    // Simple approach using awk for JSON escaping, as it's more portable than sed
     // The JS does {deny_message: JSON.stringify(r)} which creates a stringified JSON
     let program_content = r#"#!/bin/sh
 # Read lines from stdin and echo back the JSON as a deny message
 while IFS= read -r line; do
-    # Escape backslashes first, then quotes for JSON string encoding
-    # Use printf instead of echo for better portability across shells
-    escaped=$(printf '%s' "$line" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    # Use awk to escape JSON string - more portable than sed
+    # This escapes backslashes and quotes properly
+    escaped=$(printf '%s' "$line" | awk '{
+        gsub(/\\/, "\\\\");
+        gsub(/"/, "\\\"");
+        gsub(/\t/, "\\t");
+        gsub(/\n/, "\\n");
+        gsub(/\r/, "\\r");
+        print
+    }')
     printf '{"deny_message":"%s"}\n' "$escaped"
 done
 "#;
@@ -377,10 +384,6 @@ done
         fs::set_permissions(proc_program.path(), perms).unwrap();
     }
 
-    // Debug: print the proc program path and contents
-    eprintln!("Proc program path: {:?}", proc_program.path());
-    eprintln!("Proc program contents:\n{}", program_content);
-
     // Test with proc engine - use HTTP to get response body in weak mode
     let proc_result = HttpjailCommand::new()
         .weak()
@@ -394,25 +397,15 @@ done
         .execute();
 
     let proc_json = match proc_result {
-        Ok((exit_code, stdout, stderr)) => {
-            // Debug output to understand what's happening
-            eprintln!("Proc test exit code: {}", exit_code);
-            eprintln!("Proc test stdout: {:?}", stdout);
-            eprintln!("Proc test stderr: {:?}", stderr);
-
+        Ok((_, stdout, _)) => {
             // Extract the JSON from the deny message
             assert!(
                 stdout.contains("Request blocked by httpjail"),
-                "Stdout should contain 'Request blocked by httpjail', got: {}",
-                stdout
+                "Stdout should contain 'Request blocked by httpjail'"
             );
             // The JSON is on the second line of the response
             let lines: Vec<&str> = stdout.lines().collect();
-            assert!(
-                lines.len() >= 2,
-                "Expected at least 2 lines in response, got {} lines",
-                lines.len()
-            );
+            assert!(lines.len() >= 2, "Expected at least 2 lines in response");
             lines[1].to_string()
         }
         Err(e) => panic!("Failed to execute proc test: {}", e),
