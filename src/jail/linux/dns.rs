@@ -221,7 +221,10 @@ impl ForkedDnsProcess {
 
                 // Bind DNS socket before dropping privileges
                 let socket = match UdpSocket::bind("0.0.0.0:53") {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        eprintln!("DNS server successfully bound to 0.0.0.0:53 in namespace");
+                        s
+                    }
                     Err(e) => {
                         eprintln!("Failed to bind DNS server to 0.0.0.0:53: {}", e);
                         std::process::exit(1);
@@ -241,11 +244,18 @@ impl ForkedDnsProcess {
                 nix::unistd::setgid(nogroup_gid).ok();
                 nix::unistd::setuid(nobody_uid).ok();
 
+                eprintln!("DNS server ready, entering receive loop...");
+
                 // Run DNS server loop directly in this process
                 let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
+                let mut first_query = true;
                 loop {
                     match socket.recv_from(&mut buf) {
                         Ok((size, src)) => {
+                            if first_query {
+                                eprintln!("DNS server received first query from {}", src);
+                                first_query = false;
+                            }
                             // Parse and respond to DNS query
                             if let Ok(query) = Packet::parse(&buf[..size]) {
                                 if let Ok(response) = build_dummy_response(query) {
