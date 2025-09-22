@@ -358,8 +358,9 @@ fn test_proc_js_json_parity() {
     let program_content = r#"#!/bin/sh
 # Read lines from stdin and echo back the JSON as a deny message
 while IFS= read -r line; do
-    # Echo the line back as a deny message
-    echo "{\"deny_message\": $line}"
+    # Echo the line back wrapped in a deny_message, with the JSON as a string value
+    # The line is already JSON, so we wrap it as a string in the deny_message
+    printf '{"deny_message": "%s"}\n' "$(printf '%s' "$line" | sed 's/"/\\"/g')"
 done
 "#;
     proc_program.write_all(program_content.as_bytes()).unwrap();
@@ -477,22 +478,24 @@ fn test_proc_js_response_parity() {
         // Create proc program that returns the test response
         // Use sh for portability
         let mut proc_program = NamedTempFile::new().unwrap();
-        let program_content = if response.contains('"') {
-            // For JSON responses, echo directly
+        let program_content = if response.starts_with('{') && response.ends_with('}') {
+            // For JSON responses, echo directly with proper escaping
             format!(
                 r#"#!/bin/sh
 while IFS= read -r line; do
-    echo '{}'
+    cat <<'EOF'
+{}
+EOF
 done
 "#,
                 response
             )
         } else {
-            // For simple responses
+            // For simple responses (true, false, arbitrary text)
             format!(
                 r#"#!/bin/sh
 while IFS= read -r line; do
-    echo "{}"
+    printf '%s\n' "{}"
 done
 "#,
                 response
