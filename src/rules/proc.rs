@@ -577,13 +577,4 @@ for line in sys.stdin:
 
         drop(program_path);
     }
-
-    // Note: This test verifies that when a process crashes unexpectedly,
-    // the next evaluation after the crash will fail with a denial (because
-    // the process is gone), and subsequent evaluations will work properly
-    // after the process is automatically restarted.
-    //
-    // In practice, the crash scenario is handled by setting process_guard to None
-    // when an error occurs, which causes ensure_process_running() to restart
-    // the process on the next evaluation attempt.
 }
