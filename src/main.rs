@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
+#[cfg(target_os = "linux")]
+use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
+
 #[derive(Parser, Debug)]
 #[command(name = "httpjail")]
 #[command(version = env!("VERSION_WITH_GIT_HASH"), about, long_about = None)]
@@ -370,7 +373,6 @@ fn run_namespace_dns_server(namespace_name: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn build_dns_response(query: &[u8]) -> Result<Vec<u8>> {
-    use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
     use std::net::Ipv4Addr;
 
     let query_packet = Packet::parse(query)?;
