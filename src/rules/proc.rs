@@ -484,6 +484,94 @@ sys.exit(0)  # Always exit after handling one request
     }
 
     #[tokio::test]
+    async fn test_line_based_program_stateful_multiple_requests() {
+        // Test that process stays alive and maintains state across multiple requests
+        // Each request N only allows domain N.com
+        let program = r#"#!/usr/bin/env python3
+import json
+import sys
+
+request_count = 0
+for line in sys.stdin:
+    request_count += 1
+    request = json.loads(line.strip())
+    
+    # Only allow requests to {request_count}.com
+    expected_host = f"{request_count}.com"
+    if request['host'] == expected_host:
+        response = {"allow": True}
+    else:
+        response = {"allow": False, "deny_message": f"Request {request_count}: Expected {expected_host}, got {request['host']}"}
+    
+    print(json.dumps(response))
+    sys.stdout.flush()
+"#;
+        let program_path = create_program_file(program);
+        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
+
+        // Make 10 iterations testing sequential numbering
+        let mut total_requests = 0;
+        for _ in 1..=10 {
+            // Test allowed domain - each request N only allows N.com
+            total_requests += 1;
+            let allowed_url = format!("https://{}.com/test", total_requests);
+            let result = engine
+                .evaluate(Method::GET, &allowed_url, "127.0.0.1")
+                .await;
+            assert!(
+                matches!(result.action, Action::Allow),
+                "Request {} to {}.com should be allowed",
+                total_requests,
+                total_requests
+            );
+
+            // Test denied domain - wrong number should be denied
+            total_requests += 1;
+            let denied_url = format!("https://wrong.com/test");
+            let result = engine.evaluate(Method::GET, &denied_url, "127.0.0.1").await;
+            assert!(
+                matches!(result.action, Action::Deny),
+                "Request {} to wrong.com should be denied",
+                total_requests
+            );
+            assert!(
+                result.context.as_ref().map_or(false, |msg| msg
+                    .contains(&format!("Request {}", total_requests))),
+                "Deny message should indicate this is request {} in the process",
+                total_requests
+            );
+        }
+
+        // Final test: verify the process is still using the same instance
+        // After 20 requests (10 iterations * 2), request 21 should only allow 21.com
+        let result = engine
+            .evaluate(Method::GET, "https://21.com/test", "127.0.0.1")
+            .await;
+        assert!(
+            matches!(result.action, Action::Allow),
+            "Request 21 to 21.com should be allowed"
+        );
+
+        // Request 22 should expect 22.com
+        let result = engine
+            .evaluate(Method::GET, "https://1.com/test", "127.0.0.1")
+            .await;
+        assert!(
+            matches!(result.action, Action::Deny),
+            "Request 22 should deny 1.com (expecting 22.com)"
+        );
+        assert!(
+            result
+                .context
+                .as_ref()
+                .map_or(false, |msg| msg.contains("Request 22")),
+            "Should indicate this is request 22 in the process lifecycle"
+        );
+
+        drop(program_path);
+    }
+
+    #[tokio::test]
     async fn test_line_based_program_killed_on_empty_response() {
         // Program that returns empty response on second request
         let program = r#"#!/usr/bin/env python3
