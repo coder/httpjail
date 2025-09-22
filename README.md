@@ -226,7 +226,7 @@ httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? 
 httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
 
 # Custom block message (using object return)
-httpjail --js "r.host.includes('facebook.com') ? {allow: false, message: 'Social media blocked'} : true" -- curl https://facebook.com
+httpjail --js "r.host.includes('facebook.com') ? {deny_message: 'Social media blocked'} : true" -- curl https://facebook.com
 ```
 
 **JavaScript API:**
@@ -244,7 +244,7 @@ All request information is available via the `r` object (read-only):
 
 JavaScript expressions can return either:
 - A boolean: `true` to allow, `false` to deny
-- An object: `{allow: true/false, message: "optional context"}`
+- An object: `{allow: true/false, deny_message: "optional message for denials"}`
 
 Examples:
 ```javascript
@@ -257,7 +257,7 @@ false // Deny
 // Shorthand: if only deny_message is provided, request is denied
 ({deny_message: "Blocked by policy"})
 
-// Conditional with message
+// Conditional with deny message
 r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 ```
 
