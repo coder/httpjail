@@ -355,14 +355,14 @@ fn test_proc_js_json_parity() {
     // Create a proc program that echoes back the JSON it receives
     // Use sh instead of Python for better portability
     let mut proc_program = NamedTempFile::new().unwrap();
-    // Simple sed-based approach for JSON escaping
+    // Simple sed-based approach for JSON escaping using printf for better portability
     // The JS does {deny_message: JSON.stringify(r)} which creates a stringified JSON
     let program_content = r#"#!/bin/sh
 # Read lines from stdin and echo back the JSON as a deny message
 while IFS= read -r line; do
     # Escape backslashes first, then quotes for JSON string encoding
-    # This matches what JSON.stringify() does for a JSON object
-    escaped=$(echo "$line" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    # Use printf instead of echo for better portability across shells
+    escaped=$(printf '%s' "$line" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     printf '{"deny_message":"%s"}\n' "$escaped"
 done
 "#;
@@ -376,6 +376,10 @@ done
         perms.set_mode(0o755);
         fs::set_permissions(proc_program.path(), perms).unwrap();
     }
+
+    // Debug: print the proc program path and contents
+    eprintln!("Proc program path: {:?}", proc_program.path());
+    eprintln!("Proc program contents:\n{}", program_content);
 
     // Test with proc engine - use HTTP to get response body in weak mode
     let proc_result = HttpjailCommand::new()
