@@ -1,5 +1,11 @@
 use anyhow::{Context, Result};
+use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
+use std::net::{Ipv4Addr, UdpSocket};
+use std::os::unix::fs::OpenOptions;
+use std::os::unix::io::AsRawFd;
 use tracing::{debug, info};
+
+const DUMMY_IPV4: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
 
 /// Manages a forked child process that runs a DNS server inside a network namespace
 ///
@@ -102,10 +108,90 @@ impl Drop for ForkedDnsProcess {
     }
 }
 
+/// Run the DNS server in the namespace after exec.
+/// This is called from main() when the --__internal-dns-server flag is present.
+pub fn run_exec_dns_server(namespace_name: &str) -> Result<()> {
+    // Enter the namespace
+    let ns_path = format!("/var/run/netns/{}", namespace_name);
+    let ns_fd = OpenOptions::new()
+        .read(true)
+        .open(&ns_path)
+        .with_context(|| format!("Failed to open namespace {}", ns_path))?;
+
+    // Use raw syscall to setns (async-signal-safe)
+    unsafe {
+        let ret = libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET);
+        if ret != 0 {
+            std::process::exit(1);
+        }
+    }
+
+    // Bring up loopback interface
+    std::process::Command::new("ip")
+        .args(["link", "set", "lo", "up"])
+        .output()
+        .context("Failed to bring up loopback")?;
+
+    // Bind DNS socket
+    let socket =
+        UdpSocket::bind("0.0.0.0:53").context("Failed to bind DNS server to 0.0.0.0:53")?;
+
+    socket.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+
+    // Drop privileges to nobody
+    unsafe {
+        libc::setgroups(0, std::ptr::null());
+        libc::setgid(65534); // nogroup
+        libc::setuid(65534); // nobody
+    }
+
+    // Run simple DNS server loop
+    let mut buf = [0u8; 512];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((size, src)) => {
+                // Build minimal DNS response with dummy IP
+                if let Ok(response) = build_dummy_response(&buf[..size]) {
+                    let _ = socket.send_to(&response, src);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    Ok(())
+}
+
+fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
+    let query_packet = Packet::parse(query)?;
+    let mut response = Packet::new_reply(query_packet.id());
+
+    // Copy query flags
+    response.set_flags(PacketFlag::RESPONSE | PacketFlag::AUTHORITATIVE_ANSWER);
+    response.questions = query_packet.questions.clone();
+
+    // Add dummy answer for all A record queries
+    for question in &query_packet.questions {
+        if question.qtype == TYPE::A && question.qclass == CLASS::IN {
+            let mut answer = ResourceRecord::new(question.qname.clone());
+            answer.set_type(TYPE::A);
+            answer.set_class(CLASS::IN);
+            answer.set_ttl(300);
+            answer.set_data(RData::A(DUMMY_IPV4.into()))?;
+            response.answers.push(answer);
+        }
+    }
+
+    Ok(response.build()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simple_dns::{Name, Question, TYPE};
+    use simple_dns::{Name, Question};
 
     #[test]
     fn test_dns_response_builder() {
