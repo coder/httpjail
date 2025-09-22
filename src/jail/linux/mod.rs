@@ -476,18 +476,24 @@ impl LinuxJail {
                     std::process::exit(1);
                 }
 
-                // Drop privileges to nobody
+                // Ensure loopback interface is up
+                std::process::Command::new("ip")
+                    .args(["link", "set", "lo", "up"])
+                    .output()
+                    .ok();
+
+                // Start DNS server on all interfaces (requires root for privileged port)
+                let mut server = DummyDnsServer::new();
+                if let Err(e) = server.start("0.0.0.0:53") {
+                    eprintln!("Failed to start DNS server: {}", e);
+                    std::process::exit(1);
+                }
+
+                // Drop privileges to nobody after binding
                 unsafe {
                     libc::setgroups(0, std::ptr::null());
                     libc::setgid(65534); // nogroup
                     libc::setuid(65534); // nobody
-                }
-
-                // Run DNS server on localhost:53
-                let mut server = DummyDnsServer::new();
-                if let Err(e) = server.start("127.0.0.1:53") {
-                    eprintln!("Failed to start DNS server: {}", e);
-                    std::process::exit(1);
                 }
 
                 info!("In-namespace DNS server listening on 127.0.0.1:53");
