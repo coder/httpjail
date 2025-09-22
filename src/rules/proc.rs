@@ -16,6 +16,8 @@ pub struct ProcRuleEngine {
     process: Arc<Mutex<Option<ProcessState>>>,
 }
 
+/// State for a running process
+/// When dropped, the child process is automatically killed due to kill_on_drop(true)
 struct ProcessState {
     child: Child,
     stdin: ChildStdin,
@@ -30,37 +32,51 @@ impl ProcRuleEngine {
         }
     }
 
-    async fn ensure_process_running(&self) -> Result<(), String> {
-        let mut process_guard = self.process.lock().await;
+    /// Explicitly kill a process by taking ownership and dropping it
+    /// This is more self-documenting than relying on implicit drops
+    #[inline]
+    fn kill_process(process_state: ProcessState) {
+        // The process is killed when ProcessState is dropped due to kill_on_drop(true)
+        drop(process_state);
+    }
 
-        if let Some(ref mut process_state) = *process_guard {
+    /// Ensure a process is running, restarting if necessary
+    /// Takes a mutable reference to the guard to avoid multiple lock acquisitions
+    async fn ensure_process_running(
+        &self,
+        process_guard: &mut Option<ProcessState>,
+    ) -> Result<(), String> {
+        // Check if existing process is still alive
+        if let Some(mut process_state) = process_guard.take() {
             match process_state.child.try_wait() {
                 Ok(Some(status)) => {
                     warn!(
                         "Program process exited with status: {:?}, restarting",
                         status
                     );
-                    *process_guard = None;
+                    Self::kill_process(process_state);
                 }
                 Ok(None) => {
+                    // Process is still running, put it back
+                    *process_guard = Some(process_state);
                     return Ok(());
                 }
                 Err(e) => {
                     error!("Failed to check process status: {}, restarting", e);
-                    *process_guard = None;
+                    Self::kill_process(process_state);
                 }
             }
         }
 
+        // Start new process if needed
         if process_guard.is_none() {
             debug!("Starting program process: {}", self.program);
 
             let mut cmd = Command::new(&self.program);
-
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
-                .kill_on_drop(true);
+                .kill_on_drop(true); // Ensures process is killed when Child is dropped
 
             let mut child = cmd
                 .spawn()
@@ -86,14 +102,18 @@ impl ProcRuleEngine {
     }
 
     /// Send a request to the program and get a response
-    /// Returns None if the process needs to be restarted
-    async fn send_request_to_process(&self, json_request: &str) -> Option<(bool, Option<String>)> {
-        let mut process_guard = self.process.lock().await;
+    /// Returns Err if the process needs to be restarted
+    async fn send_request_to_process(
+        &self,
+        process_guard: &mut Option<ProcessState>,
+        json_request: &str,
+    ) -> Result<(bool, Option<String>), String> {
+        // Ensure we have a running process
+        self.ensure_process_running(process_guard).await?;
 
-        let process_state = match process_guard.as_mut() {
-            Some(state) => state,
-            None => return None, // Process not available
-        };
+        let process_state = process_guard
+            .as_mut()
+            .ok_or_else(|| "Process not available after ensure_process_running".to_string())?;
 
         // Send request
         let mut request_line = json_request.to_string();
@@ -101,14 +121,18 @@ impl ProcRuleEngine {
 
         if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
             error!("Failed to write to program stdin: {}", e);
-            *process_guard = None; // Kill process
-            return None;
+            if let Some(state) = process_guard.take() {
+                Self::kill_process(state);
+            }
+            return Err("Failed to write to program".to_string());
         }
 
         if let Err(e) = process_state.stdin.flush().await {
             error!("Failed to flush stdin: {}", e);
-            *process_guard = None; // Kill process
-            return None;
+            if let Some(state) = process_guard.take() {
+                Self::kill_process(state);
+            }
+            return Err("Failed to flush stdin".to_string());
         }
 
         // Read response with timeout
@@ -121,8 +145,10 @@ impl ProcRuleEngine {
             Ok(Ok(0)) => {
                 // EOF - process exited
                 warn!("Program closed stdout unexpectedly");
-                *process_guard = None; // Kill process
-                None
+                if let Some(state) = process_guard.take() {
+                    Self::kill_process(state);
+                }
+                Err("Program closed unexpectedly".to_string())
             }
             Ok(Ok(_)) => {
                 let response = response_line.trim();
@@ -131,25 +157,31 @@ impl ProcRuleEngine {
                 // Check for empty or whitespace-only response - this is malformed
                 if response.is_empty() {
                     error!("Program returned empty response - killing process");
-                    *process_guard = None;
-                    return None;
+                    if let Some(state) = process_guard.take() {
+                        Self::kill_process(state);
+                    }
+                    return Err("Program returned empty response".to_string());
                 }
 
                 // Parse response
                 let rule_response = RuleResponse::from_string(response);
                 let (allowed, message) = rule_response.to_evaluation_result();
 
-                Some((allowed, message))
+                Ok((allowed, message))
             }
             Ok(Err(e)) => {
                 error!("Error reading from program: {}", e);
-                *process_guard = None; // Kill process
-                None
+                if let Some(state) = process_guard.take() {
+                    Self::kill_process(state);
+                }
+                Err(format!("Error reading from program: {}", e))
             }
             Err(_) => {
                 warn!("Program response timeout after {:?}", timeout);
-                *process_guard = None; // Kill process
-                None
+                if let Some(state) = process_guard.take() {
+                    Self::kill_process(state);
+                }
+                Err("Program response timeout".to_string())
             }
         }
     }
@@ -176,17 +208,10 @@ impl ProcRuleEngine {
             }
         };
 
+        let mut process_guard = self.process.lock().await;
+
         // Try twice: once normally, and once after restart if any error occurs
         for attempt in 0..2 {
-            // Ensure process is running
-            if let Err(e) = self.ensure_process_running().await {
-                error!("Failed to ensure process is running: {}", e);
-                if attempt == 0 {
-                    continue; // Try once more
-                }
-                return (false, Some("Program evaluation failed".to_string()));
-            }
-
             debug!(
                 "Sending request to program for {} {} from {} (attempt {})",
                 method,
@@ -196,21 +221,25 @@ impl ProcRuleEngine {
             );
 
             // Try to get a response from the process
-            if let Some(result) = self.send_request_to_process(&json_request).await {
-                let (allowed, message) = result;
-
-                if allowed {
-                    debug!("ALLOW: {} {} (program allowed)", method, url);
-                } else {
-                    debug!("DENY: {} {} (program denied)", method, url);
+            match self
+                .send_request_to_process(&mut *process_guard, &json_request)
+                .await
+            {
+                Ok((allowed, message)) => {
+                    if allowed {
+                        debug!("ALLOW: {} {} (program allowed)", method, url);
+                    } else {
+                        debug!("DENY: {} {} (program denied)", method, url);
+                    }
+                    return (allowed, message);
                 }
-
-                return (allowed, message);
-            }
-
-            // Process failed - will retry on next iteration if attempt == 0
-            if attempt == 0 {
-                debug!("Process failed, retrying with fresh process");
+                Err(e) => {
+                    debug!("Request failed: {}", e);
+                    if attempt == 0 {
+                        debug!("Retrying with fresh process");
+                        // Process will be restarted on next iteration by send_request_to_process
+                    }
+                }
             }
         }
 
@@ -248,10 +277,11 @@ impl RuleEngineTrait for ProcRuleEngine {
 
 impl Drop for ProcRuleEngine {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.process.try_lock()
-            && let Some(ref mut process_state) = *guard
-        {
-            let _ = process_state.child.start_kill();
+        if let Ok(mut guard) = self.process.try_lock() {
+            if let Some(process_state) = guard.take() {
+                // Explicitly kill the process on drop
+                Self::kill_process(process_state);
+            }
         }
     }
 }
