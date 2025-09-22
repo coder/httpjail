@@ -52,6 +52,7 @@ atty = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 socket2 = "0.5"
+nix = { version = "0.30", features = ["process", "fs", "sched", "user", "signal"] }
 
 [dev-dependencies]
 tempfile = "3.8"
