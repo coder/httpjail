@@ -241,14 +241,27 @@ impl ForkedDnsProcess {
                 nix::unistd::setgid(nogroup_gid).ok();
                 nix::unistd::setuid(nobody_uid).ok();
 
-                // Run DNS server directly in this process
-                let shutdown = Arc::new(AtomicBool::new(false));
-                if let Err(e) = run_dns_server(socket, shutdown) {
-                    eprintln!("DNS server error: {}", e);
-                    std::process::exit(1);
+                // Run DNS server loop directly in this process
+                let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
+                loop {
+                    match socket.recv_from(&mut buf) {
+                        Ok((size, src)) => {
+                            // Parse and respond to DNS query
+                            if let Ok(query) = Packet::parse(&buf[..size]) {
+                                if let Ok(response) = build_dummy_response(query) {
+                                    let _ = socket.send_to(&response, src);
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => {
+                            eprintln!("DNS server error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
-                // DNS server exited normally (shouldn't happen as it loops forever)
-                std::process::exit(0);
             }
             ForkResult::Parent { child } => {
                 // Parent: Just store child PID
