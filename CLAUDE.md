@@ -27,6 +27,8 @@ When writing tests, prefer pure rust solutions over shell script wrappers.
 
 **Important:** Shell script based tests (`.sh` files) should NOT be committed to the repository. They are acceptable for transient testing during development (WIP), but all submitted tests must be written in Rust as either integration or unit tests. This ensures consistency, maintainability, and proper CI integration.
 
+**Test Philosophy:** Write terse, minimal tests that cover the essential behavior. Avoid verbose test suites with many similar test cases. Each test should have a clear, specific purpose. Prefer 1-2 focused tests over 5-10 comprehensive tests. This keeps the test suite fast and maintainable.
+
 When testing behavior outside of the strong jailing, use `--weak` for an environment-only
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.
