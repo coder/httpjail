@@ -452,13 +452,12 @@ impl LinuxJail {
 
         // Create pipe for cleanup detection
         let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
-        let read_raw = read_fd.as_raw_fd();
-        let write_raw = write_fd.as_raw_fd();
 
         match unsafe { libc::fork() } {
             0 => {
                 // Child: Run DNS server in namespace
                 drop(write_fd);
+                let read_raw = read_fd.as_raw_fd();
 
                 // Die if parent dies
                 unsafe {
@@ -496,22 +495,23 @@ impl LinuxJail {
                 // Monitor parent lifecycle
                 loop {
                     let mut buf = [0u8; 1];
-                    match nix::unistd::read(read_raw, &mut buf) {
-                        Ok(0) => {
-                            // EOF - parent died
-                            std::process::exit(0);
-                        }
-                        _ => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
+                    let n =
+                        unsafe { libc::read(read_raw, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+                    if n == 0 {
+                        // EOF - parent died
+                        std::process::exit(0);
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
             pid if pid > 0 => {
                 // Parent: Store cleanup info
                 drop(read_fd);
+                let write_raw = write_fd.as_raw_fd();
                 self.dns_forwarder_pid = Some(pid);
                 self.dns_cleanup_pipe = Some(write_raw);
+                // Keep write_fd alive by not dropping it
+                std::mem::forget(write_fd);
 
                 info!("Started in-namespace DNS server (pid {})", pid);
                 Ok(())
@@ -537,8 +537,8 @@ impl LinuxJail {
 
                 // Wait briefly for clean exit
                 let start = std::time::Instant::now();
+                let mut status = 0;
                 while start.elapsed() < std::time::Duration::from_millis(100) {
-                    let mut status = 0;
                     if libc::waitpid(pid, &mut status, libc::WNOHANG) == pid {
                         info!("Stopped in-namespace DNS server");
                         return;
