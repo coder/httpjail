@@ -812,6 +812,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "lru",
+ "nix",
  "predicates",
  "rand",
  "rcgen",
