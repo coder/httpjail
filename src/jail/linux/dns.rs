@@ -151,20 +151,16 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
 /// This struct handles the lifecycle of a forked process that:
 /// 1. Enters a specified network namespace
 /// 2. Runs a DummyDnsServer on port 53
-/// 3. Automatically cleans up when dropped
+/// 3. Uses PR_SET_PDEATHSIG for automatic cleanup when parent dies
+/// 4. Can be explicitly stopped via Drop trait
 pub struct ForkedDnsProcess {
     /// PID of the forked child process
     child_pid: Option<nix::unistd::Pid>,
-    /// Write end of pipe used to detect parent death (closed on drop)
-    parent_pipe: Option<nix::unistd::OwnedFd>,
 }
 
 impl ForkedDnsProcess {
     pub fn new() -> Self {
-        Self {
-            child_pid: None,
-            parent_pipe: None,
-        }
+        Self { child_pid: None }
     }
 
     /// Start a DNS server in a forked process within the specified namespace
@@ -173,26 +169,19 @@ impl ForkedDnsProcess {
 
         info!("Starting in-namespace DNS server for {}", namespace_name);
 
-        // Create pipe for parent-child lifecycle monitoring
-        let (read_end, write_end) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
-            .context("Failed to create cleanup pipe")?;
-
         // SAFETY: While forking from a tokio runtime, the child immediately:
         // - Closes unnecessary file descriptors
+        // - Sets PR_SET_PDEATHSIG for automatic cleanup when parent dies
         // - Never returns to Rust/tokio code
-        // - Exits via _exit() without unwinding
+        // - Runs until terminated by signal
         match unsafe { nix::unistd::fork() }.context("Failed to fork DNS process")? {
             ForkResult::Child => {
                 // Child process: Run DNS server in namespace
-                drop(write_end);
-                let read_fd = read_end.as_raw_fd();
 
                 // Close all unnecessary file descriptors inherited from parent
-                // Keep only stdin(0), stdout(1), stderr(2), and our read pipe
+                // Keep only stdin(0), stdout(1), stderr(2)
                 for fd in 3..1024 {
-                    if fd != read_fd {
-                        let _ = nix::unistd::close(fd);
-                    }
+                    let _ = nix::unistd::close(fd);
                 }
 
                 // Request SIGTERM when parent dies
@@ -247,24 +236,16 @@ impl ForkedDnsProcess {
 
                 info!("In-namespace DNS server listening on 0.0.0.0:53");
 
-                // Monitor parent lifecycle
+                // The DNS server runs forever. When parent dies, kernel sends SIGTERM
+                // due to PR_SET_PDEATHSIG, which terminates this process cleanly.
+                // Block here to keep the DNS server thread running.
                 loop {
-                    let mut buf = [0u8; 1];
-                    match nix::unistd::read(read_fd, &mut buf) {
-                        Ok(0) | Err(_) => {
-                            // EOF or error - parent died
-                            std::process::exit(0);
-                        }
-                        Ok(_) => {}
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
                 }
             }
             ForkResult::Parent { child } => {
-                // Parent: Store child info and keep write end open
-                drop(read_end);
+                // Parent: Just store child PID
                 self.child_pid = Some(child);
-                self.parent_pipe = Some(write_end);
                 info!("Started in-namespace DNS server (pid {})", child);
                 Ok(())
             }
@@ -273,9 +254,6 @@ impl ForkedDnsProcess {
 
     /// Stop the forked DNS server
     pub fn stop(&mut self) {
-        // Close pipe to signal shutdown (will cause child to exit)
-        self.parent_pipe = None;
-
         // Clean kill of the process if it's still running
         if let Some(pid) = self.child_pid.take() {
             use nix::sys::signal::{Signal, kill};
