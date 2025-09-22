@@ -191,12 +191,12 @@ impl ProcRuleEngine {
         method: Method,
         url: &str,
         requester_ip: &str,
-    ) -> (bool, Option<String>) {
+    ) -> EvaluationResult {
         let request_info = match RequestInfo::from_request(&method, url, requester_ip) {
             Ok(info) => info,
             Err(e) => {
                 debug!("Failed to parse request: {}", e);
-                return (false, Some(e));
+                return EvaluationResult::deny().with_context(e);
             }
         };
 
@@ -204,7 +204,8 @@ impl ProcRuleEngine {
             Ok(json) => json,
             Err(e) => {
                 error!("Failed to serialize request: {}", e);
-                return (false, Some("Program evaluation failed".to_string()));
+                return EvaluationResult::deny()
+                    .with_context("Program evaluation failed".to_string());
             }
         };
 
@@ -228,10 +229,17 @@ impl ProcRuleEngine {
                 Ok((allowed, message)) => {
                     if allowed {
                         debug!("ALLOW: {} {} (program allowed)", method, url);
+                        return match message {
+                            Some(msg) => EvaluationResult::allow().with_context(msg),
+                            None => EvaluationResult::allow(),
+                        };
                     } else {
                         debug!("DENY: {} {} (program denied)", method, url);
+                        return match message {
+                            Some(msg) => EvaluationResult::deny().with_context(msg),
+                            None => EvaluationResult::deny(),
+                        };
                     }
-                    return (allowed, message);
                 }
                 Err(e) => {
                     debug!("Request failed: {}", e);
@@ -244,30 +252,14 @@ impl ProcRuleEngine {
         }
 
         // Both attempts failed
-        (false, Some("Program evaluation failed".to_string()))
+        EvaluationResult::deny().with_context("Program evaluation failed".to_string())
     }
 }
 
 #[async_trait]
 impl RuleEngineTrait for ProcRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
-        let (allowed, context) = self
-            .execute_program(method.clone(), url, requester_ip)
-            .await;
-
-        if allowed {
-            let mut result = EvaluationResult::allow();
-            if let Some(msg) = context {
-                result = result.with_context(msg);
-            }
-            result
-        } else {
-            let mut result = EvaluationResult::deny();
-            if let Some(msg) = context {
-                result = result.with_context(msg);
-            }
-            result
-        }
+        self.execute_program(method, url, requester_ip).await
     }
 
     fn name(&self) -> &str {
