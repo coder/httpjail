@@ -10,7 +10,7 @@ use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
-use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
+use resources::{NFTable, NetworkNamespace, VethPair};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
@@ -65,7 +65,6 @@ pub struct LinuxJail {
     config: JailConfig,
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
-    namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
     dns_forwarder_pid: Option<libc::pid_t>,
     dns_cleanup_pipe: Option<RawFd>,
@@ -84,7 +83,6 @@ impl LinuxJail {
             config,
             namespace: None,
             veth_pair: None,
-            namespace_config: None,
             nftables: None,
             dns_forwarder_pid: None,
             dns_cleanup_pipe: None,
@@ -371,68 +369,6 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Fix DNS resolution in network namespaces
-    ///
-    /// ## The DNS Problem
-    ///
-    /// Network namespaces have isolated network stacks, including their own loopback.
-    /// When we create a namespace, it gets a copy of /etc/resolv.conf from the host.
-    ///
-    /// Common issues:
-    /// 1. **systemd-resolved**: Points to 127.0.0.53 which doesn't exist in the namespace
-    /// 2. **Local DNS**: Any local DNS resolver (127.0.0.1, etc.) won't be accessible
-    /// 3. **Corporate DNS**: Internal DNS servers might not be reachable from the namespace
-    /// 4. **CI environments**: Often have minimal or no DNS configuration
-    ///
-    /// ## Why We Can't Route Loopback Traffic to the Host
-    ///
-    /// You might think: "Just route 127.0.0.0/8 from the namespace to the host!"
-    /// This doesn't work due to Linux kernel security:
-    ///
-    /// 1. **Martian Packet Protection**: The kernel considers packets with 127.x.x.x
-    ///    addresses coming from non-loopback interfaces as "martian" (impossible/spoofed)
-    /// 2. **Source Address Validation**: Even with rp_filter=0, the kernel won't accept
-    ///    127.x.x.x packets from external interfaces
-    /// 3. **Built-in Security**: This is hardcoded in the kernel's IP stack for security -
-    ///    loopback addresses should NEVER appear on the network
-    ///
-    /// Even if we tried:
-    /// - `ip route add 127.0.0.53/32 via 10.99.X.1` - packets get dropped
-    /// - `nftables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
-    /// - Disabling rp_filter - doesn't help with loopback addresses
-    ///
-    /// ## Our Solution
-    ///
-    /// Instead of fighting the kernel's security measures, we:
-    /// 1. Always create a custom resolv.conf for the namespace
-    /// 2. Use public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
-    /// 3. These DNS queries go out through our veth pair and work normally
-    ///
-    /// **IMPORTANT**: `ip netns add` automatically bind-mounts files from
-    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace when the namespace
-    /// is created. We MUST create /etc/netns/<namespace-name>/resolv.conf BEFORE
-    /// creating the namespace for this to work. This overrides /etc/resolv.conf
-    /// ONLY for processes running in the namespace. The host's /etc/resolv.conf
-    /// remains completely untouched.
-    ///
-    /// This is simpler, more reliable, and doesn't compromise security.
-    fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
-        // With in-namespace DNS server and DNAT rules, we don't need to modify resolv.conf
-        // The server listens on 127.0.0.1:53 and DNAT redirects all DNS to it
-
-        // Create namespace config resource for cleanup tracking
-        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
-            &self.config.jail_id,
-        )?);
-
-        debug!(
-            "DNS will be handled via in-namespace server for {}",
-            self.namespace_name()
-        );
-
-        Ok(())
-    }
-
     /// With transparent DNS redirect, we no longer need to ensure specific DNS configuration.
     /// All DNS queries on port 53 will be intercepted regardless of resolv.conf contents.
     fn ensure_namespace_dns(&self) -> Result<()> {
@@ -572,10 +508,6 @@ impl Jail for LinuxJail {
     fn setup(&mut self, _proxy_port: u16) -> Result<()> {
         // Check for root access
         Self::check_root()?;
-
-        // Fix DNS BEFORE creating namespace so bind mount works
-        // The /etc/netns/<namespace>/ directory must exist before namespace creation
-        self.fix_systemd_resolved_dns()?;
 
         // Create network namespace
         self.create_namespace()?;
@@ -722,7 +654,6 @@ impl Jail for LinuxJail {
         // When these go out of scope, they will clean themselves up
         let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
         let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
-        let _config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
         let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
 
         Ok(())
@@ -737,7 +668,6 @@ impl Clone for LinuxJail {
             config: self.config.clone(),
             namespace: None,
             veth_pair: None,
-            namespace_config: None,
             nftables: None,
             dns_forwarder_pid: None,
             dns_cleanup_pipe: None,
