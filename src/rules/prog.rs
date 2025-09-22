@@ -168,23 +168,29 @@ impl ProgRuleEngine {
                             if let Ok(json_response) =
                                 serde_json::from_str::<serde_json::Value>(response)
                             {
-                                let allowed = json_response
-                                    .get("allow")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-
-                                let message = json_response
-                                    .get("message")
+                                // Check for deny_message first
+                                let deny_message = json_response
+                                    .get("deny_message")
                                     .and_then(|v| v.as_str())
                                     .map(String::from);
 
+                                // Get allow value - if not present but deny_message exists, default to false
+                                let allowed = if let Some(allow_val) = json_response.get("allow") {
+                                    allow_val.as_bool().unwrap_or(false)
+                                } else if deny_message.is_some() {
+                                    // Shorthand: if only deny_message is present, it implies allow: false
+                                    false
+                                } else {
+                                    false
+                                };
+
                                 if allowed {
                                     debug!("ALLOW: {} {} (script allowed via JSON)", method, url);
+                                    (allowed, None) // No message when allowing
                                 } else {
                                     debug!("DENY: {} {} (script denied via JSON)", method, url);
+                                    (allowed, deny_message)
                                 }
-
-                                (allowed, message)
                             } else {
                                 // Not JSON, treat the output as a deny message
                                 debug!("DENY: {} {} (script returned: {})", method, url, response);
@@ -347,13 +353,13 @@ for line in sys.stdin:
     try:
         request = json.loads(line)
         if 'blocked' in request.get('host', ''):
-            response = {'allow': False, 'message': f"Host {request['host']} is blocked"}
+            response = {'allow': False, 'deny_message': f"Host {request['host']} is blocked"}
         else:
             response = {'allow': True}
         print(json.dumps(response))
         sys.stdout.flush()
     except Exception as e:
-        print(json.dumps({'allow': False, 'message': str(e)}))
+        print(json.dumps({'allow': False, 'deny_message': str(e)}))
         sys.stdout.flush()
 "#;
         script_file.write_all(script.as_bytes()).unwrap();
@@ -453,18 +459,18 @@ for line in sys.stdin:
     
     # First request: allow
     if counter == 1:
-        response = {"allow": True, "message": f"Request {counter} allowed"}
+        response = {"allow": True}
         print(json.dumps(response))
         sys.stdout.flush()
-    # Second request: allow then exit
+    # Second request: deny then exit
     elif counter == 2:
-        response = {"allow": False, "message": f"Request {counter} denied, exiting"}
+        response = {"allow": False, "deny_message": f"Request {counter} denied, exiting"}
         print(json.dumps(response))
         sys.stdout.flush()
         sys.exit(0)  # Exit after second request
     else:
         # This should never be reached in the first process
-        response = {"allow": True, "message": f"Unexpected request {counter}"}
+        response = {"allow": True}
         print(json.dumps(response))
         sys.stdout.flush()
 "#;
@@ -488,12 +494,7 @@ for line in sys.stdin:
             .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
-        assert!(
-            result
-                .context
-                .as_ref()
-                .is_some_and(|c| c.contains("Request 1 allowed"))
-        );
+        assert_eq!(result.context, None); // No message when allowing
 
         // Second request - should be denied, then process exits
         let result = engine
@@ -515,12 +516,7 @@ for line in sys.stdin:
             .evaluate(Method::GET, "https://example.com/3", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
-        assert!(
-            result
-                .context
-                .as_ref()
-                .is_some_and(|c| c.contains("Request 1 allowed"))
-        );
+        assert_eq!(result.context, None); // No message when allowing
 
         // Fourth request - should be second request in restarted process
         let result = engine

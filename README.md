@@ -252,12 +252,13 @@ Examples:
 true  // Allow
 false // Deny
 
-// Object with message (parentheses needed when used as expression)
-({allow: false, message: "Blocked by policy"})
-({allow: true, message: "Allowed with warning"})
+// Object with deny_message (parentheses needed when used as expression)
+({allow: false, deny_message: "Blocked by policy"})
+// Shorthand: if only deny_message is provided, request is denied
+({deny_message: "Blocked by policy"})
 
 // Conditional with message
-r.method === 'POST' ? {allow: false, message: 'POST not allowed'} : true
+r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 ```
 
 **JavaScript evaluation rules:**
@@ -269,10 +270,11 @@ r.method === 'POST' ? {allow: false, message: 'POST not allowed'} : true
 
 **Performance considerations:**
 
-- V8 engine provides fast JavaScript execution
-- Fresh isolate creation per request ensures thread safety but adds some overhead
-- JavaScript evaluation is generally faster than shell script execution (--sh)
-- Persistent program mode (--prog) can be comparable to JavaScript for compiled languages
+- JavaScript mode is designed to be the fastest evaluation mode
+- V8 engine provides fast JavaScript execution with minimal overhead
+- Fresh isolate creation per request ensures thread safety
+- JavaScript evaluation is significantly faster than shell script execution (--sh)
+- Persistent program mode (--prog) can approach JavaScript performance for compiled languages, and future versions may support parallel instances and stateful caching
 
 > [!NOTE]
 > The evaluation flags `--js`, `--js-file`, `--sh`, and `--prog` are mutually exclusive. Only one evaluation method can be used at a time.
@@ -302,7 +304,7 @@ fi
 
 ### Persistent Program Mode (--prog)
 
-The `--prog` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use.
+The `--prog` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats.
 
 ```bash
 # Use a persistent program (path to executable)
@@ -335,8 +337,9 @@ for line in sys.stdin:
 
 - **Output**: One response per line, either:
   - Simple: `true` or `false` (matching JS boolean semantics)
-  - JSON: `{"allow": true/false, "message": "optional context"}`
-  - Any other output is treated as deny with the output as the message
+  - JSON: `{"allow": true/false, "deny_message": "optional message for denials"}`
+  - Shorthand: `{"deny_message": "reason"}` (implies allow: false)
+  - Any other output is treated as deny with the output as the deny_message
 
 > [!NOTE]
 > Make sure to flush stdout after each response in your script to ensure real-time processing!

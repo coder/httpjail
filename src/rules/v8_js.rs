@@ -14,12 +14,15 @@ pub struct V8JsRuleEngine {
 
 impl V8JsRuleEngine {
     pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error>> {
-        // Initialize V8 platform once
-        static V8_INIT: std::sync::Once = std::sync::Once::new();
-        V8_INIT.call_once(|| {
+        // Initialize V8 platform once and keep it alive for the lifetime of the program
+        use std::sync::OnceLock;
+        static V8_PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
+
+        V8_PLATFORM.get_or_init(|| {
             let platform = v8::new_default_platform(0, false).make_shared();
-            v8::V8::initialize_platform(platform);
+            v8::V8::initialize_platform(platform.clone());
             v8::V8::initialize();
+            platform
         });
 
         // Compile the JavaScript to check for syntax errors
@@ -121,36 +124,47 @@ impl V8JsRuleEngine {
             .run(context_scope)
             .ok_or("Expression evaluation failed")?;
 
-        // Check if result is an object with 'allow' and optionally 'message'
+        // Check if result is an object with 'allow' and/or 'deny_message'
         if result.is_object() {
             let obj = result.to_object(context_scope).unwrap();
 
-            // Get 'allow' property
-            let allow_key = v8::String::new(context_scope, "allow").unwrap();
-            let allowed = obj
-                .get(context_scope, allow_key.into())
-                .map(|v| v.boolean_value(context_scope))
-                .unwrap_or(false);
+            // Get 'deny_message' property if present
+            let deny_message_key = v8::String::new(context_scope, "deny_message").unwrap();
+            let deny_message = obj
+                .get(context_scope, deny_message_key.into())
+                .and_then(|v| {
+                    if v.is_undefined() || v.is_null() {
+                        None
+                    } else {
+                        v.to_string(context_scope)
+                            .map(|s| s.to_rust_string_lossy(context_scope))
+                    }
+                });
 
-            // Get 'message' property if present
-            let message_key = v8::String::new(context_scope, "message").unwrap();
-            let message = obj.get(context_scope, message_key.into()).and_then(|v| {
-                if v.is_undefined() || v.is_null() {
-                    None
-                } else {
-                    v.to_string(context_scope)
-                        .map(|s| s.to_rust_string_lossy(context_scope))
-                }
-            });
+            // Get 'allow' property - if not present but deny_message exists, default to false
+            let allow_key = v8::String::new(context_scope, "allow").unwrap();
+            let allow_value = obj.get(context_scope, allow_key.into());
+            let allowed = if allow_value.is_some() && !allow_value.unwrap().is_undefined() {
+                allow_value.unwrap().boolean_value(context_scope)
+            } else if deny_message.is_some() {
+                // Shorthand: if only deny_message is present, it implies allow: false
+                false
+            } else {
+                // Default to false if neither is properly set
+                false
+            };
 
             debug!(
                 "JS rule returned object: allow={} for {} {}",
                 allowed, request_info.method, request_info.url
             );
 
-            if let Some(ref msg) = message {
-                debug!("Message: {}", msg);
+            if let Some(ref msg) = deny_message {
+                debug!("Deny message: {}", msg);
             }
+
+            // Only return the message if the request is denied
+            let message = if !allowed { deny_message } else { None };
 
             Ok((allowed, message))
         } else {
@@ -242,19 +256,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_v8_js_object_response_allow() {
-        let engine =
-            V8JsRuleEngine::new("({allow: true, message: 'Test allowed'})".to_string()).unwrap();
+        let engine = V8JsRuleEngine::new("({allow: true})".to_string()).unwrap();
         let result = engine
             .evaluate(Method::GET, "https://example.com", "127.0.0.1")
             .await;
         assert!(matches!(result.action, crate::rules::Action::Allow));
-        assert_eq!(result.context, Some("Test allowed".to_string()));
+        assert_eq!(result.context, None); // No message when allowing
     }
 
     #[tokio::test]
     async fn test_v8_js_object_response_deny() {
         let engine =
-            V8JsRuleEngine::new("({allow: false, message: 'Blocked by policy'})".to_string())
+            V8JsRuleEngine::new("({allow: false, deny_message: 'Blocked by policy'})".to_string())
                 .unwrap();
         let result = engine
             .evaluate(Method::POST, "https://example.com", "127.0.0.1")
@@ -266,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn test_v8_js_conditional_object() {
         let engine = V8JsRuleEngine::new(
-            "r.method === 'POST' ? {allow: false, message: 'POST not allowed'} : true".to_string(),
+            "r.method === 'POST' ? {deny_message: 'POST not allowed'} : true".to_string(),
         )
         .unwrap();
 
@@ -283,5 +296,17 @@ mod tests {
             .await;
         assert!(matches!(result.action, crate::rules::Action::Allow));
         assert_eq!(result.context, None);
+    }
+
+    #[tokio::test]
+    async fn test_v8_js_shorthand_deny_message() {
+        // Test shorthand: {deny_message: "reason"} implies allow: false
+        let engine =
+            V8JsRuleEngine::new("({deny_message: 'Shorthand denial'})".to_string()).unwrap();
+        let result = engine
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, crate::rules::Action::Deny));
+        assert_eq!(result.context, Some("Shorthand denial".to_string()));
     }
 }
