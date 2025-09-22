@@ -275,7 +275,7 @@ r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 - Fresh isolate creation per request ensures thread safety
 - JavaScript evaluation is significantly faster than shell script execution (--sh)
 - Line processor mode (--proc) should be considered the fastest mode.
-    - Stateful programs can use state such as caching
+    - Programs can use state such as caching
     - We may parallelize this mode in the future
 
 > [!NOTE]
