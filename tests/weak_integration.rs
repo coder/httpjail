@@ -390,15 +390,25 @@ done
         .execute();
 
     let proc_json = match proc_result {
-        Ok((_, stdout, _)) => {
+        Ok((exit_code, stdout, stderr)) => {
+            // Debug output to understand what's happening
+            eprintln!("Proc test exit code: {}", exit_code);
+            eprintln!("Proc test stdout: {:?}", stdout);
+            eprintln!("Proc test stderr: {:?}", stderr);
+
             // Extract the JSON from the deny message
             assert!(
                 stdout.contains("Request blocked by httpjail"),
-                "Stdout should contain 'Request blocked by httpjail'"
+                "Stdout should contain 'Request blocked by httpjail', got: {}",
+                stdout
             );
             // The JSON is on the second line of the response
             let lines: Vec<&str> = stdout.lines().collect();
-            assert!(lines.len() >= 2, "Expected at least 2 lines in response");
+            assert!(
+                lines.len() >= 2,
+                "Expected at least 2 lines in response, got {} lines",
+                lines.len()
+            );
             lines[1].to_string()
         }
         Err(e) => panic!("Failed to execute proc test: {}", e),
