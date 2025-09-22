@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use simple_dns::rdata::RData;
 use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord};
 use std::net::{Ipv4Addr, UdpSocket};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -146,60 +146,68 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
 }
 
-/// A DNS server that runs in a forked process inside a network namespace
-pub struct NamespaceDnsServer {
-    /// PID of the forked DNS server process
-    dns_forwarder_pid: Option<libc::pid_t>,
-    /// File descriptor of the pipe used to signal shutdown
-    dns_cleanup_pipe: Option<RawFd>,
+/// Manages a forked child process that runs a DNS server inside a network namespace
+///
+/// This struct handles the lifecycle of a forked process that:
+/// 1. Enters a specified network namespace
+/// 2. Runs a DummyDnsServer on port 53
+/// 3. Automatically cleans up when dropped
+pub struct ForkedDnsProcess {
+    /// PID of the forked child process
+    child_pid: Option<nix::unistd::Pid>,
+    /// Write end of pipe used to detect parent death (closed on drop)
+    parent_pipe: Option<nix::unistd::OwnedFd>,
 }
 
-impl NamespaceDnsServer {
+impl ForkedDnsProcess {
     pub fn new() -> Self {
         Self {
-            dns_forwarder_pid: None,
-            dns_cleanup_pipe: None,
+            child_pid: None,
+            parent_pipe: None,
         }
     }
 
     /// Start a DNS server in a forked process within the specified namespace
     pub fn start(&mut self, namespace_name: &str) -> Result<()> {
+        use nix::unistd::ForkResult;
+
         info!("Starting in-namespace DNS server for {}", namespace_name);
 
-        // Create pipe for cleanup detection
-        let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
+        // Create pipe for parent-child lifecycle monitoring
+        let (read_end, write_end) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
+            .context("Failed to create cleanup pipe")?;
 
-        // SAFETY: While we may be forking from within a tokio runtime, this is safe because:
-        // 1. The child process immediately drops all Rust objects except raw file descriptors
-        // 2. It only uses libc calls and never returns to Rust/tokio code
-        // 3. It exits via std::process::exit() or libc::exit(), never unwinding
-        // 4. The parent continues normally with its own file descriptors
-        //
-        // To make this even safer, we could use std::process::Command instead of fork(),
-        // but that would require a separate binary or significant refactoring.
-        match unsafe { libc::fork() } {
-            0 => {
-                // Child: Run DNS server in namespace
-                drop(write_fd);
-                let read_raw = read_fd.as_raw_fd();
+        // SAFETY: While forking from a tokio runtime, the child immediately:
+        // - Closes unnecessary file descriptors
+        // - Never returns to Rust/tokio code
+        // - Exits via _exit() without unwinding
+        match unsafe { nix::unistd::fork() }.context("Failed to fork DNS process")? {
+            ForkResult::Child => {
+                // Child process: Run DNS server in namespace
+                drop(write_end);
+                let read_fd = read_end.as_raw_fd();
 
                 // Close all unnecessary file descriptors inherited from parent
-                // This includes tokio's epoll/kqueue fds and any other open files
                 // Keep only stdin(0), stdout(1), stderr(2), and our read pipe
                 for fd in 3..1024 {
-                    if fd != read_raw {
-                        unsafe {
-                            libc::close(fd);
-                        }
+                    if fd != read_fd {
+                        let _ = nix::unistd::close(fd);
                     }
                 }
 
-                // Die if parent dies
-                unsafe {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                    if libc::getppid() == 1 {
-                        libc::exit(1);
+                // Request SIGTERM when parent dies
+                #[cfg(target_os = "linux")]
+                {
+                    use nix::sys::signal::Signal;
+                    if let Err(e) = nix::sys::prctl::set_pdeathsig(Signal::SIGTERM) {
+                        eprintln!("Failed to set parent death signal: {}", e);
+                        std::process::exit(1);
                     }
+                }
+
+                // Check if parent already died
+                if nix::unistd::getppid() == nix::unistd::Pid::from_raw(1) {
+                    std::process::exit(1);
                 }
 
                 // Enter the namespace
@@ -209,11 +217,12 @@ impl NamespaceDnsServer {
                     std::process::exit(1);
                 });
 
-                let ret = unsafe { libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET) };
-                if ret != 0 {
-                    eprintln!("Failed to setns into {}", namespace_name);
-                    std::process::exit(1);
-                }
+                // Use nix for setns
+                nix::sched::setns(ns_fd.as_raw_fd(), nix::sched::CloneFlags::CLONE_NEWNET)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to setns into {}: {}", namespace_name, e);
+                        std::process::exit(1);
+                    });
 
                 // Ensure loopback interface is up
                 std::process::Command::new("ip")
@@ -229,78 +238,76 @@ impl NamespaceDnsServer {
                 }
 
                 // Drop privileges to nobody after binding
-                unsafe {
-                    libc::setgroups(0, std::ptr::null());
-                    libc::setgid(65534); // nogroup
-                    libc::setuid(65534); // nobody
-                }
+                let nobody_uid = nix::unistd::Uid::from_raw(65534);
+                let nogroup_gid = nix::unistd::Gid::from_raw(65534);
+
+                nix::unistd::setgroups(&[]).ok();
+                nix::unistd::setgid(nogroup_gid).ok();
+                nix::unistd::setuid(nobody_uid).ok();
 
                 info!("In-namespace DNS server listening on 0.0.0.0:53");
 
                 // Monitor parent lifecycle
                 loop {
                     let mut buf = [0u8; 1];
-                    let n =
-                        unsafe { libc::read(read_raw, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-                    if n == 0 {
-                        // EOF - parent died
-                        std::process::exit(0);
+                    match nix::unistd::read(read_fd, &mut buf) {
+                        Ok(0) | Err(_) => {
+                            // EOF or error - parent died
+                            std::process::exit(0);
+                        }
+                        Ok(_) => {}
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
-            pid if pid > 0 => {
-                // Parent: Store cleanup info
-                drop(read_fd);
-                let write_raw = write_fd.as_raw_fd();
-                self.dns_forwarder_pid = Some(pid);
-                self.dns_cleanup_pipe = Some(write_raw);
-                // Keep write_fd alive by not dropping it
-                std::mem::forget(write_fd);
-
-                info!("Started in-namespace DNS server (pid {})", pid);
+            ForkResult::Parent { child } => {
+                // Parent: Store child info and keep write end open
+                drop(read_end);
+                self.child_pid = Some(child);
+                self.parent_pipe = Some(write_end);
+                info!("Started in-namespace DNS server (pid {})", child);
                 Ok(())
             }
-            _ => anyhow::bail!("Fork failed"),
         }
     }
 
     /// Stop the forked DNS server
     pub fn stop(&mut self) {
-        // Close pipe to signal shutdown
-        if let Some(fd) = self.dns_cleanup_pipe.take() {
-            unsafe {
-                libc::close(fd);
-            }
-        }
+        // Close pipe to signal shutdown (will cause child to exit)
+        self.parent_pipe = None;
 
-        // Clean kill of the process
-        if let Some(pid) = self.dns_forwarder_pid.take() {
-            unsafe {
-                // Try graceful termination
-                libc::kill(pid, libc::SIGTERM);
+        // Clean kill of the process if it's still running
+        if let Some(pid) = self.child_pid.take() {
+            use nix::sys::signal::{Signal, kill};
+            use nix::sys::wait::{WaitPidFlag, waitpid};
 
-                // Wait briefly for clean exit
-                let start = std::time::Instant::now();
-                let mut status = 0;
-                while start.elapsed() < std::time::Duration::from_millis(100) {
-                    if libc::waitpid(pid, &mut status, libc::WNOHANG) == pid {
+            // Try graceful termination
+            let _ = kill(pid, Signal::SIGTERM);
+
+            // Wait briefly for clean exit
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(100) {
+                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(nix::sys::wait::WaitStatus::Exited(..))
+                    | Ok(nix::sys::wait::WaitStatus::Signaled(..)) => {
                         info!("Stopped in-namespace DNS server");
                         return;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    _ => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
-
-                // Force kill if needed
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
-                info!("Force-stopped in-namespace DNS server");
             }
+
+            // Force kill if needed
+            let _ = kill(pid, Signal::SIGKILL);
+            let _ = waitpid(pid, None);
+            info!("Force-stopped in-namespace DNS server");
         }
     }
 }
 
-impl Drop for NamespaceDnsServer {
+impl Drop for ForkedDnsProcess {
     fn drop(&mut self) {
         self.stop();
     }

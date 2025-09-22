@@ -9,7 +9,7 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use dns::NamespaceDnsServer;
+use dns::ForkedDnsProcess;
 use resources::{NFTable, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
@@ -65,7 +65,7 @@ pub struct LinuxJail {
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
     nftables: Option<ManagedResource<NFTable>>,
-    dns_server: Option<NamespaceDnsServer>,
+    dns_server: Option<ForkedDnsProcess>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -379,9 +379,9 @@ impl LinuxJail {
 
     /// Fork a DNS server directly into the namespace
     fn start_namespace_dns_server(&mut self) -> Result<()> {
-        let mut dns_server = NamespaceDnsServer::new();
-        dns_server.start(&self.namespace_name())?;
-        self.dns_server = Some(dns_server);
+        let mut dns_process = ForkedDnsProcess::new();
+        dns_process.start(&self.namespace_name())?;
+        self.dns_server = Some(dns_process);
         Ok(())
     }
 }
