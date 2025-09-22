@@ -62,25 +62,334 @@ httpjail --server --js "true"
 httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest wget -qO- https://api.github.com
 ```
 
-## Documentation
+## Architecture Overview
 
-Docs are stored in the `docs/` directory and served
-at [coder.github.io/httpjail](https://coder.github.io/httpjail).
+httpjail creates an isolated network environment for the target process, intercepting all HTTP/HTTPS traffic through a transparent proxy that enforces user-defined rules.
 
-Table of Contents:
+### Linux Implementation
 
-- [Installation](https://coder.github.io/httpjail/guide/installation.html)
-- [Quick Start](https://coder.github.io/httpjail/guide/quick-start.html)
-- [Configuration](https://coder.github.io/httpjail/guide/configuration.html)
-- [Rule Engines](https://coder.github.io/httpjail/guide/rule-engines/index.html)
-  - [JavaScript](https://coder.github.io/httpjail/guide/rule-engines/javascript.html)
-  - [Shell](https://coder.github.io/httpjail/guide/rule-engines/shell.html)
-  - [Line Processor](https://coder.github.io/httpjail/guide/rule-engines/line-processor.html)
-- [Platform Support](https://coder.github.io/httpjail/guide/platform-support.html)
-- [Request Logging](https://coder.github.io/httpjail/guide/request-logging.html)
-- [TLS Interception](https://coder.github.io/httpjail/advanced/tls-interception.html)
-- [DNS Exfiltration](https://coder.github.io/httpjail/advanced/dns-exfiltration.html)
-- [Server Mode](https://coder.github.io/httpjail/advanced/server-mode.html)
+```
+┌─────────────────────────────────────────────────┐
+│                 httpjail Process                │
+├─────────────────────────────────────────────────┤
+│  1. Create network namespace                    │
+│  2. Setup nftables rules                        │
+│  3. Fork DNS server into namespace              │
+│  4. Start HTTP/HTTPS proxy servers              │
+│  5. Export CA trust env vars                    │
+│  6. Execute target process in namespace         │
+└─────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────┐
+│              Target Process                     │
+│  • Isolated in network namespace                │
+│  • All HTTP/HTTPS → proxy via nftables DNAT     │
+│  • All DNS queries → in-namespace DNS (6.6.6.6) │
+│  • CA cert trusted via env vars                 │
+└─────────────────────────────────────────────────┘
+```
+
+### macOS Implementation
+
+```
+┌─────────────────────────────────────────────────┐
+│                 httpjail Process                │
+├─────────────────────────────────────────────────┤
+│  1. Start HTTP/HTTPS proxy servers              │
+│  2. Set HTTP_PROXY/HTTPS_PROXY env vars         │
+│  3. Generate/load CA certificate                │
+│  4. Execute target with proxy environment       │
+└─────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────┐
+│              Target Process                     │
+│  • HTTP_PROXY/HTTPS_PROXY environment vars      │
+│  • Applications must respect proxy settings     │
+│  • CA cert via environment variables            │
+└─────────────────────────────────────────────────┘
+```
+
+**Note**: Due to macOS PF (Packet Filter) limitations, httpjail uses environment-based proxy configuration on macOS. PF translation rules (such as `rdr` and `route-to`) cannot match on user or group, making transparent traffic interception impossible. As a result, httpjail operates in "weak mode" on macOS, relying on applications to respect the `HTTP_PROXY` and `HTTPS_PROXY` environment variables. Most command-line tools and modern applications respect these settings, but some may bypass them. See also https://github.com/coder/httpjail/issues/7.
+
+## Platform Support
+
+| Feature           | Linux                        | macOS                       | Windows       |
+| ----------------- | ---------------------------- | --------------------------- | ------------- |
+| Traffic isolation | ✅ Namespaces + nftables     | ⚠️ Env vars only            | 🚧 Planned    |
+| TLS interception  | ✅ Transparent MITM + env CA | ✅ Env variables            | 🚧 Cert store |
+| Sudo required     | ⚠️ Yes                       | ✅ No                       | 🚧            |
+| Force all traffic | ✅ Yes                       | ❌ No (apps must cooperate) | 🚧            |
+
+## DNS Exfiltration Protection
+
+httpjail provides comprehensive DNS exfiltration protection in Linux strong mode by intercepting all DNS queries and returning dummy responses, preventing data leakage through DNS subdomain encoding.
+
+### How It Works
+
+1. **Transparent Interception**: nftables rules redirect all UDP port 53 traffic to our in-namespace DNS server
+2. **Dummy Responses**: All DNS queries receive a fixed response (6.6.6.6), making DNS tunneling impossible
+3. **Process Isolation**: The DNS server runs in a dedicated forked process within the network namespace
+4. **Automatic Cleanup**: Uses Linux's `PR_SET_PDEATHSIG` to ensure DNS server terminates when parent dies
+
+<details>
+<summary><b>Technical Implementation Details</b></summary>
+
+The DNS protection is implemented through a `ForkedDnsProcess` that manages a child process running inside the network namespace:
+
+```rust
+// Simplified architecture
+ForkedDnsProcess {
+    child_pid: Pid,  // Forked process running DummyDnsServer
+}
+```
+
+**Key Features:**
+- **Fork Safety**: Child process closes all inherited file descriptors (3-1024) to avoid tokio runtime issues
+- **Privilege Dropping**: After binding to port 53, drops to nobody:nogroup
+- **Automatic Termination**: `PR_SET_PDEATHSIG(SIGTERM)` ensures cleanup when parent dies
+- **Simple Protocol**: Returns 6.6.6.6 for all A record queries
+- **No External Dependencies**: Pure Rust implementation using `simple-dns` crate
+
+**Security Guarantees:**
+- External DNS servers (1.1.1.1, 8.8.8.8) cannot be reached
+- DNS-over-HTTPS/TLS attempts are blocked at the network level
+- All DNS exfiltration vectors are eliminated while maintaining HTTP/HTTPS functionality
+
+</details>
+
+```mermaid
+sequenceDiagram
+    participant J as Jailed Process
+    participant S as Jail Server
+    participant D as Public DNS Resolvers
+    
+    Note over J,D: DNS Exfiltration Attempt
+    J->>S: DNS Query: secret-data.attacker.com
+    S-->>J: Response: 6.6.6.6 (dummy)
+    Note over S,D: ❌ Query never reaches public resolvers
+    
+    Note over J,D: Blocked HTTP Flow
+    J->>S: HTTP GET http://blocked.com
+    Note over S: Rule evaluation: denied
+    S-->>J: 403 Forbidden
+    Note over S,D: ❌ No DNS resolution needed
+    
+    Note over J,D: Allowed HTTP Flow
+    J->>S: HTTP GET http://example.com
+    Note over S: Rule evaluation: allowed
+    S->>D: DNS Query: example.com (only if needed)
+    D-->>S: Real IP address
+    S->>S: Forward to upstream server
+    S-->>J: HTTP response
+```
+
+The diagram illustrates three key scenarios:
+1. **DNS Exfiltration Prevention**: All DNS queries from the jailed process receive a dummy response (6.6.6.6), never reaching public resolvers
+2. **Blocked HTTP Traffic**: Requests to denied domains are rejected without any DNS resolution
+3. **Allowed HTTP Traffic**: Only when rules permit, the server performs actual DNS resolution and forwards the request
+
+## Prerequisites
+
+### Linux
+
+- Linux kernel 3.8+ (network namespace support)
+- nftables (nft command)
+- libssl-dev (for TLS)
+- sudo access (for namespace creation)
+
+### macOS
+
+- No special permissions required (runs in weak mode)
+- **Automatic keychain trust:** On first run, httpjail will attempt to automatically install its CA certificate to your user keychain (with macOS password prompt). This enables HTTPS interception for most applications.
+- **Manual keychain management:**
+  - `httpjail trust` - Check if the CA certificate is trusted
+  - `httpjail trust --install` - Manually install CA to user keychain (with prompt)
+  - `httpjail trust --remove` - Remove CA from keychain
+- **Application compatibility:**
+  - ✅ Most CLI tools (curl, npm, etc.) work with environment variables or keychain trust
+  - ❌ Go programs (gh, go) require keychain trust and may fail until `httpjail trust --install` is run
+  - ❌ Some applications may bypass proxy settings entirely
+
+## Configuration File
+
+Create a `rules.js` file with your JavaScript evaluation logic:
+
+```javascript
+// rules.js
+// Allow GitHub GET requests, block telemetry, allow everything else
+(r.method === "GET" && /github\.com$/.test(r.host)) ||
+  !/telemetry/.test(r.host);
+```
+
+Use the config:
+
+```bash
+httpjail --js-file rules.js -- ./my-application
+```
+
+## JavaScript (V8) Evaluation
+
+httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
+
+```bash
+# Simple JavaScript expression - allow only GitHub requests
+httpjail --js "r.host === 'github.com'" -- curl https://github.com
+
+# Method-specific filtering
+httpjail --js "r.method === 'GET' && r.host === 'api.github.com'" -- git pull
+
+# Load from file
+httpjail --js-file rules.js -- ./my-app
+
+# Complex logic with multiple conditions (ternary style)
+httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? true : (r.host.includes('facebook.com') || r.host.includes('twitter.com')) ? false : (r.scheme === 'https' && r.path.startsWith('/api/')) ? true : false" -- ./my-app
+
+# Path-based filtering
+httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
+
+# Custom block message
+httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
+```
+
+**JavaScript API:**
+
+All request information is available via the `r` object:
+
+- `r.url` - Full URL being requested (string)
+- `r.method` - HTTP method (GET, POST, etc.)
+- `r.host` - Hostname from the URL
+- `r.scheme` - URL scheme (http or https)
+- `r.path` - Path portion of the URL
+- `r.requester_ip` - IP address of the client making the request
+- `r.block_message` - Optional message to set when denying (writable)
+
+**JavaScript evaluation rules:**
+
+- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
+- Code is executed in a sandboxed V8 isolate for security
+- Syntax errors are caught during startup and cause httpjail to exit
+- Runtime errors result in the request being blocked
+- Each request evaluation runs in a fresh context for thread safety
+- You can set `r.block_message` to provide a custom denial message
+
+**Performance considerations:**
+
+- V8 engine provides fast JavaScript execution
+- Fresh isolate creation per request ensures thread safety but adds some overhead
+- JavaScript evaluation is generally faster than external script execution
+
+> [!NOTE]
+> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
+
+## Script-Based Evaluation
+
+Instead of writing JavaScript, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
+
+```bash
+# Simple script example
+#!/bin/bash
+if [ "$HTTPJAIL_HOST" = "github.com" ] && [ "$HTTPJAIL_METHOD" = "GET" ]; then
+    exit 0  # Allow the request
+else
+    exit 1  # Block the request
+fi
+
+# Use the script
+httpjail --sh ./check_request.sh -- curl https://github.com
+
+# Inline script (with spaces, executed via shell)
+httpjail --sh '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
+```
+
+If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
+
+**Environment variables provided to the script:**
+
+- `HTTPJAIL_URL` - Full URL being requested
+- `HTTPJAIL_METHOD` - HTTP method (GET, POST, etc.)
+- `HTTPJAIL_HOST` - Hostname from the URL
+- `HTTPJAIL_SCHEME` - URL scheme (http or https)
+- `HTTPJAIL_PATH` - Path component of the URL
+- `HTTPJAIL_REQUESTER_IP` - IP address of the client making the request
+
+**Script requirements:**
+
+- Exit code 0 allows the request
+- Any non-zero exit code blocks the request
+- stdout is captured and included in 403 responses as additional context
+- stderr is logged for debugging but not sent to the client
+
+> [!TIP]
+> Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
+
+## Advanced Options
+
+```bash
+# Verbose logging
+httpjail -vvv --js "true" -- curl https://example.com
+
+# Server mode - run as standalone proxy without executing commands
+httpjail --server --js "true"
+# Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
+
+# Server mode with custom ports (format: port or ip:port)
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
+# Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
+
+# Bind to specific interface
+HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "true"
+```
+
+## Server Mode
+
+httpjail can run as a standalone proxy server without executing any commands. This is useful when you want to proxy multiple applications through the same httpjail instance. The server binds to localhost (127.0.0.1) only for security.
+
+```bash
+# Start server with default ports (8080 for HTTP, 8443 for HTTPS) on localhost
+httpjail --server --js "true"
+
+# Start server with custom ports using environment variables
+HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
+
+# Bind to all interfaces (use with caution - exposes proxy to network)
+HTTPJAIL_HTTP_BIND=0.0.0.0:8080 HTTPJAIL_HTTPS_BIND=0.0.0.0:8443 httpjail --server --js "true"
+
+# Configure your applications to use the proxy:
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8443
+curl https://github.com  # This request will go through httpjail
+```
+
+**Note**: In server mode, httpjail does not create network isolation. Applications must be configured to use the proxy via environment variables or application-specific proxy settings.
+
+## TLS Interception
+
+httpjail performs HTTPS interception using a locally-generated Certificate Authority (CA). The tool does not modify your system trust store. Instead, it configures the jailed process to trust the httpjail CA via environment variables.
+
+How it works:
+
+1. **CA generation (first run)**: A unique CA keypair is created and persisted.
+2. **Persistent storage** (via `dirs::config_dir()`):
+   - macOS: `~/Library/Application Support/httpjail/`
+   - Linux: `~/.config/httpjail/`
+   - Windows: `%APPDATA%\httpjail\`
+     Files: `ca-cert.pem`, `ca-key.pem` (key is chmod 600 on Unix).
+3. **Per‑process trust via env vars**: For the jailed command, httpjail sets common variables so clients trust the CA without touching system stores:
+   - `SSL_CERT_FILE` and `SSL_CERT_DIR`
+   - `CURL_CA_BUNDLE`
+   - `GIT_SSL_CAINFO`
+   - `REQUESTS_CA_BUNDLE`
+   - `NODE_EXTRA_CA_CERTS`
+     These apply on both Linux (strong/transparent mode) and macOS (`--weak` env‑only mode).
+4. **Transparent MITM**:
+   - Linux strong mode redirects TCP 80/443 to the local proxy. HTTPS is intercepted transparently by extracting SNI from ClientHello and presenting a per‑host certificate signed by the httpjail CA.
+   - macOS uses explicit proxying via `HTTP_PROXY`/`HTTPS_PROXY` and typically negotiates HTTPS via CONNECT; interception occurs after CONNECT.
+5. **No system trust changes**: httpjail never installs the CA into OS trust stores; there is no global modification and thus no trust cleanup step. The CA files remain in the config dir for reuse across runs.
+
+Notes and limits:
+
+- Tools that ignore the above env vars will fail TLS verification when intercepted. For those, add tool‑specific flags to point at `ca-cert.pem`.
+- Long‑lived connections are supported: timeouts are applied only to protocol detection, CONNECT header reads, and TLS handshakes — not to proxied streams (e.g., gRPC/WebSocket).
 
 ## License
 
