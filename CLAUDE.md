@@ -252,3 +252,29 @@ gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- 
 ```
 
 This ensures you don't interfere with active CI jobs and provides a clean environment for testing.
+
+### Faster Linux Strong Jail Debugging
+
+**For Linux strong jail issues, it's significantly faster to test directly on the CI machine before pushing to CI.** This avoids the CI queue and provides immediate feedback.
+
+```bash
+# Quick test cycle for Linux strong jail changes
+BRANCH_NAME="your-branch-name"
+
+# 1. Copy your local changes to CI machine
+./scripts/ci-scp.sh src/jail/linux/mod.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/src/jail/linux/
+
+# 2. Build on CI machine
+./scripts/ci-ssh.sh "cd /tmp/httpjail-$BRANCH_NAME && export CARGO_HOME=/home/ci/.cargo && /home/ci/.cargo/bin/cargo build --profile fast"
+
+# 3. Run specific tests
+./scripts/ci-ssh.sh "cd /tmp/httpjail-$BRANCH_NAME && export CARGO_HOME=/home/ci/.cargo && sudo -E /home/ci/.cargo/bin/cargo test --test linux_integration test_name"
+
+# 4. Only push to CI after tests pass locally
+git push origin $BRANCH_NAME
+```
+
+This approach is especially valuable for:
+- Debugging Linux-specific issues (namespaces, nftables, privileges)
+- Testing DNS/networking changes that require root
+- Iterating quickly on test failures without waiting for CI
