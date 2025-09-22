@@ -1,32 +1,30 @@
 #!/bin/bash
 #
-# Get PR code review comments (resolvable comments on specific lines)
+# PR Comment Fetcher - Designed for AI/Agent Use
+#
+# This script is optimized for AI agents and automation tools to fetch
+# unresolved PR code review comments. Output is plain text without colors
+# and excludes resolved conversations.
 #
 # Usage:
 #   ./scripts/get-pr-comments.sh [PR_NUMBER] [OPTIONS]
 #
 # Options:
-#   -r, --raw      Output raw format without colors
+#   --raw          Output raw format (included for compatibility)
+#   --compact      Output in compact format (one line per comment)
 #   -h, --help     Show this help message
 #
 # Examples:
 #   ./scripts/get-pr-comments.sh           # Auto-detect PR from current branch
 #   ./scripts/get-pr-comments.sh 54        # Get comments for PR #54
-#   ./scripts/get-pr-comments.sh 54 --raw  # Get raw output for piping
+#   ./scripts/get-pr-comments.sh --compact # Get compact output
 #
-# Note: Only shows code review comments (resolvable comments on specific lines),
-#       not general PR comments
+# Note: Only shows unresolved code review comments (resolvable comments on specific lines),
+#       not general PR comments or resolved conversations
 #
 # If PR_NUMBER is not provided, attempts to detect from current branch
-
+#
 set -euo pipefail
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 
 # Function to get current PR number from branch
 get_current_pr() {
@@ -41,16 +39,20 @@ get_current_pr() {
 
 # Parse arguments
 PR_NUMBER=""
-RAW_MODE=false
+COMPACT_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -r|--raw)
-            RAW_MODE=true
+        --raw)
+            # Included for compatibility, but output is always plain text
+            shift
+            ;;
+        --compact)
+            COMPACT_MODE=true
             shift
             ;;
         -h|--help)
-            grep '^#' "$0" | head -20 | tail -18 | sed 's/^# //'
+            grep '^#' "$0" | head -25 | tail -23 | sed 's/^# //'
             exit 0
             ;;
         -*)
@@ -67,75 +69,137 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Disable colors in raw mode
-if [[ "$RAW_MODE" == "true" ]]; then
-    RED=''
-    GREEN=''
-    YELLOW=''
-    BLUE=''
-    NC=''
-fi
-
 # If no PR number provided, try to detect from current branch
 if [[ -z "$PR_NUMBER" ]]; then
-    echo -e "${BLUE}No PR number provided, detecting from current branch...${NC}"
+    echo "No PR number provided, detecting from current branch..."
     PR_NUMBER=$(get_current_pr) || {
-        echo -e "${RED}Error: Could not detect PR number from current branch${NC}"
+        echo "Error: Could not detect PR number from current branch"
         echo "Usage: $0 [PR_NUMBER]"
         exit 1
     }
-    echo -e "${GREEN}Detected PR #$PR_NUMBER${NC}"
+    echo "Detected PR #$PR_NUMBER"
 fi
 
 # Repository detection
 REPO="${GITHUB_REPOSITORY:-coder/httpjail}"
 
-echo -e "${BLUE}Fetching code review comments for PR #$PR_NUMBER in $REPO...${NC}"
+echo "Fetching unresolved code review comments for PR #$PR_NUMBER in $REPO..."
 echo ""
 
-# Fetch and format review comments (comments on specific lines of code)
-# These are the resolvable comments that appear in the "Files changed" tab
+# Fetch review comments with resolution status
+# We need to get the comments and check if they're part of resolved conversations
 REVIEW_COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate \
-  -q '.[] | select(.line != null) | "\(.user.login) [CID=\(.id)] \(.path)#L\(.line): \(.body)"' 2>/dev/null)
+  -q '.[] | select(.line != null) | {
+    id: .id,
+    user: .user.login,
+    path: .path,
+    line: .line,
+    body: .body,
+    in_reply_to_id: .in_reply_to_id,
+    position: .position
+  }' 2>/dev/null)
 
-# Check if any comments were found
-if [[ -z "$REVIEW_COMMENTS" ]]; then
-    echo -e "${YELLOW}No code review comments found for PR #$PR_NUMBER${NC}"
+# Get resolved conversation thread IDs
+# GitHub API doesn't directly tell us if a review comment is resolved,
+# but we can check the review threads
+RESOLVED_THREADS=$(gh api graphql -f query='
+  query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          nodes {
+            isResolved
+            comments(first: 100) {
+              nodes {
+                databaseId
+              }
+            }
+          }
+        }
+      }
+    }
+  }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved) | .comments.nodes[].databaseId' 2>/dev/null || echo "")
+
+# Convert resolved thread IDs to a format we can use for filtering
+RESOLVED_IDS=""
+if [[ -n "$RESOLVED_THREADS" ]]; then
+    RESOLVED_IDS=$(echo "$RESOLVED_THREADS" | paste -sd '|' -)
+fi
+
+# Process and filter comments
+UNRESOLVED_COMMENTS=""
+if [[ -n "$REVIEW_COMMENTS" ]]; then
+    while IFS= read -r comment_json; do
+        if [[ -z "$comment_json" ]]; then
+            continue
+        fi
+        
+        # Parse JSON fields
+        comment_id=$(echo "$comment_json" | jq -r '.id')
+        
+        # Skip if this comment is in a resolved thread
+        if [[ -n "$RESOLVED_IDS" ]] && echo "$comment_id" | grep -qE "^($RESOLVED_IDS)$"; then
+            continue
+        fi
+        
+        # Extract comment details
+        user=$(echo "$comment_json" | jq -r '.user')
+        path=$(echo "$comment_json" | jq -r '.path')
+        line=$(echo "$comment_json" | jq -r '.line')
+        body=$(echo "$comment_json" | jq -r '.body')
+        
+        # Build comment output
+        if [[ "$COMPACT_MODE" == "true" ]]; then
+            # Compact format: single line per comment
+            body_compact=$(echo "$body" | tr '\n' ' ' | sed 's/  */ /g')
+            comment_line="@$user [CID=$comment_id] $path#L$line: $body_compact"
+        else
+            # Standard format
+            comment_line="@$user on $path#L$line (ID: $comment_id)
+   $body"
+        fi
+        
+        # Append to unresolved comments
+        if [[ -z "$UNRESOLVED_COMMENTS" ]]; then
+            UNRESOLVED_COMMENTS="$comment_line"
+        else
+            if [[ "$COMPACT_MODE" == "true" ]]; then
+                UNRESOLVED_COMMENTS="$UNRESOLVED_COMMENTS
+$comment_line"
+            else
+                UNRESOLVED_COMMENTS="$UNRESOLVED_COMMENTS
+
+$comment_line"
+            fi
+        fi
+    done <<< "$(echo "$REVIEW_COMMENTS" | jq -c '.')"
+fi
+
+# Check if any unresolved comments were found
+if [[ -z "$UNRESOLVED_COMMENTS" ]]; then
+    echo "No unresolved code review comments found for PR #$PR_NUMBER"
     exit 0
 fi
 
-# Display review comments
-echo -e "${GREEN}=== Code Review Comments (Resolvable) ===${NC}"
-echo "$REVIEW_COMMENTS" | while IFS= read -r line; do
-    # Extract components for better formatting
-    if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]\[CID=([0-9]+)\][[:space:]]([^:]+):(.*)$ ]]; then
-        user="${BASH_REMATCH[1]}"
-        cid="${BASH_REMATCH[2]}"
-        location="${BASH_REMATCH[3]}"
-        comment="${BASH_REMATCH[4]}"
-        
-        echo -e "${YELLOW}@$user${NC} on ${BLUE}$location${NC} (ID: $cid)"
-        echo "$comment" | sed 's/^/  /'
-        echo ""
-    else
-        echo "$line"
-        echo ""
-    fi
-done
+# Display unresolved comments
+echo "=== Unresolved Code Review Comments ==="
+echo "$UNRESOLVED_COMMENTS"
 
-# Summary
-REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | grep -c '^' 2>/dev/null || echo "0")
+# Count unresolved comments
+UNRESOLVED_COUNT=$(echo "$UNRESOLVED_COMMENTS" | grep -c '@' 2>/dev/null || echo "0")
 
-echo -e "${BLUE}---${NC}"
-echo -e "${BLUE}Summary: $REVIEW_COUNT resolvable code review comment(s)${NC}"
+echo ""
+echo "---"
+echo "Summary: $UNRESOLVED_COUNT unresolved code review comment(s)"
 
-# Provide hint for resolving comments (skip in raw mode)
-if [[ "$RAW_MODE" != "true" ]]; then
-    if [[ "$REVIEW_COUNT" -gt 0 ]]; then
+# Tips for interactive use
+if [[ -t 1 ]] && [[ "$COMPACT_MODE" != "true" ]]; then
+    if [[ "$UNRESOLVED_COUNT" -gt 0 ]]; then
         echo ""
-        echo -e "${YELLOW}Tips:${NC}"
+        echo "Tips:"
         echo "  • View in browser: gh pr view $PR_NUMBER --web"
-        echo "  • Reply to comment: gh pr review $PR_NUMBER --comment --body 'Your reply'"
+        echo "  • Reply to comment: ./scripts/reply-to-comment.sh <COMMENT_ID> <MESSAGE>"
         echo "  • Mark as resolved: Use GitHub web interface"
     fi
 fi
