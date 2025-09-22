@@ -355,12 +355,22 @@ fn test_proc_js_json_parity() {
     // Create a proc program that echoes back the JSON it receives
     // Use sh instead of Python for better portability
     let mut proc_program = NamedTempFile::new().unwrap();
+    // Use jq if available for proper JSON string encoding, otherwise basic escaping
     let program_content = r#"#!/bin/sh
 # Read lines from stdin and echo back the JSON as a deny message
 while IFS= read -r line; do
-    # Echo the line back wrapped in a deny_message, with the JSON as a string value
-    # The line is already JSON, so we wrap it as a string in the deny_message
-    printf '{"deny_message": "%s"}\n' "$(printf '%s' "$line" | sed 's/"/\\"/g')"
+    # The JS engine does: {deny_message: JSON.stringify(r)}
+    # We need to output the JSON as a string value in deny_message
+    if command -v jq >/dev/null 2>&1; then
+        # Use jq to properly stringify the JSON
+        deny_msg=$(printf "%s" "$line" | jq -Rs .)
+        echo "{\"deny_message\": $deny_msg}"
+    else
+        # Fallback: basic escaping (may not handle all edge cases)
+        # Escape backslashes first, then quotes
+        escaped=$(printf "%s" "$line" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        printf '{"deny_message":"%s"}\n' "$escaped"
+    fi
 done
 "#;
     proc_program.write_all(program_content.as_bytes()).unwrap();
@@ -478,29 +488,16 @@ fn test_proc_js_response_parity() {
         // Create proc program that returns the test response
         // Use sh for portability
         let mut proc_program = NamedTempFile::new().unwrap();
-        let program_content = if response.starts_with('{') && response.ends_with('}') {
-            // For JSON responses, echo directly with proper escaping
-            format!(
-                r#"#!/bin/sh
+        // All responses should be echoed directly as-is
+        let program_content = format!(
+            r#"#!/bin/sh
+# Echo the exact response for each line of input
 while IFS= read -r line; do
-    cat <<'EOF'
-{}
-EOF
+    echo '{}'
 done
 "#,
-                response
-            )
-        } else {
-            // For simple responses (true, false, arbitrary text)
-            format!(
-                r#"#!/bin/sh
-while IFS= read -r line; do
-    printf '%s\n' "{}"
-done
-"#,
-                response
-            )
-        };
+            response
+        );
 
         proc_program.write_all(program_content.as_bytes()).unwrap();
         proc_program.flush().unwrap();
