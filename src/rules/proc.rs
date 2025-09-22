@@ -99,11 +99,6 @@ impl ProcRuleEngine {
             }
         };
 
-        if let Err(e) = self.ensure_process_running().await {
-            error!("Failed to ensure process is running: {}", e);
-            return (false, Some("Program evaluation failed".to_string()));
-        }
-
         let json_request = match serde_json::to_string(&request_info) {
             Ok(json) => json,
             Err(e) => {
@@ -112,101 +107,141 @@ impl ProcRuleEngine {
             }
         };
 
-        debug!(
-            "Sending request to program for {} {} from {}",
-            method, url, requester_ip
-        );
-
-        let mut process_guard = self.process.lock().await;
-        if let Some(ref mut process_state) = *process_guard {
-            let mut request_line = json_request;
-            request_line.push('\n');
-
-            if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
-                error!("Failed to write to program stdin: {}", e);
-                *process_guard = None;
+        // Try up to 2 times - once normally, and once after restart if needed
+        for attempt in 0..2 {
+            if let Err(e) = self.ensure_process_running().await {
+                error!("Failed to ensure process is running: {}", e);
                 return (false, Some("Program evaluation failed".to_string()));
             }
 
-            if let Err(e) = process_state.stdin.flush().await {
-                error!("Failed to flush stdin: {}", e);
-                *process_guard = None;
-                return (false, Some("Program evaluation failed".to_string()));
-            }
+            debug!(
+                "Sending request to program for {} {} from {} (attempt {})",
+                method,
+                url,
+                requester_ip,
+                attempt + 1
+            );
 
-            let timeout = Duration::from_secs(5);
-            let mut response_line = String::new();
-            match tokio::time::timeout(timeout, process_state.stdout.read_line(&mut response_line))
-                .await
-            {
-                Ok(Ok(0)) => {
-                    warn!("Program closed stdout unexpectedly");
+            let mut process_guard = self.process.lock().await;
+            if let Some(ref mut process_state) = *process_guard {
+                let mut request_line = json_request.clone();
+                request_line.push('\n');
+
+                if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
+                    error!("Failed to write to program stdin: {}", e);
                     *process_guard = None;
-                    (false, Some("Program closed unexpectedly".to_string()))
+                    if attempt == 0 {
+                        continue; // Retry once after restart
+                    }
+                    return (false, Some("Program evaluation failed".to_string()));
                 }
-                Ok(Ok(_)) => {
-                    let response = response_line.trim();
-                    debug!("Program response: {}", response);
 
-                    match response {
-                        "true" => {
-                            debug!("ALLOW: {} {} (program allowed)", method, url);
-                            (true, None)
+                if let Err(e) = process_state.stdin.flush().await {
+                    error!("Failed to flush stdin: {}", e);
+                    *process_guard = None;
+                    if attempt == 0 {
+                        continue; // Retry once after restart
+                    }
+                    return (false, Some("Program evaluation failed".to_string()));
+                }
+
+                let timeout = Duration::from_secs(5);
+                let mut response_line = String::new();
+                match tokio::time::timeout(
+                    timeout,
+                    process_state.stdout.read_line(&mut response_line),
+                )
+                .await
+                {
+                    Ok(Ok(0)) => {
+                        warn!("Program closed stdout unexpectedly, will restart");
+                        *process_guard = None;
+                        if attempt == 0 {
+                            continue; // Retry once after restart
                         }
-                        "false" => {
-                            debug!("DENY: {} {} (program denied)", method, url);
-                            (false, None)
-                        }
-                        _ => {
-                            // Try to parse as JSON first
-                            if let Ok(json_response) =
-                                serde_json::from_str::<serde_json::Value>(response)
-                            {
-                                // Check for deny_message first
-                                let deny_message = json_response
-                                    .get("deny_message")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
+                        return (false, Some("Program closed unexpectedly".to_string()));
+                    }
+                    Ok(Ok(_)) => {
+                        let response = response_line.trim();
+                        debug!("Program response: {}", response);
 
-                                // Get allow value - if not present but deny_message exists, default to false
-                                let allowed = if let Some(allow_val) = json_response.get("allow") {
-                                    allow_val.as_bool().unwrap_or(false)
-                                } else if deny_message.is_some() {
-                                    // Shorthand: if only deny_message is present, it implies allow: false
-                                    false
-                                } else {
-                                    false
-                                };
+                        match response {
+                            "true" => {
+                                debug!("ALLOW: {} {} (program allowed)", method, url);
+                                return (true, None);
+                            }
+                            "false" => {
+                                debug!("DENY: {} {} (program denied)", method, url);
+                                return (false, None);
+                            }
+                            _ => {
+                                // Try to parse as JSON first
+                                if let Ok(json_response) =
+                                    serde_json::from_str::<serde_json::Value>(response)
+                                {
+                                    // Check for deny_message first
+                                    let deny_message = json_response
+                                        .get("deny_message")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
 
-                                if allowed {
-                                    debug!("ALLOW: {} {} (program allowed via JSON)", method, url);
-                                    (allowed, None) // No message when allowing
+                                    // Get allow value - if not present but deny_message exists, default to false
+                                    let allowed =
+                                        if let Some(allow_val) = json_response.get("allow") {
+                                            allow_val.as_bool().unwrap_or(false)
+                                        } else if deny_message.is_some() {
+                                            // Shorthand: if only deny_message is present, it implies allow: false
+                                            false
+                                        } else {
+                                            false
+                                        };
+
+                                    if allowed {
+                                        debug!(
+                                            "ALLOW: {} {} (program allowed via JSON)",
+                                            method, url
+                                        );
+                                        return (allowed, None); // No message when allowing
+                                    } else {
+                                        debug!(
+                                            "DENY: {} {} (program denied via JSON)",
+                                            method, url
+                                        );
+                                        return (allowed, deny_message);
+                                    }
                                 } else {
-                                    debug!("DENY: {} {} (program denied via JSON)", method, url);
-                                    (allowed, deny_message)
+                                    // Not JSON, treat the output as a deny message
+                                    debug!(
+                                        "DENY: {} {} (program returned: {})",
+                                        method, url, response
+                                    );
+                                    return (false, Some(response.to_string()));
                                 }
-                            } else {
-                                // Not JSON, treat the output as a deny message
-                                debug!("DENY: {} {} (program returned: {})", method, url, response);
-                                (false, Some(response.to_string()))
                             }
                         }
                     }
-                }
-                Ok(Err(e)) => {
-                    error!("Error reading from program: {}", e);
-                    *process_guard = None;
-                    (false, Some("Program evaluation failed".to_string()))
-                }
-                Err(_) => {
-                    warn!("Program response timeout after {:?}", timeout);
-                    *process_guard = None;
-                    (false, Some("Program response timeout".to_string()))
+                    Ok(Err(e)) => {
+                        error!("Error reading from program: {}", e);
+                        *process_guard = None;
+                        if attempt == 0 {
+                            continue; // Retry once after restart
+                        }
+                        return (false, Some("Program evaluation failed".to_string()));
+                    }
+                    Err(_) => {
+                        warn!("Program response timeout after {:?}", timeout);
+                        *process_guard = None;
+                        if attempt == 0 {
+                            continue; // Retry once after restart
+                        }
+                        return (false, Some("Program response timeout".to_string()));
+                    }
                 }
             }
-        } else {
-            (false, Some("Program process not available".to_string()))
         }
+
+        // Should not reach here normally, but if we do, deny the request
+        (false, Some("Program evaluation failed".to_string()))
     }
 }
 
@@ -253,17 +288,12 @@ mod tests {
     use crate::rules::Action;
     use std::fs;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, TempPath};
 
-    #[tokio::test]
-    async fn test_line_based_program_simple_true() {
+    /// Helper function to create an executable program file with the given content
+    fn create_program_file(content: &str) -> TempPath {
         let mut program_file = NamedTempFile::new().unwrap();
-        let program = r#"#!/bin/bash
-while IFS= read -r line; do
-    echo "true"
-done
-"#;
-        program_file.write_all(program.as_bytes()).unwrap();
+        program_file.write_all(content.as_bytes()).unwrap();
         program_file.flush().unwrap();
 
         let program_path = program_file.into_temp_path();
@@ -276,6 +306,17 @@ done
             fs::set_permissions(&program_path, perms).unwrap();
         }
 
+        program_path
+    }
+
+    #[tokio::test]
+    async fn test_line_based_program_simple_true() {
+        let program = r#"#!/bin/bash
+while IFS= read -r line; do
+    echo "true"
+done
+"#;
+        let program_path = create_program_file(program);
         let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
@@ -293,7 +334,6 @@ done
 
     #[tokio::test]
     async fn test_line_based_program_json_filter() {
-        let mut program_file = NamedTempFile::new().unwrap();
         let program = r#"#!/usr/bin/env python3
 import json
 import sys
@@ -310,19 +350,7 @@ for line in sys.stdin:
         print('false')
         sys.stdout.flush()
 "#;
-        program_file.write_all(program.as_bytes()).unwrap();
-        program_file.flush().unwrap();
-
-        let program_path = program_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&program_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&program_path, perms).unwrap();
-        }
-
+        let program_path = create_program_file(program);
         let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
@@ -340,7 +368,6 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn test_line_based_program_json_response() {
-        let mut program_file = NamedTempFile::new().unwrap();
         let program = r#"#!/usr/bin/env python3
 import json
 import sys
@@ -358,19 +385,7 @@ for line in sys.stdin:
         print(json.dumps({'allow': False, 'deny_message': str(e)}))
         sys.stdout.flush()
 "#;
-        program_file.write_all(program.as_bytes()).unwrap();
-        program_file.flush().unwrap();
-
-        let program_path = program_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&program_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&program_path, perms).unwrap();
-        }
-
+        let program_path = create_program_file(program);
         let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
@@ -393,7 +408,6 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn test_line_based_program_reuses_process() {
-        let mut program_file = NamedTempFile::new().unwrap();
         let program = r#"#!/bin/bash
 counter=0
 while IFS= read -r line; do
@@ -407,19 +421,7 @@ while IFS= read -r line; do
     fi
 done
 "#;
-        program_file.write_all(program.as_bytes()).unwrap();
-        program_file.flush().unwrap();
-
-        let program_path = program_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&program_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&program_path, perms).unwrap();
-        }
-
+        let program_path = create_program_file(program);
         let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
         let result = engine
@@ -442,57 +444,38 @@ done
 
     #[tokio::test]
     async fn test_line_based_program_restart_on_exit() {
-        let mut program_file = NamedTempFile::new().unwrap();
-        // Program that exits after handling 2 requests
+        // Program that exits after every request
         let program = r#"#!/usr/bin/env python3
 import json
 import sys
 
-counter = 0
-for line in sys.stdin:
-    counter += 1
-    request = json.loads(line.strip())
-    
-    # First request: allow
-    if counter == 1:
-        response = {"allow": True}
-        print(json.dumps(response))
-        sys.stdout.flush()
-    # Second request: deny then exit
-    elif counter == 2:
-        response = {"allow": False, "deny_message": f"Request {counter} denied, exiting"}
-        print(json.dumps(response))
-        sys.stdout.flush()
-        sys.exit(0)  # Exit after second request
-    else:
-        # This should never be reached in the first process
-        response = {"allow": True}
-        print(json.dumps(response))
-        sys.stdout.flush()
+# Read exactly one line, respond, then exit
+line = sys.stdin.readline()
+request = json.loads(line.strip())
+
+# Alternate responses based on path number (odd=allow, even=deny)
+path = request.get('path', '')
+if '1' in path or '3' in path or '5' in path:
+    response = {"allow": True}
+else:
+    response = {"allow": False, "deny_message": f"Request to {path} denied"}
+
+print(json.dumps(response))
+sys.stdout.flush()
+sys.exit(0)  # Always exit after handling one request
 "#;
-        program_file.write_all(program.as_bytes()).unwrap();
-        program_file.flush().unwrap();
-
-        let program_path = program_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&program_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&program_path, perms).unwrap();
-        }
-
+        let program_path = create_program_file(program);
         let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
 
-        // First request - should be allowed
+        // First request - process starts, responds, and exits
         let result = engine
             .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
-        assert_eq!(result.context, None); // No message when allowing
+        assert_eq!(result.context, None);
 
-        // Second request - should be denied, then process exits
+        // Second request - new process starts, responds, and exits
+        // No delay needed - the engine should wait for the new process
         let result = engine
             .evaluate(Method::GET, "https://example.com/2", "127.0.0.1")
             .await;
@@ -501,20 +484,19 @@ for line in sys.stdin:
             result
                 .context
                 .as_ref()
-                .is_some_and(|c| c.contains("Request 2 denied"))
+                .is_some_and(|c| c.contains("/2 denied")),
+            "Expected context to contain '/2 denied', got: {:?}",
+            result.context
         );
 
-        // Add a small delay to ensure the process has exited
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Third request - process should restart and handle this as first request
+        // Third request - another new process starts
         let result = engine
             .evaluate(Method::GET, "https://example.com/3", "127.0.0.1")
             .await;
         assert!(matches!(result.action, Action::Allow));
-        assert_eq!(result.context, None); // No message when allowing
+        assert_eq!(result.context, None);
 
-        // Fourth request - should be second request in restarted process
+        // Fourth request - yet another new process starts
         let result = engine
             .evaluate(Method::GET, "https://example.com/4", "127.0.0.1")
             .await;
@@ -523,8 +505,15 @@ for line in sys.stdin:
             result
                 .context
                 .as_ref()
-                .is_some_and(|c| c.contains("Request 2 denied"))
+                .is_some_and(|c| c.contains("/4 denied"))
         );
+
+        // Fifth request - verify pattern continues
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/5", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+        assert_eq!(result.context, None);
 
         drop(program_path);
     }
