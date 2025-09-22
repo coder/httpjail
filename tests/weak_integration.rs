@@ -355,22 +355,15 @@ fn test_proc_js_json_parity() {
     // Create a proc program that echoes back the JSON it receives
     // Use sh instead of Python for better portability
     let mut proc_program = NamedTempFile::new().unwrap();
-    // Use jq if available for proper JSON string encoding, otherwise basic escaping
+    // Simple sed-based approach for JSON escaping
+    // The JS does {deny_message: JSON.stringify(r)} which creates a stringified JSON
     let program_content = r#"#!/bin/sh
 # Read lines from stdin and echo back the JSON as a deny message
 while IFS= read -r line; do
-    # The JS engine does: {deny_message: JSON.stringify(r)}
-    # We need to output the JSON as a string value in deny_message
-    if command -v jq >/dev/null 2>&1; then
-        # Use jq to properly stringify the JSON
-        deny_msg=$(printf "%s" "$line" | jq -Rs .)
-        echo "{\"deny_message\": $deny_msg}"
-    else
-        # Fallback: basic escaping (may not handle all edge cases)
-        # Escape backslashes first, then quotes
-        escaped=$(printf "%s" "$line" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        printf '{"deny_message":"%s"}\n' "$escaped"
-    fi
+    # Escape backslashes first, then quotes for JSON string encoding
+    # This matches what JSON.stringify() does for a JSON object
+    escaped=$(echo "$line" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    printf '{"deny_message":"%s"}\n' "$escaped"
 done
 "#;
     proc_program.write_all(program_content.as_bytes()).unwrap();
