@@ -98,6 +98,10 @@ fn run_dns_server(socket: UdpSocket, shutdown: Arc<AtomicBool>) -> Result<()> {
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 continue;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                // EINTR can happen when signals are received, just retry
+                continue;
+            }
             Err(e) => {
                 if !shutdown.load(Ordering::Relaxed) {
                     error!("DNS server receive error: {}", e);
