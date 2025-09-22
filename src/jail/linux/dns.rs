@@ -14,15 +14,10 @@ const DUMMY_IPV4: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
 /// 2. Runs a DummyDnsServer on port 53
 /// 3. Uses PR_SET_PDEATHSIG for automatic cleanup when parent dies
 /// 4. Can be explicitly stopped via Drop trait
+#[derive(Default)]
 pub struct ForkedDnsProcess {
     /// PID of the forked child process
     child_pid: Option<nix::unistd::Pid>,
-}
-
-impl Default for ForkedDnsProcess {
-    fn default() -> Self {
-        Self { child_pid: None }
-    }
 }
 
 impl ForkedDnsProcess {
