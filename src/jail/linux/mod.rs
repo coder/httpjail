@@ -11,9 +11,8 @@ use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::process::{Command, ExitStatus};
-use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 // Linux namespace network configuration constants were previously fixed; the
@@ -453,6 +452,8 @@ impl LinuxJail {
 
         // Create pipe for cleanup detection
         let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
+        let read_raw = read_fd.as_raw_fd();
+        let write_raw = write_fd.as_raw_fd();
 
         match unsafe { libc::fork() } {
             0 => {
@@ -495,7 +496,7 @@ impl LinuxJail {
                 // Monitor parent lifecycle
                 loop {
                     let mut buf = [0u8; 1];
-                    match nix::unistd::read(read_fd, &mut buf) {
+                    match nix::unistd::read(read_raw, &mut buf) {
                         Ok(0) => {
                             // EOF - parent died
                             std::process::exit(0);
@@ -510,7 +511,7 @@ impl LinuxJail {
                 // Parent: Store cleanup info
                 drop(read_fd);
                 self.dns_forwarder_pid = Some(pid);
-                self.dns_cleanup_pipe = Some(write_fd);
+                self.dns_cleanup_pipe = Some(write_raw);
 
                 info!("Started in-namespace DNS server (pid {})", pid);
                 Ok(())
