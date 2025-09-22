@@ -119,13 +119,10 @@ pub fn run_exec_dns_server(namespace_name: &str) -> Result<()> {
         .open(&ns_path)
         .with_context(|| format!("Failed to open namespace {}", ns_path))?;
 
-    // Use raw syscall to setns (async-signal-safe)
-    unsafe {
-        let ret = libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET);
-        if ret != 0 {
-            std::process::exit(1);
-        }
-    }
+    // Enter the namespace using nix
+    use nix::sched::CloneFlags;
+    nix::sched::setns(&ns_fd, CloneFlags::CLONE_NEWNET)
+        .context("Failed to enter network namespace")?;
 
     // Bring up loopback interface
     std::process::Command::new("ip")
