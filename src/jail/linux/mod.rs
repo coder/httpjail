@@ -1,4 +1,4 @@
-mod dns;
+pub mod dns;
 mod nftables;
 mod resources;
 
