@@ -49,8 +49,8 @@ httpjail --sh "/path/to/script.sh" -- ./my-app
 # Script receives env vars: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, etc.
 # Exit code 0 allows, non-zero blocks
 
-# Use persistent program for request evaluation (efficient line-based process)
-httpjail --prog /path/to/filter.py -- ./my-app
+# Use line processor for request evaluation (efficient persistent process)
+httpjail --proc /path/to/filter.py -- ./my-app
 # Program receives JSON on stdin (one per line) and outputs allow/deny decisions
 # stdin  -> {"method": "GET", "url": "https://api.github.com", "host": "api.github.com", ...}
 # stdout -> true
@@ -274,10 +274,10 @@ r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 - V8 engine provides fast JavaScript execution with minimal overhead
 - Fresh isolate creation per request ensures thread safety
 - JavaScript evaluation is significantly faster than shell script execution (--sh)
-- Persistent program mode (--prog) can approach JavaScript performance for compiled languages, and future versions may support parallel instances and stateful caching
+- Line processor mode (--proc) can approach JavaScript performance for compiled languages, and future versions may support parallel instances and stateful caching
 
 > [!NOTE]
-> The evaluation flags `--js`, `--js-file`, `--sh`, and `--prog` are mutually exclusive. Only one evaluation method can be used at a time.
+> The evaluation flags `--js`, `--js-file`, `--sh`, and `--proc` are mutually exclusive. Only one evaluation method can be used at a time.
 
 ## Script-Based Evaluation
 
@@ -302,13 +302,13 @@ else
 fi
 ```
 
-### Persistent Program Mode (--prog)
+### Line Processor Mode (--proc)
 
-The `--prog` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats.
+The `--proc` flag starts a single line processor that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats.
 
 ```bash
 # Use a persistent program (path to executable)
-httpjail --prog /usr/local/bin/filter.py -- curl https://github.com
+httpjail --proc /usr/local/bin/filter.py -- curl https://github.com
 
 # Example Python program (filter.py):
 #!/usr/bin/env python3
@@ -326,7 +326,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 ```
 
-**Protocol for --prog:**
+**Protocol for --proc (line processor):**
 - **Input**: JSON objects on stdin, one per line with fields:
   - `url` - Full URL being requested
   - `method` - HTTP method (GET, POST, etc.)
@@ -345,7 +345,7 @@ for line in sys.stdin:
 > Make sure to flush stdout after each response in your script to ensure real-time processing!
 
 > [!TIP]
-> Both --sh and --prog modes can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails. Use --prog for production workloads where performance matters.
+> Both --sh and --proc modes can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails. Use --proc for production workloads where performance matters.
 
 ## Advanced Options
 
