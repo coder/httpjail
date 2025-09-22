@@ -1,4 +1,4 @@
-use crate::rules::common::RequestInfo;
+use crate::rules::common::{RequestInfo, RuleResponse};
 use crate::rules::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
@@ -69,20 +69,6 @@ impl V8JsRuleEngine {
         }
     }
 
-    /// Helper function to set a property on a V8 object
-    fn set_object_property(
-        context_scope: &mut v8::ContextScope<v8::HandleScope>,
-        obj: v8::Local<v8::Object>,
-        key: &str,
-        value: &str,
-    ) {
-        if let Some(key_str) = v8::String::new(context_scope, key)
-            && let Some(val_str) = v8::String::new(context_scope, value)
-        {
-            obj.set(context_scope, key_str.into(), val_str.into());
-        }
-    }
-
     fn create_and_execute(
         &self,
         request_info: &RequestInfo,
@@ -94,23 +80,37 @@ impl V8JsRuleEngine {
 
         let global = context.global(context_scope);
 
-        // Create the 'r' object with request properties (read-only)
-        let r_obj = v8::Object::new(context_scope);
-        let r_key = v8::String::new(context_scope, "r").unwrap();
-        global.set(context_scope, r_key.into(), r_obj.into());
+        // Serialize RequestInfo to JSON - this is the exact same JSON sent to proc
+        let json_request = serde_json::to_string(&request_info)
+            .map_err(|e| format!("Failed to serialize request: {}", e))?;
 
-        // Set properties on the 'r' object using helper function
-        Self::set_object_property(context_scope, r_obj, "url", &request_info.url);
-        Self::set_object_property(context_scope, r_obj, "method", &request_info.method);
-        Self::set_object_property(context_scope, r_obj, "scheme", &request_info.scheme);
-        Self::set_object_property(context_scope, r_obj, "host", &request_info.host);
-        Self::set_object_property(context_scope, r_obj, "path", &request_info.path);
-        Self::set_object_property(
-            context_scope,
-            r_obj,
-            "requester_ip",
-            &request_info.requester_ip,
-        );
+        // Parse the JSON in V8 to create the 'r' object
+        let json_str = v8::String::new(context_scope, &json_request)
+            .ok_or("Failed to create V8 string for JSON")?;
+        let json_key = v8::String::new(context_scope, "JSON").unwrap();
+        let parse_key = v8::String::new(context_scope, "parse").unwrap();
+
+        let json_obj = global
+            .get(context_scope, json_key.into())
+            .ok_or("Failed to get JSON object")?
+            .to_object(context_scope)
+            .ok_or("JSON is not an object")?;
+
+        let parse_fn = json_obj
+            .get(context_scope, parse_key.into())
+            .ok_or("Failed to get JSON.parse")?;
+
+        let parse_fn = v8::Local::<v8::Function>::try_from(parse_fn)
+            .map_err(|_| "JSON.parse is not a function")?;
+
+        // Call JSON.parse to create the request object
+        let r_obj = parse_fn
+            .call(context_scope, json_obj.into(), &[json_str.into()])
+            .ok_or("Failed to parse JSON")?;
+
+        // Set the parsed object as 'r' in the global scope
+        let r_key = v8::String::new(context_scope, "r").unwrap();
+        global.set(context_scope, r_key.into(), r_obj);
 
         // Execute the JavaScript expression
         let source =
@@ -124,69 +124,69 @@ impl V8JsRuleEngine {
             .run(context_scope)
             .ok_or("Expression evaluation failed")?;
 
-        // Check if result is an object with 'allow' and/or 'deny_message'
-        if result.is_object() {
-            let obj = result.to_object(context_scope).unwrap();
+        // Convert the V8 result to a JSON string for consistent parsing
+        // This ensures perfect parity with the proc engine response handling
+        let response_str = if result.is_object() && !result.is_null() && !result.is_undefined() {
+            // It's an object - stringify it to JSON
+            let json_stringify_key = v8::String::new(context_scope, "JSON").unwrap();
+            let stringify_key = v8::String::new(context_scope, "stringify").unwrap();
 
-            // Get 'deny_message' property if present
-            let deny_message_key = v8::String::new(context_scope, "deny_message").unwrap();
-            let deny_message = obj
-                .get(context_scope, deny_message_key.into())
-                .and_then(|v| {
-                    if v.is_undefined() || v.is_null() {
-                        None
-                    } else {
-                        v.to_string(context_scope)
-                            .map(|s| s.to_rust_string_lossy(context_scope))
-                    }
-                });
+            let json_obj = global
+                .get(context_scope, json_stringify_key.into())
+                .ok_or("Failed to get JSON object")?
+                .to_object(context_scope)
+                .ok_or("JSON is not an object")?;
 
-            // Get 'allow' property - if not present but deny_message exists, default to false
-            let allow_key = v8::String::new(context_scope, "allow").unwrap();
-            let allowed = if let Some(allow_value) = obj.get(context_scope, allow_key.into()) {
-                if !allow_value.is_undefined() {
-                    allow_value.boolean_value(context_scope)
-                } else if deny_message.is_some() {
-                    // Shorthand: if only deny_message is present, it implies allow: false
-                    false
-                } else {
-                    // Default to false if neither is properly set
-                    false
-                }
-            } else if deny_message.is_some() {
-                // Shorthand: if only deny_message is present, it implies allow: false
-                false
+            let stringify_fn = json_obj
+                .get(context_scope, stringify_key.into())
+                .ok_or("Failed to get JSON.stringify")?;
+
+            let stringify_fn = v8::Local::<v8::Function>::try_from(stringify_fn)
+                .map_err(|_| "JSON.stringify is not a function")?;
+
+            // Call JSON.stringify on the result
+            let json_str = stringify_fn
+                .call(context_scope, json_obj.into(), &[result])
+                .ok_or("Failed to stringify result")?;
+
+            json_str
+                .to_string(context_scope)
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .unwrap_or_else(|| "false".to_string())
+        } else if result.is_boolean() {
+            // Simple boolean result
+            if result.boolean_value(context_scope) {
+                "true".to_string()
             } else {
-                // Default to false if neither is properly set
-                false
-            };
-
-            debug!(
-                "JS rule returned object: allow={} for {} {}",
-                allowed, request_info.method, request_info.url
-            );
-
-            if let Some(ref msg) = deny_message {
-                debug!("Deny message: {}", msg);
+                "false".to_string()
             }
-
-            // Only return the message if the request is denied
-            let message = if !allowed { deny_message } else { None };
-
-            Ok((allowed, message))
+        } else if result.is_string() {
+            // String result - treat as deny message
+            result
+                .to_string(context_scope)
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .unwrap_or_else(|| "false".to_string())
         } else {
-            // Result is not an object, treat as boolean
-            let allowed = result.boolean_value(context_scope);
+            // Other types - default to false
+            "false".to_string()
+        };
 
-            debug!(
-                "JS rule returned {} for {} {}",
-                if allowed { "ALLOW" } else { "DENY" },
-                request_info.method,
-                request_info.url
-            );
+        // Use the common RuleResponse parser - exact same logic as proc engine
+        let rule_response = RuleResponse::from_string(&response_str);
+        let (allowed, message) = rule_response.to_evaluation_result();
 
-            Ok((allowed, None))
+        debug!(
+            "JS rule returned {} for {} {}",
+            if allowed { "ALLOW" } else { "DENY" },
+            request_info.method,
+            request_info.url
+        );
+
+        if let Some(ref msg) = message {
+            debug!("Deny message: {}", msg);
         }
+
+        Ok((allowed, message))
     }
 }
 
@@ -303,6 +303,45 @@ mod tests {
             .await;
         assert!(matches!(result.action, crate::rules::Action::Allow));
         assert_eq!(result.context, None);
+    }
+
+    #[tokio::test]
+    async fn test_v8_js_json_parity() {
+        // This test verifies that the V8 engine receives the exact same JSON
+        // object structure as the proc engine (ensuring perfect parity)
+        let engine = V8JsRuleEngine::new(
+            r#"
+            // Return the exact JSON we received to verify structure
+            ({deny_message: JSON.stringify(r)})
+            "#
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = engine
+            .evaluate(Method::POST, "https://example.com/test?foo=bar", "10.0.0.1")
+            .await;
+
+        // The deny message will contain the stringified JSON
+        assert!(matches!(result.action, crate::rules::Action::Deny));
+
+        if let Some(ref json_str) = result.context {
+            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+            // Verify all expected fields are present with the exact same values
+            // that would be sent to the proc engine
+            assert_eq!(parsed["url"], "https://example.com/test?foo=bar");
+            assert_eq!(parsed["method"], "POST");
+            assert_eq!(parsed["scheme"], "https");
+            assert_eq!(parsed["host"], "example.com");
+            assert_eq!(parsed["path"], "/test");
+            assert_eq!(parsed["requester_ip"], "10.0.0.1");
+
+            // Verify no extra fields exist (exact same structure as RequestInfo)
+            assert_eq!(parsed.as_object().unwrap().len(), 6);
+        } else {
+            panic!("Expected JSON in context");
+        }
     }
 
     #[tokio::test]

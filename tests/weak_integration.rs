@@ -341,3 +341,253 @@ fn test_host_header_security() {
     // This demonstrates that httpjail prevents the Host header bypass attack
     // that would otherwise be possible with direct curl execution
 }
+
+#[test]
+fn test_proc_js_json_parity() {
+    // This test verifies perfect parity between proc and JS engines
+    // Both should receive exactly the same JSON request object and
+    // handle responses identically
+
+    use std::fs;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // Create a proc program that echoes back the JSON it receives
+    let mut proc_program = NamedTempFile::new().unwrap();
+    let program_content = r#"#!/usr/bin/env python3
+import json
+import sys
+
+# Read the request and echo it back as a deny message
+# This allows us to verify the exact JSON structure received
+for line in sys.stdin:
+    request = json.loads(line)
+    # Sort keys for consistent comparison
+    response = {
+        "deny_message": json.dumps(request, sort_keys=True)
+    }
+    print(json.dumps(response))
+    sys.stdout.flush()
+"#;
+    proc_program.write_all(program_content.as_bytes()).unwrap();
+    proc_program.flush().unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(proc_program.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(proc_program.path(), perms).unwrap();
+    }
+
+    // Test with proc engine - use HTTP to get response body in weak mode
+    let proc_result = HttpjailCommand::new()
+        .weak()
+        .proc_path(proc_program.path().to_str().unwrap())
+        .command(vec![
+            "curl",
+            "--max-time",
+            "3",
+            "http://example.com/test?foo=bar",
+        ])
+        .execute();
+
+    let proc_json = match proc_result {
+        Ok((_, stdout, _)) => {
+            // Extract the JSON from the deny message
+            assert!(
+                stdout.contains("Request blocked by httpjail"),
+                "Stdout should contain 'Request blocked by httpjail'"
+            );
+            // The JSON is on the second line of the response
+            let lines: Vec<&str> = stdout.lines().collect();
+            assert!(lines.len() >= 2, "Expected at least 2 lines in response");
+            lines[1].to_string()
+        }
+        Err(e) => panic!("Failed to execute proc test: {}", e),
+    };
+
+    // Test with JS engine that does the same thing
+    let js_code = r#"
+        ({deny_message: JSON.stringify(r)})
+    "#;
+
+    let js_result = HttpjailCommand::new()
+        .weak()
+        .js(js_code)
+        .command(vec![
+            "curl",
+            "--max-time",
+            "3",
+            "http://example.com/test?foo=bar",
+        ])
+        .execute();
+
+    let js_json = match js_result {
+        Ok((_, stdout, _)) => {
+            // Extract the JSON from the deny message
+            assert!(stdout.contains("Request blocked by httpjail"));
+            // The JSON is on the second line of the response
+            let lines: Vec<&str> = stdout.lines().collect();
+            assert!(lines.len() >= 2, "Expected at least 2 lines in JS response");
+            lines[1].to_string()
+        }
+        Err(e) => panic!("Failed to execute JS test: {}", e),
+    };
+
+    // Parse and compare the JSON objects
+    let proc_parsed: serde_json::Value =
+        serde_json::from_str(&proc_json).expect("Failed to parse proc JSON");
+    let js_parsed: serde_json::Value =
+        serde_json::from_str(&js_json).expect("Failed to parse JS JSON");
+
+    // Both should have exactly the same structure
+    assert_eq!(
+        proc_parsed, js_parsed,
+        "Proc and JS engines should receive identical JSON request objects"
+    );
+
+    // Verify expected fields are present
+    assert_eq!(proc_parsed["url"], "http://example.com/test?foo=bar");
+    assert_eq!(proc_parsed["method"], "GET");
+    assert_eq!(proc_parsed["scheme"], "http");
+    assert_eq!(proc_parsed["host"], "example.com");
+    assert_eq!(proc_parsed["path"], "/test");
+    assert!(proc_parsed["requester_ip"].is_string());
+
+    // Verify no extra fields (exactly 6 fields)
+    assert_eq!(
+        proc_parsed.as_object().unwrap().len(),
+        6,
+        "Request object should have exactly 6 fields"
+    );
+}
+
+#[test]
+fn test_proc_js_response_parity() {
+    // Test that both engines handle various response formats identically
+    use std::fs;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // Test cases: (response_output, expected_allow)
+    let test_cases = vec![
+        ("true", true),
+        ("false", false),
+        (r#"{"allow": true}"#, true),
+        (r#"{"allow": false, "deny_message": "blocked"}"#, false),
+        (r#"{"deny_message": "shorthand deny"}"#, false),
+        ("arbitrary text message", false),
+    ];
+
+    for (response, expected_allow) in test_cases {
+        // Create proc program that returns the test response
+        let mut proc_program = NamedTempFile::new().unwrap();
+        let program_content = format!(
+            r#"#!/usr/bin/env python3
+import sys
+for line in sys.stdin:
+    print("{}")
+    sys.stdout.flush()
+"#,
+            response.replace('"', r#"\""#)
+        );
+
+        proc_program.write_all(program_content.as_bytes()).unwrap();
+        proc_program.flush().unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(proc_program.path()).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(proc_program.path(), perms).unwrap();
+        }
+
+        // Test with proc engine
+        let proc_result = HttpjailCommand::new()
+            .weak()
+            .proc_path(proc_program.path().to_str().unwrap())
+            .command(vec![
+                "curl",
+                "--max-time",
+                "3",
+                "https://httpbin.org/status/200",
+            ])
+            .execute();
+
+        // Test with JS engine returning the same response
+        let js_code = if response == "true" || response == "false" {
+            response.to_string()
+        } else if response.starts_with('{') {
+            format!("({})", response)
+        } else {
+            format!(r#""{}"#, response)
+        };
+
+        let js_result = HttpjailCommand::new()
+            .weak()
+            .js(&js_code)
+            .command(vec![
+                "curl",
+                "--max-time",
+                "3",
+                "https://httpbin.org/status/200",
+            ])
+            .execute();
+
+        // Both should handle the response identically
+        // For HTTP requests, check if we got the actual HTTP status response
+        let proc_allowed = proc_result
+            .as_ref()
+            .map(|(exit_code, stdout, _)| {
+                // If we get exit code 0 and no "Request blocked" message, it was allowed
+                *exit_code == 0 && !stdout.contains("Request blocked by httpjail")
+            })
+            .unwrap_or(false);
+        let js_allowed = js_result
+            .as_ref()
+            .map(|(exit_code, stdout, _)| {
+                *exit_code == 0 && !stdout.contains("Request blocked by httpjail")
+            })
+            .unwrap_or(false);
+
+        assert_eq!(
+            proc_allowed, js_allowed,
+            "Proc and JS should handle response '{}' identically",
+            response
+        );
+        assert_eq!(
+            proc_allowed, expected_allow,
+            "Response '{}' should be allowed={}",
+            response, expected_allow
+        );
+
+        // If denied with a message, verify the message is the same
+        if !expected_allow && response.contains("deny_message") {
+            let proc_stdout = &proc_result.unwrap().1;
+            let js_stdout = &js_result.unwrap().1;
+
+            // Extract context messages if present
+            if let Some(proc_ctx_start) = proc_stdout.find("Context: ") {
+                let proc_ctx_end = proc_stdout[proc_ctx_start..]
+                    .find('<')
+                    .unwrap_or(proc_stdout.len() - proc_ctx_start);
+                let proc_context = &proc_stdout[proc_ctx_start + 9..proc_ctx_start + proc_ctx_end];
+
+                if let Some(js_ctx_start) = js_stdout.find("Context: ") {
+                    let js_ctx_end = js_stdout[js_ctx_start..]
+                        .find('<')
+                        .unwrap_or(js_stdout.len() - js_ctx_start);
+                    let js_context = &js_stdout[js_ctx_start + 9..js_ctx_start + js_ctx_end];
+
+                    assert_eq!(
+                        proc_context, js_context,
+                        "Proc and JS should have identical context messages for response '{}'",
+                        response
+                    );
+                }
+            }
+        }
+    }
+}

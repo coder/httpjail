@@ -1,4 +1,4 @@
-use super::common::RequestInfo;
+use super::common::{RequestInfo, RuleResponse};
 use super::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
@@ -162,63 +162,19 @@ impl ProcRuleEngine {
                         return (false, Some("Program closed unexpectedly".to_string()));
                     }
                     Ok(Ok(_)) => {
-                        let response = response_line.trim();
-                        debug!("Program response: {}", response);
+                        debug!("Program response: {}", response_line.trim());
 
-                        match response {
-                            "true" => {
-                                debug!("ALLOW: {} {} (program allowed)", method, url);
-                                return (true, None);
-                            }
-                            "false" => {
-                                debug!("DENY: {} {} (program denied)", method, url);
-                                return (false, None);
-                            }
-                            _ => {
-                                // Try to parse as JSON first
-                                if let Ok(json_response) =
-                                    serde_json::from_str::<serde_json::Value>(response)
-                                {
-                                    // Check for deny_message first
-                                    let deny_message = json_response
-                                        .get("deny_message")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
+                        // Use the common RuleResponse parser
+                        let rule_response = RuleResponse::from_string(&response_line);
+                        let (allowed, message) = rule_response.to_evaluation_result();
 
-                                    // Get allow value - if not present but deny_message exists, default to false
-                                    let allowed =
-                                        if let Some(allow_val) = json_response.get("allow") {
-                                            allow_val.as_bool().unwrap_or(false)
-                                        } else if deny_message.is_some() {
-                                            // Shorthand: if only deny_message is present, it implies allow: false
-                                            false
-                                        } else {
-                                            false
-                                        };
-
-                                    if allowed {
-                                        debug!(
-                                            "ALLOW: {} {} (program allowed via JSON)",
-                                            method, url
-                                        );
-                                        return (allowed, None); // No message when allowing
-                                    } else {
-                                        debug!(
-                                            "DENY: {} {} (program denied via JSON)",
-                                            method, url
-                                        );
-                                        return (allowed, deny_message);
-                                    }
-                                } else {
-                                    // Not JSON, treat the output as a deny message
-                                    debug!(
-                                        "DENY: {} {} (program returned: {})",
-                                        method, url, response
-                                    );
-                                    return (false, Some(response.to_string()));
-                                }
-                            }
+                        if allowed {
+                            debug!("ALLOW: {} {} (program allowed)", method, url);
+                        } else {
+                            debug!("DENY: {} {} (program denied)", method, url);
                         }
+
+                        return (allowed, message);
                     }
                     Ok(Err(e)) => {
                         error!("Error reading from program: {}", e);

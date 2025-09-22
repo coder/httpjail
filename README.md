@@ -306,7 +306,7 @@ fi
 
 ### Line Processor Mode (--proc)
 
-The `--proc` flag starts a single line processor that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats.
+The `--proc` flag starts a single line processor that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats. Both engines receive exactly the same JSON-encoded request object, ensuring perfect parity between the two evaluation modes.
 
 ```bash
 # Use a persistent program (path to executable)

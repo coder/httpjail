@@ -42,6 +42,13 @@ impl HttpjailCommand {
         self
     }
 
+    /// Use a line processor program (--proc)
+    pub fn proc_path(mut self, path: &str) -> Self {
+        self.args.push("--proc".to_string());
+        self.args.push(path.to_string());
+        self
+    }
+
     /// Add verbose flag
     pub fn verbose(mut self, level: u8) -> Self {
         for _ in 0..level {
