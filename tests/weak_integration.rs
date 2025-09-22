@@ -356,7 +356,7 @@ fn test_proc_js_json_parity() {
     // Use Python for proper JSON handling
     let mut proc_program = NamedTempFile::new().unwrap();
     // Use Python for reliable JSON stringification across all platforms
-    let program_content = r#"#!/usr/bin/env python3
+    let program_content = r#"#!/usr/bin/python3
 import sys
 import json
 
