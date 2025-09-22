@@ -281,30 +281,7 @@ r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
 > [!NOTE]
 > The evaluation flags `--js`, `--js-file`, `--sh`, and `--proc` are mutually exclusive. Only one evaluation method can be used at a time.
 
-## Script-Based Evaluation
-
-### Shell Script Mode (--sh)
-
-The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
-
-```bash
-# Use a shell script for request evaluation
-httpjail --sh "./allow-github.sh" -- curl https://github.com
-
-# Example shell script (allow-github.sh):
-#!/bin/sh
-# Environment variables available:
-# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-
-if [ "$HTTPJAIL_HOST" = "github.com" ]; then
-    exit 0  # Allow
-else
-    echo "Blocked: not github.com"
-    exit 1  # Deny (stdout becomes error message)
-fi
-```
-
-### Line Processor Mode (--proc)
+## Line Processor Mode (--proc)
 
 The `--proc` flag starts a single line processor that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats. Both engines receive exactly the same JSON-encoded request object, ensuring perfect parity between the two evaluation modes.
 
@@ -343,11 +320,38 @@ for line in sys.stdin:
   - Shorthand: `{"deny_message": "reason"}` (implies allow: false)
   - Any other output is treated as deny with the output as the deny_message
 
+**Performance advantages:**
+- Single process handles all requests (no spawn overhead)
+- Can maintain state/caches across requests
+- Suitable for high-throughput production use
+- May be parallelized in future versions for even better performance
+
 > [!NOTE]
 > Make sure to flush stdout after each response in your script to ensure real-time processing!
 
+## Shell Script Mode (--sh)
+
+The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
+
+```bash
+# Use a shell script for request evaluation
+httpjail --sh "./allow-github.sh" -- curl https://github.com
+
+# Example shell script (allow-github.sh):
+#!/bin/sh
+# Environment variables available:
+# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+
+if [ "$HTTPJAIL_HOST" = "github.com" ]; then
+    exit 0  # Allow
+else
+    echo "Blocked: not github.com"
+    exit 1  # Deny (stdout becomes error message)
+fi
+```
+
 > [!TIP]
-> Both --sh and --proc modes can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails. Use --proc for production workloads where performance matters.
+> Line Processor Mode can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails while maintaining high performance.
 
 ## Advanced Options
 
