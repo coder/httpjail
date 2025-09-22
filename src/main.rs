@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use httpjail::jail::{JailConfig, create_jail};
 use httpjail::proxy::ProxyServer;
-use httpjail::rules::prog::ProgRuleEngine;
 use httpjail::rules::shell::ShellRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
 use httpjail::rules::{Action, RuleEngine};
@@ -42,19 +41,16 @@ enum Command {
 
 #[derive(Parser, Debug)]
 struct RunArgs {
-    /// Use shell script for evaluating requests
-    /// The script receives environment variables:
-    ///   HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-    /// Exit code 0 allows the request, non-zero blocks it
-    /// stdout becomes additional context in the 403 response
+    /// Use script for evaluating requests
+    /// By default, executes a new process per request with environment variables.
+    /// With --sh-line, uses a persistent process with line-based JSON protocol.
     #[arg(long = "sh", value_name = "SCRIPT")]
     sh: Option<String>,
 
-    /// Use persistent program for evaluating requests (line-based process)
-    /// The program receives JSON on stdin (one request per line) and outputs per line.
-    /// Output: "true"/"false" or JSON {"allow": bool, "message": "..."}
-    #[arg(long = "prog", value_name = "PATH", conflicts_with = "sh")]
-    prog: Option<String>,
+    /// Enable line-based protocol for --sh (persistent process, JSON on stdin/stdout)
+    /// More efficient than process-per-request for high-throughput scenarios
+    #[arg(long = "sh-line", requires = "sh")]
+    sh_line: bool,
 
     /// Use JavaScript (V8) expression for evaluating requests
     /// The JavaScript expression receives an object 'r' with properties:
@@ -65,7 +61,6 @@ struct RunArgs {
         long = "js",
         value_name = "CODE",
         conflicts_with = "sh",
-        conflicts_with = "prog",
         conflicts_with = "js_file"
     )]
     js: Option<String>,
@@ -76,7 +71,6 @@ struct RunArgs {
         long = "js-file",
         value_name = "FILE",
         conflicts_with = "sh",
-        conflicts_with = "prog",
         conflicts_with = "js"
     )]
     js_file: Option<String>,
@@ -399,13 +393,13 @@ async fn main() -> Result<()> {
     };
 
     let rule_engine = if let Some(script) = &args.run_args.sh {
-        info!("Using shell script rule evaluation: {}", script);
-        let shell_engine = Box::new(ShellRuleEngine::new(script.clone()));
+        if args.run_args.sh_line {
+            info!("Using shell script with line-based protocol: {}", script);
+        } else {
+            info!("Using shell script (process per request): {}", script);
+        }
+        let shell_engine = Box::new(ShellRuleEngine::new(script.clone(), args.run_args.sh_line));
         RuleEngine::from_trait(shell_engine, request_log)
-    } else if let Some(prog) = &args.run_args.prog {
-        info!("Using persistent program rule evaluation: {}", prog);
-        let prog_engine = Box::new(ProgRuleEngine::new(prog.clone()));
-        RuleEngine::from_trait(prog_engine, request_log)
     } else if let Some(js_code) = &args.run_args.js {
         info!("Using V8 JavaScript rule evaluation");
         let js_engine = match V8JsRuleEngine::new(js_code.clone()) {

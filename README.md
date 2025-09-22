@@ -45,13 +45,13 @@ httpjail --request-log requests.log --js "true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
 # Use shell script for request evaluation (process per request)
-httpjail --sh "/path/to/script.sh" -- ./my-app
+httpjail --sh /path/to/script.sh -- ./my-app
 # Script receives env vars: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, etc.
 # Exit code 0 allows, non-zero blocks
 
-# Use persistent program for request evaluation (efficient line-based process)
-httpjail --prog /path/to/filter.py -- ./my-app
-# Program receives JSON on stdin (one per line) and outputs allow/deny decisions
+# Use shell script with line-based protocol (efficient persistent process)
+httpjail --sh /path/to/filter.py --sh-line -- ./my-app
+# Script receives JSON on stdin (one per line) and outputs allow/deny decisions
 # stdin  -> {"method": "GET", "url": "https://api.github.com", "host": "api.github.com", ...}
 # stdout -> true
 
@@ -271,17 +271,19 @@ r.method === 'POST' ? {allow: false, message: 'POST not allowed'} : true
 
 - V8 engine provides fast JavaScript execution
 - Fresh isolate creation per request ensures thread safety but adds some overhead
-- JavaScript evaluation is generally faster than shell script execution (--sh)
-- Persistent program mode (--prog) can be comparable to JavaScript for compiled languages
+- JavaScript evaluation is generally faster than shell script execution in default mode
+- Line-based mode (--sh-line) can be comparable to JavaScript for compiled languages
 
 > [!NOTE]
-> The evaluation flags `--js`, `--js-file`, `--sh`, and `--prog` are mutually exclusive. Only one evaluation method can be used at a time.
+> The evaluation flags `--js`, `--js-file`, and `--sh` are mutually exclusive. Only one evaluation method can be used at a time.
 
 ## Script-Based Evaluation
 
-### Shell Script Mode (--sh)
+The `--sh` flag supports two modes of operation:
 
-The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
+### Default Mode (Process per Request)
+
+By default, `--sh` executes a new shell script process for each request, passing request details through environment variables. This is simple to understand and great for demos, but the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
 
 ```bash
 # Use a shell script for request evaluation
@@ -290,7 +292,7 @@ httpjail --sh "./allow-github.sh" -- curl https://github.com
 # Example shell script (allow-github.sh):
 #!/bin/sh
 # Environment variables available:
-# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH, HTTPJAIL_REQUESTER_IP
 
 if [ "$HTTPJAIL_HOST" = "github.com" ]; then
     exit 0  # Allow
@@ -300,15 +302,15 @@ else
 fi
 ```
 
-### Persistent Program Mode (--prog)
+### Line-Based Mode (--sh-line)
 
-The `--prog` flag starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use.
+With the `--sh-line` flag, httpjail starts a single persistent process that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use.
 
 ```bash
-# Use a persistent program (path to executable)
-httpjail --prog /usr/local/bin/filter.py -- curl https://github.com
+# Use shell script with line-based protocol for efficiency
+httpjail --sh ./filter.py --sh-line -- curl https://github.com
 
-# Example Python program (filter.py):
+# Example Python script (filter.py):
 #!/usr/bin/env python3
 import json
 import sys
@@ -324,7 +326,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 ```
 
-**Protocol for --prog:**
+**Protocol for Line-Based Mode (--sh-line):**
 - **Input**: JSON objects on stdin, one per line with fields:
   - `url` - Full URL being requested
   - `method` - HTTP method (GET, POST, etc.)
@@ -342,7 +344,7 @@ for line in sys.stdin:
 > Make sure to flush stdout after each response in your script to ensure real-time processing!
 
 > [!TIP]
-> Both --sh and --prog modes can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails. Use --prog for production workloads where performance matters.
+> Both modes can be used for custom logging! Your evaluator can log requests to a database, send metrics to a monitoring service, or implement complex audit trails. Use --sh-line for production workloads where performance matters.
 
 ## Advanced Options
 
