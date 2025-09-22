@@ -207,11 +207,12 @@ impl ForkedDnsProcess {
                 });
 
                 // Use nix for setns
-                nix::sched::setns(ns_fd.as_raw_fd(), nix::sched::CloneFlags::CLONE_NEWNET)
-                    .unwrap_or_else(|e| {
+                nix::sched::setns(&ns_fd, nix::sched::CloneFlags::CLONE_NEWNET).unwrap_or_else(
+                    |e| {
                         eprintln!("Failed to setns into {}: {}", namespace_name, e);
                         std::process::exit(1);
-                    });
+                    },
+                );
 
                 // Ensure loopback interface is up
                 std::process::Command::new("ip")
