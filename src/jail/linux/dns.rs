@@ -238,7 +238,8 @@ impl ForkedDnsProcess {
 
                 // The DNS server runs forever. When parent dies, kernel sends SIGTERM
                 // due to PR_SET_PDEATHSIG, which terminates this process cleanly.
-                // Block here to keep the DNS server thread running.
+                // IMPORTANT: Keep the server alive by not letting it go out of scope
+                let _server = server;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3600));
                 }
