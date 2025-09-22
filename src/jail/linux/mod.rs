@@ -539,29 +539,14 @@ impl Jail for LinuxJail {
     {
         debug!("Cleaning up orphaned Linux jail: {}", jail_id);
 
-        // Kill any orphaned DNS server processes
-        // The DNS server runs as nobody (uid 65534) and we can identify it by checking
-        // for processes in the namespace that are listening on port 53
-        let namespace_name = format!("httpjail_{}", jail_id);
-        let output = Command::new("ip")
-            .args(["netns", "pids", &namespace_name])
-            .output()
-            .ok();
-
-        if let Some(output) = output {
-            if output.status.success() {
-                let pids = String::from_utf8_lossy(&output.stdout);
-                for pid_str in pids.lines() {
-                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                        // Try to kill the process (it might be the DNS server)
-                        unsafe {
-                            libc::kill(pid, libc::SIGTERM);
-                        }
-                        debug!("Killed process {} in namespace {}", pid, namespace_name);
-                    }
-                }
-            }
-        }
+        // TODO: Future task - Kill any orphaned DNS server processes in the namespace
+        // For now, we rely on PR_SET_PDEATHSIG to ensure the DNS server terminates
+        // when its parent (httpjail) dies. In the future, we could implement explicit
+        // cleanup of processes within the namespace using:
+        // - ip netns pids <namespace> to list all processes
+        // - kill -TERM <pid> for each process found
+        // This would handle edge cases where PR_SET_PDEATHSIG might not work
+        // (e.g., if httpjail is killed with SIGKILL and the child doesn't get signaled)
 
         // Create managed resources for existing system resources
         // When these go out of scope, they will clean themselves up
