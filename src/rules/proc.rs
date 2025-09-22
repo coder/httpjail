@@ -222,7 +222,7 @@ impl ProcRuleEngine {
 
             // Try to get a response from the process
             match self
-                .send_request_to_process(&mut *process_guard, &json_request)
+                .send_request_to_process(&mut process_guard, &json_request)
                 .await
             {
                 Ok((allowed, message)) => {
@@ -527,16 +527,18 @@ for line in sys.stdin:
 
             // Test denied domain - wrong number should be denied
             total_requests += 1;
-            let denied_url = format!("https://wrong.com/test");
-            let result = engine.evaluate(Method::GET, &denied_url, "127.0.0.1").await;
+            let denied_url = "https://wrong.com/test";
+            let result = engine.evaluate(Method::GET, denied_url, "127.0.0.1").await;
             assert!(
                 matches!(result.action, Action::Deny),
                 "Request {} to wrong.com should be denied",
                 total_requests
             );
             assert!(
-                result.context.as_ref().map_or(false, |msg| msg
-                    .contains(&format!("Request {}", total_requests))),
+                result
+                    .context
+                    .as_ref()
+                    .is_some_and(|msg| msg.contains(&format!("Request {}", total_requests))),
                 "Deny message should indicate this is request {} in the process",
                 total_requests
             );
@@ -564,7 +566,7 @@ for line in sys.stdin:
             result
                 .context
                 .as_ref()
-                .map_or(false, |msg| msg.contains("Request 22")),
+                .is_some_and(|msg| msg.contains("Request 22")),
             "Should indicate this is request 22 in the process lifecycle"
         );
 
