@@ -9,9 +9,8 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use dns::DummyDnsServer;
+use dns::NamespaceDnsServer;
 use resources::{NFTable, NetworkNamespace, VethPair};
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
@@ -66,8 +65,7 @@ pub struct LinuxJail {
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
     nftables: Option<ManagedResource<NFTable>>,
-    dns_forwarder_pid: Option<libc::pid_t>,
-    dns_cleanup_pipe: Option<RawFd>,
+    dns_server: Option<NamespaceDnsServer>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -84,8 +82,7 @@ impl LinuxJail {
             namespace: None,
             veth_pair: None,
             nftables: None,
-            dns_forwarder_pid: None,
-            dns_cleanup_pipe: None,
+            dns_server: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -382,125 +379,17 @@ impl LinuxJail {
 
     /// Fork a DNS server directly into the namespace
     fn start_namespace_dns_server(&mut self) -> Result<()> {
-        let namespace_name = self.namespace_name();
-
-        info!("Starting in-namespace DNS server for {}", namespace_name);
-
-        // Create pipe for cleanup detection
-        let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
-
-        match unsafe { libc::fork() } {
-            0 => {
-                // Child: Run DNS server in namespace
-                drop(write_fd);
-                let read_raw = read_fd.as_raw_fd();
-
-                // Die if parent dies
-                unsafe {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                    if libc::getppid() == 1 {
-                        libc::exit(1);
-                    }
-                }
-
-                // Enter the namespace
-                let ns_path = format!("/var/run/netns/{}", namespace_name);
-                let ns_fd = std::fs::File::open(&ns_path).context("Failed to open namespace")?;
-                use std::os::unix::io::AsRawFd;
-                let ret = unsafe { libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET) };
-                if ret != 0 {
-                    std::process::exit(1);
-                }
-
-                // Ensure loopback interface is up
-                std::process::Command::new("ip")
-                    .args(["link", "set", "lo", "up"])
-                    .output()
-                    .ok();
-
-                // Start DNS server on all interfaces (requires root for privileged port)
-                let mut server = DummyDnsServer::new();
-                if let Err(e) = server.start("0.0.0.0:53") {
-                    eprintln!("Failed to start DNS server: {}", e);
-                    std::process::exit(1);
-                }
-
-                // Drop privileges to nobody after binding
-                unsafe {
-                    libc::setgroups(0, std::ptr::null());
-                    libc::setgid(65534); // nogroup
-                    libc::setuid(65534); // nobody
-                }
-
-                info!("In-namespace DNS server listening on 127.0.0.1:53");
-
-                // Monitor parent lifecycle
-                loop {
-                    let mut buf = [0u8; 1];
-                    let n =
-                        unsafe { libc::read(read_raw, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-                    if n == 0 {
-                        // EOF - parent died
-                        std::process::exit(0);
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
-            pid if pid > 0 => {
-                // Parent: Store cleanup info
-                drop(read_fd);
-                let write_raw = write_fd.as_raw_fd();
-                self.dns_forwarder_pid = Some(pid);
-                self.dns_cleanup_pipe = Some(write_raw);
-                // Keep write_fd alive by not dropping it
-                std::mem::forget(write_fd);
-
-                info!("Started in-namespace DNS server (pid {})", pid);
-                Ok(())
-            }
-            _ => anyhow::bail!("Fork failed"),
-        }
-    }
-
-    /// Stop the forked DNS server
-    fn stop_dns_server(&mut self) {
-        // Close pipe to signal shutdown
-        if let Some(fd) = self.dns_cleanup_pipe.take() {
-            unsafe {
-                libc::close(fd);
-            }
-        }
-
-        // Clean kill of the process
-        if let Some(pid) = self.dns_forwarder_pid.take() {
-            unsafe {
-                // Try graceful termination
-                libc::kill(pid, libc::SIGTERM);
-
-                // Wait briefly for clean exit
-                let start = std::time::Instant::now();
-                let mut status = 0;
-                while start.elapsed() < std::time::Duration::from_millis(100) {
-                    if libc::waitpid(pid, &mut status, libc::WNOHANG) == pid {
-                        info!("Stopped in-namespace DNS server");
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-
-                // Force kill if needed
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
-                info!("Force-stopped in-namespace DNS server");
-            }
-        }
+        let mut dns_server = NamespaceDnsServer::new();
+        dns_server.start(&self.namespace_name())?;
+        self.dns_server = Some(dns_server);
+        Ok(())
     }
 }
 
 impl Drop for LinuxJail {
     fn drop(&mut self) {
-        // Stop the DNS server if running
-        self.stop_dns_server();
+        // The DNS server will be automatically stopped when dns_server is dropped
+        // due to NamespaceDnsServer's Drop implementation
     }
 }
 
