@@ -247,6 +247,8 @@ impl ForkedDnsProcess {
                     eprintln!("DNS server error: {}", e);
                     std::process::exit(1);
                 }
+                // DNS server exited normally (shouldn't happen as it loops forever)
+                std::process::exit(0);
             }
             ForkResult::Parent { child } => {
                 // Parent: Just store child PID
