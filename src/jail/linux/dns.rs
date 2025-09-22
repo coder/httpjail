@@ -169,11 +169,30 @@ impl NamespaceDnsServer {
         // Create pipe for cleanup detection
         let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
 
+        // SAFETY: While we may be forking from within a tokio runtime, this is safe because:
+        // 1. The child process immediately drops all Rust objects except raw file descriptors
+        // 2. It only uses libc calls and never returns to Rust/tokio code
+        // 3. It exits via std::process::exit() or libc::exit(), never unwinding
+        // 4. The parent continues normally with its own file descriptors
+        //
+        // To make this even safer, we could use std::process::Command instead of fork(),
+        // but that would require a separate binary or significant refactoring.
         match unsafe { libc::fork() } {
             0 => {
                 // Child: Run DNS server in namespace
                 drop(write_fd);
                 let read_raw = read_fd.as_raw_fd();
+
+                // Close all unnecessary file descriptors inherited from parent
+                // This includes tokio's epoll/kqueue fds and any other open files
+                // Keep only stdin(0), stdout(1), stderr(2), and our read pipe
+                for fd in 3..1024 {
+                    if fd != read_raw {
+                        unsafe {
+                            libc::close(fd);
+                        }
+                    }
+                }
 
                 // Die if parent dies
                 unsafe {
