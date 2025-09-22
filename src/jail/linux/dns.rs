@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use simple_dns::{CLASS, Packet, PacketFlag, ResourceRecord, TYPE, rdata::RData};
+use simple_dns::{CLASS, Packet, PacketFlag, QCLASS, QTYPE, ResourceRecord, TYPE, rdata::RData};
+use std::fs::OpenOptions;
 use std::net::{Ipv4Addr, UdpSocket};
-use std::os::unix::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use tracing::{debug, info};
 
@@ -175,7 +175,7 @@ fn build_dummy_response(query: &[u8]) -> Result<Vec<u8>> {
 
     // Add dummy answer for all A record queries
     for question in &query_packet.questions {
-        if question.qtype == TYPE::A && question.qclass == CLASS::IN {
+        if question.qtype == QTYPE::TYPE(TYPE::A) && question.qclass == QCLASS::CLASS(CLASS::IN) {
             let mut answer = ResourceRecord::new(question.qname.clone());
             answer.set_type(TYPE::A);
             answer.set_class(CLASS::IN);
