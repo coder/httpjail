@@ -11,6 +11,7 @@ use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
+use std::os::unix::io::RawFd;
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
@@ -67,7 +68,8 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
-    dns_server: Option<Arc<Mutex<DummyDnsServer>>>,
+    dns_forwarder_pid: Option<libc::pid_t>,
+    dns_cleanup_pipe: Option<RawFd>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -85,7 +87,8 @@ impl LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
-            dns_server: None,
+            dns_forwarder_pid: None,
+            dns_cleanup_pipe: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -334,7 +337,6 @@ impl LinuxJail {
             &host_ip,
             self.config.http_proxy_port,
             self.config.https_proxy_port,
-            self.config.dns_proxy_port,
         )?;
 
         // The table will be cleaned up automatically when it goes out of scope
@@ -356,7 +358,6 @@ impl LinuxJail {
                 &self.subnet_cidr,
                 self.config.http_proxy_port,
                 self.config.https_proxy_port,
-                self.config.dns_proxy_port,
             )?;
             table_wrapper.set_table(table);
 
@@ -417,41 +418,18 @@ impl LinuxJail {
     ///
     /// This is simpler, more reliable, and doesn't compromise security.
     fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
-        let namespace_name = self.namespace_name();
+        // With in-namespace DNS server and DNAT rules, we don't need to modify resolv.conf
+        // The server listens on 127.0.0.1:53 and DNAT redirects all DNS to it
 
-        // We still need to handle systemd-resolved's 127.0.0.53 because
-        // nftables DNAT doesn't work properly for localhost destinations.
-        // However, with transparent redirect, we can use ANY non-localhost
-        // nameserver - it will all get redirected to our DNS proxy anyway.
-
-        info!(
-            "Setting up namespace {} for transparent DNS redirect",
-            namespace_name
-        );
-
-        // Ensure /etc/netns directory exists
-        let netns_dir = "/etc/netns";
-        if !std::path::Path::new(netns_dir).exists() {
-            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
-            debug!("Created /etc/netns directory");
-        }
-
-        // Create namespace config resource
+        // Create namespace config resource for cleanup tracking
         self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
             &self.config.jail_id,
         )?);
 
-        // Write a minimal resolv.conf that just avoids localhost
-        // We use 8.8.8.8 but it will be redirected to our DNS proxy anyway
-        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-        let resolv_conf_content = "# Transparent DNS redirect - actual server doesn't matter\n\
-             # Using non-localhost to avoid nftables DNAT limitations\n\
-             nameserver 8.8.8.8\n";
-
-        std::fs::write(&resolv_conf_path, resolv_conf_content)
-            .context("Failed to write namespace-specific resolv.conf")?;
-
-        info!("Created namespace resolv.conf for transparent DNS redirect",);
+        debug!(
+            "DNS will be handled via in-namespace server for {}",
+            self.namespace_name()
+        );
 
         Ok(())
     }
@@ -467,33 +445,110 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Start the dummy DNS server in the namespace
-    fn start_dns_server(&mut self) -> Result<()> {
+    /// Fork a DNS server directly into the namespace
+    fn start_namespace_dns_server(&mut self) -> Result<()> {
         let namespace_name = self.namespace_name();
 
-        info!("Starting dummy DNS server in namespace {}", namespace_name);
+        info!("Starting in-namespace DNS server for {}", namespace_name);
 
-        // Start the DNS server on the host side
-        let mut dns_server = DummyDnsServer::new();
+        // Create pipe for cleanup detection
+        let (read_fd, write_fd) = nix::unistd::pipe().context("Failed to create cleanup pipe")?;
 
-        // Bind to the configured DNS proxy port on the host IP
-        // Traffic from the namespace will be redirected to this port via nftables DNAT
-        let dns_bind_addr = format!("{}:{}", format_ip(self.host_ip), self.config.dns_proxy_port);
-        dns_server.start(&dns_bind_addr)?;
+        match unsafe { libc::fork() } {
+            0 => {
+                // Child: Run DNS server in namespace
+                drop(write_fd);
 
-        info!("Started dummy DNS server on {}", dns_bind_addr);
+                // Die if parent dies
+                unsafe {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                    if libc::getppid() == 1 {
+                        libc::exit(1);
+                    }
+                }
 
-        self.dns_server = Some(Arc::new(Mutex::new(dns_server)));
+                // Enter the namespace
+                let ns_path = format!("/var/run/netns/{}", namespace_name);
+                let ns_fd = std::fs::File::open(&ns_path).context("Failed to open namespace")?;
+                use std::os::unix::io::AsRawFd;
+                let ret = unsafe { libc::setns(ns_fd.as_raw_fd(), libc::CLONE_NEWNET) };
+                if ret != 0 {
+                    std::process::exit(1);
+                }
 
-        Ok(())
+                // Drop privileges to nobody
+                unsafe {
+                    libc::setgroups(0, std::ptr::null());
+                    libc::setgid(65534); // nogroup
+                    libc::setuid(65534); // nobody
+                }
+
+                // Run DNS server on localhost:53
+                let mut server = DummyDnsServer::new();
+                if let Err(e) = server.start("127.0.0.1:53") {
+                    eprintln!("Failed to start DNS server: {}", e);
+                    std::process::exit(1);
+                }
+
+                info!("In-namespace DNS server listening on 127.0.0.1:53");
+
+                // Monitor parent lifecycle
+                loop {
+                    let mut buf = [0u8; 1];
+                    match nix::unistd::read(read_fd, &mut buf) {
+                        Ok(0) => {
+                            // EOF - parent died
+                            std::process::exit(0);
+                        }
+                        _ => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                    }
+                }
+            }
+            pid if pid > 0 => {
+                // Parent: Store cleanup info
+                drop(read_fd);
+                self.dns_forwarder_pid = Some(pid);
+                self.dns_cleanup_pipe = Some(write_fd);
+
+                info!("Started in-namespace DNS server (pid {})", pid);
+                Ok(())
+            }
+            _ => bail!("Fork failed"),
+        }
     }
 
-    /// Stop the DNS server
+    /// Stop the forked DNS server
     fn stop_dns_server(&mut self) {
-        if let Some(dns_server_arc) = self.dns_server.take() {
-            if let Ok(mut dns_server) = dns_server_arc.lock() {
-                dns_server.stop();
-                info!("Stopped dummy DNS server");
+        // Close pipe to signal shutdown
+        if let Some(fd) = self.dns_cleanup_pipe.take() {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+
+        // Clean kill of the process
+        if let Some(pid) = self.dns_forwarder_pid.take() {
+            unsafe {
+                // Try graceful termination
+                libc::kill(pid, libc::SIGTERM);
+
+                // Wait briefly for clean exit
+                let start = std::time::Instant::now();
+                while start.elapsed() < std::time::Duration::from_millis(100) {
+                    let mut status = 0;
+                    if libc::waitpid(pid, &mut status, libc::WNOHANG) == pid {
+                        info!("Stopped in-namespace DNS server");
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                // Force kill if needed
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+                info!("Force-stopped in-namespace DNS server");
             }
         }
     }
@@ -528,7 +583,7 @@ impl Jail for LinuxJail {
         self.configure_namespace_networking()?;
 
         // Start the dummy DNS server in the namespace
-        self.start_dns_server()?;
+        self.start_namespace_dns_server()?;
 
         // Set up NAT for namespace connectivity
         self.setup_host_nat()?;
@@ -537,11 +592,10 @@ impl Jail for LinuxJail {
         self.setup_namespace_nftables()?;
 
         info!(
-            "Linux jail setup complete using namespace {} with HTTP proxy on port {}, HTTPS proxy on port {}, and DNS transparent redirect on port {}",
+            "Linux jail setup complete using namespace {} with HTTP proxy on port {}, HTTPS proxy on port {}, and transparent DNS interception",
             self.namespace_name(),
             self.config.http_proxy_port,
-            self.config.https_proxy_port,
-            self.config.dns_proxy_port
+            self.config.https_proxy_port
         );
         Ok(())
     }
@@ -678,7 +732,8 @@ impl Clone for LinuxJail {
             veth_pair: None,
             namespace_config: None,
             nftables: None,
-            dns_server: None,
+            dns_forwarder_pid: None,
+            dns_cleanup_pipe: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),

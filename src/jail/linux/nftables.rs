@@ -23,7 +23,6 @@ impl NFTable {
         subnet_cidr: &str,
         http_port: u16,
         https_port: u16,
-        dns_port: u16,
     ) -> Result<Self> {
         let table_name = format!("httpjail_{}", jail_id);
         let veth_host = format!("vh_{}", jail_id);
@@ -51,7 +50,6 @@ table ip {table_name} {{
     chain input {{
         type filter hook input priority -100; policy accept;
         iifname "{veth_host}" tcp dport {{ {http_port}, {https_port} }} accept comment "httpjail_{jail_id} proxy"
-        iifname "{veth_host}" udp dport {dns_port} accept comment "httpjail_{jail_id} dns"
         iifname "{veth_host}" accept comment "httpjail_{jail_id} all"
     }}
     
@@ -67,7 +65,6 @@ table ip {table_name} {{
             subnet_cidr = subnet_cidr,
             http_port = http_port,
             https_port = https_port,
-            dns_port = dns_port,
         );
 
         debug!("Creating nftables table: {}", table_name);
@@ -117,7 +114,6 @@ table ip {table_name} {{
         host_ip: &str,
         http_port: u16,
         https_port: u16,
-        dns_port: u16,
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
@@ -129,9 +125,9 @@ table ip {table_name} {{
     chain output {{
         type nat hook output priority -100; policy accept;
 
-        # Redirect DNS to proxy running on host (transparent DNS intercept)
-        # This catches ALL UDP port 53 traffic including to localhost (127.0.0.53)
-        udp dport 53 dnat to {host_ip}:{dns_port}
+        # Redirect ALL DNS to in-namespace server on localhost
+        # This catches all UDP port 53 traffic and redirects to our forked server
+        udp dport 53 dnat to 127.0.0.1:53
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -147,8 +143,8 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic to the host proxy port after DNAT
-        ip daddr {host_ip} udp dport {dns_port} accept
+        # Allow DNS traffic to localhost after DNAT
+        ip daddr 127.0.0.1 udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
@@ -167,7 +163,6 @@ table ip {table_name} {{
             host_ip = host_ip,
             http_port = http_port,
             https_port = https_port,
-            dns_port = dns_port,
         );
 
         debug!(
