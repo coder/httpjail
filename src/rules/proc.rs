@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_line_based_program_simple_true() {
+    async fn test_simple_allow() {
         let program = r#"#!/bin/bash
 while IFS= read -r line; do
     echo "true"
@@ -337,7 +337,7 @@ done
     }
 
     #[tokio::test]
-    async fn test_line_based_program_json_filter() {
+    async fn test_json_filter() {
         let program = r#"#!/usr/bin/env python3
 import json
 import sys
@@ -371,7 +371,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn test_line_based_program_json_response() {
+    async fn test_json_response() {
         let program = r#"#!/usr/bin/env python3
 import json
 import sys
@@ -411,43 +411,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn test_line_based_program_reuses_process() {
-        let program = r#"#!/bin/bash
-counter=0
-while IFS= read -r line; do
-    counter=$((counter + 1))
-    if [ $counter -eq 1 ]; then
-        echo "true"
-    elif [ $counter -eq 2 ]; then
-        echo "false"
-    else
-        echo "true"
-    fi
-done
-"#;
-        let program_path = create_program_file(program);
-        let engine = ProcRuleEngine::new(program_path.to_str().unwrap().to_string());
-
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/1", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/2", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
-
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/3", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        drop(program_path);
-    }
-
-    #[tokio::test]
-    async fn test_line_based_program_restart_on_exit() {
+    async fn test_restart_on_exit() {
         // Program that exits after every request
         let program = r#"#!/usr/bin/env python3
 import json
@@ -484,7 +448,7 @@ sys.exit(0)  # Always exit after handling one request
     }
 
     #[tokio::test]
-    async fn test_line_based_program_stateful_multiple_requests() {
+    async fn test_stateful_process() {
         // Test that process stays alive and maintains state across multiple requests
         // Each request N only allows domain N.com
         let program = r#"#!/usr/bin/env python3
@@ -574,7 +538,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn test_line_based_program_killed_on_empty_response() {
+    async fn test_killed_on_empty_response() {
         // Program that returns empty response on second request
         let program = r#"#!/usr/bin/env python3
 import sys
