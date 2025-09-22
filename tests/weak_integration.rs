@@ -353,21 +353,14 @@ fn test_proc_js_json_parity() {
     use tempfile::NamedTempFile;
 
     // Create a proc program that echoes back the JSON it receives
+    // Use sh instead of Python for better portability
     let mut proc_program = NamedTempFile::new().unwrap();
-    let program_content = r#"#!/usr/bin/env python3
-import json
-import sys
-
-# Read the request and echo it back as a deny message
-# This allows us to verify the exact JSON structure received
-for line in sys.stdin:
-    request = json.loads(line)
-    # Sort keys for consistent comparison
-    response = {
-        "deny_message": json.dumps(request, sort_keys=True)
-    }
-    print(json.dumps(response))
-    sys.stdout.flush()
+    let program_content = r#"#!/bin/sh
+# Read lines from stdin and echo back the JSON as a deny message
+while IFS= read -r line; do
+    # Echo the line back as a deny message
+    echo "{\"deny_message\": $line}"
+done
 "#;
     proc_program.write_all(program_content.as_bytes()).unwrap();
     proc_program.flush().unwrap();
@@ -482,16 +475,29 @@ fn test_proc_js_response_parity() {
 
     for (response, expected_allow) in test_cases {
         // Create proc program that returns the test response
+        // Use sh for portability
         let mut proc_program = NamedTempFile::new().unwrap();
-        let program_content = format!(
-            r#"#!/usr/bin/env python3
-import sys
-for line in sys.stdin:
-    print("{}")
-    sys.stdout.flush()
+        let program_content = if response.contains('"') {
+            // For JSON responses, echo directly
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+    echo '{}'
+done
 "#,
-            response.replace('"', r#"\""#)
-        );
+                response
+            )
+        } else {
+            // For simple responses
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+    echo "{}"
+done
+"#,
+                response
+            )
+        };
 
         proc_program.write_all(program_content.as_bytes()).unwrap();
         proc_program.flush().unwrap();
