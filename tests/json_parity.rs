@@ -6,10 +6,30 @@ use httpjail::rules::{Action, RuleEngineTrait};
 use hyper::Method;
 use std::fs;
 use std::io::Write;
+use std::sync::Once;
 use tempfile::NamedTempFile;
+use tracing_subscriber;
+
+static INIT: Once = Once::new();
+
+/// Initialize tracing for tests - can be called multiple times safely
+fn init_test_logging() {
+    INIT.call_once(|| {
+        // Set up tracing subscriber that outputs to stdout
+        // This allows debugging with RUST_LOG=debug cargo test
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("httpjail=debug".parse().unwrap()),
+            )
+            .with_test_writer()
+            .init();
+    });
+}
 
 fn create_temp_script(content: &str) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
+    eprintln!("Creating temp script at: {:?}", file.path());
     file.write_all(content.as_bytes()).unwrap();
     file.flush().unwrap();
 
@@ -19,17 +39,21 @@ fn create_temp_script(content: &str) -> NamedTempFile {
         let mut perms = fs::metadata(file.path()).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(file.path(), perms).unwrap();
+        eprintln!("Set permissions to 0755 for: {:?}", file.path());
     }
+
+    // Verify the script is executable
+    eprintln!(
+        "Script content preview: {:?}",
+        &content[..50.min(content.len())]
+    );
 
     file
 }
 
 #[tokio::test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Proc tests have environment-specific issues on Linux CI"
-)]
 async fn test_json_parity() {
+    init_test_logging();
     // Test that both engines receive identical request JSON
     let proc_script = create_temp_script(
         r#"#!/usr/bin/env python3
@@ -64,11 +88,8 @@ for line in sys.stdin:
 }
 
 #[tokio::test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "Proc tests have environment-specific issues on Linux CI"
-)]
 async fn test_response_parity() {
+    init_test_logging();
     // Test that both engines handle responses identically
     let test_cases = [
         ("true", "true", true),
