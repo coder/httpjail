@@ -27,7 +27,7 @@ fn init_test_logging() {
     });
 }
 
-fn create_temp_script(content: &str) -> NamedTempFile {
+fn create_temp_script(content: &str) -> tempfile::TempPath {
     let mut file = NamedTempFile::new().unwrap();
     eprintln!("Creating temp script at: {:?}", file.path());
     file.write_all(content.as_bytes()).unwrap();
@@ -48,7 +48,8 @@ fn create_temp_script(content: &str) -> NamedTempFile {
         &content[..50.min(content.len())]
     );
 
-    file
+    // IMPORTANT: Convert to TempPath to close the file handle while keeping the file
+    file.into_temp_path()
 }
 
 #[tokio::test]
@@ -66,7 +67,7 @@ for line in sys.stdin:
 "#,
     );
 
-    let proc_engine = ProcRuleEngine::new(proc_script.path().to_str().unwrap().to_string());
+    let proc_engine = ProcRuleEngine::new(proc_script.to_str().unwrap().to_string());
     let js_engine = V8JsRuleEngine::new("({deny_message: JSON.stringify(r)})".to_string()).unwrap();
 
     let proc_result = proc_engine
@@ -107,7 +108,7 @@ async fn test_response_parity() {
             proc_response
         ));
 
-        let proc_engine = ProcRuleEngine::new(proc_script.path().to_str().unwrap().to_string());
+        let proc_engine = ProcRuleEngine::new(proc_script.to_str().unwrap().to_string());
         let js_engine = V8JsRuleEngine::new(js_code.to_string()).unwrap();
 
         let proc_result = proc_engine
