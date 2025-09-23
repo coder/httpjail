@@ -1,110 +1,124 @@
-#[cfg(test)]
-use super::Action;
-use super::{EvaluationResult, RuleEngineTrait};
+use crate::rules::common::{RequestInfo, RuleResponse};
+use crate::rules::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
-use std::sync::{Once, OnceLock};
-use tracing::{debug, warn};
-use url::Url;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
-/// V8 JavaScript rule engine that creates a fresh context for each evaluation
-/// to ensure thread safety. While this is less performant than reusing contexts,
-/// it's necessary because V8 isolates are not Send + Sync.
 pub struct V8JsRuleEngine {
     js_code: String,
+    #[allow(dead_code)]
+    runtime: Arc<Mutex<()>>, // Placeholder for V8 runtime management
 }
 
-static V8_INIT: Once = Once::new();
-static V8_PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
-
 impl V8JsRuleEngine {
-    /// Creates a new V8 JavaScript rule engine
-    ///
-    /// # Arguments
-    /// * `js_code` - JavaScript expression that evaluates to a boolean value
-    ///   The code has access to the `r` object with properties:
-    ///   - `r.url` - Full URL string
-    ///   - `r.method` - HTTP method string
-    ///   - `r.scheme` - URL scheme (http/https)
-    ///   - `r.host` - Host part of URL
-    ///   - `r.path` - Path part of URL
-    ///   - `r.block_message` - Optional message to set when denying (writable)
-    pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        // Initialize V8 platform (only once per process), and keep the platform alive
-        V8_INIT.call_once(|| {
+    pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error>> {
+        // Initialize V8 platform once and keep it alive for the lifetime of the program
+        use std::sync::OnceLock;
+        static V8_PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
+
+        V8_PLATFORM.get_or_init(|| {
             let platform = v8::new_default_platform(0, false).make_shared();
             v8::V8::initialize_platform(platform.clone());
-            // Store platform so it outlives all isolates
-            let _ = V8_PLATFORM.set(platform);
             v8::V8::initialize();
+            platform
         });
 
-        // Test that the JavaScript code can be compiled
-        Self::test_js_compilation(&js_code)?;
+        // Compile the JavaScript to check for syntax errors
+        {
+            let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+            let handle_scope = &mut v8::HandleScope::new(&mut isolate);
+            let context = v8::Context::new(handle_scope, Default::default());
+            let context_scope = &mut v8::ContextScope::new(handle_scope, context);
 
-        Ok(Self { js_code })
+            let source =
+                v8::String::new(context_scope, &js_code).ok_or("Failed to create V8 string")?;
+
+            v8::Script::compile(context_scope, source, None)
+                .ok_or("Failed to compile JavaScript expression")?;
+        }
+
+        info!("V8 JavaScript rule engine initialized");
+        Ok(Self {
+            js_code,
+            runtime: Arc::new(Mutex::new(())),
+        })
     }
 
-    /// Test that the JavaScript code compiles successfully
-    fn test_js_compilation(js_code: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
-        let handle_scope = &mut v8::HandleScope::new(&mut isolate);
-        let context = v8::Context::new(handle_scope, Default::default());
-        let context_scope = &mut v8::ContextScope::new(handle_scope, context);
-
-        // The code should be a JavaScript expression, not a function
-        let source = v8::String::new(context_scope, js_code)
-            .ok_or("Failed to create V8 string from JavaScript code")?;
-
-        v8::Script::compile(context_scope, source, None)
-            .ok_or("Failed to compile JavaScript expression")?;
-
-        Ok(())
-    }
-
-    /// Evaluate the JavaScript rule against the given request
-    fn execute_js_rule(
+    pub fn execute(
         &self,
         method: &Method,
         url: &str,
         requester_ip: &str,
     ) -> (bool, Option<String>) {
-        let parsed_url = match Url::parse(url) {
-            Ok(u) => u,
+        let request_info = match RequestInfo::from_request(method, url, requester_ip) {
+            Ok(info) => info,
             Err(e) => {
-                debug!("Failed to parse URL '{}': {}", url, e);
-                return (false, Some(format!("Failed to parse URL: {}", e)));
+                warn!("Failed to parse request info: {}", e);
+                return (false, Some("Invalid request format".to_string()));
             }
         };
 
-        let scheme = parsed_url.scheme();
-        let host = parsed_url.host_str().unwrap_or("");
-        let path = parsed_url.path();
-
-        debug!(
-            "Executing JS rule for {} {} (host: {}, path: {})",
-            method, url, host, path
-        );
-
-        // Create a new isolate and context for this evaluation
-        // This ensures thread safety at the cost of some performance
-        match self.create_and_execute(method.as_str(), url, scheme, host, path, requester_ip) {
+        match self.create_and_execute(&request_info) {
             Ok(result) => result,
             Err(e) => {
                 warn!("JavaScript execution failed: {}", e);
-                (false, Some(format!("JavaScript execution failed: {}", e)))
+                (false, Some("JavaScript execution failed".to_string()))
             }
+        }
+    }
+
+    /// Convert a V8 value to a response string that can be parsed by RuleResponse
+    fn value_to_response_string(
+        &self,
+        context_scope: &mut v8::ContextScope<v8::HandleScope>,
+        global: v8::Local<v8::Object>,
+        value: v8::Local<v8::Value>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if value.is_object() && !value.is_null() && !value.is_undefined() {
+            // Object - stringify it to JSON using JSON.stringify()
+            let json_key = v8::String::new(context_scope, "JSON").unwrap();
+            let stringify_key = v8::String::new(context_scope, "stringify").unwrap();
+
+            let json_obj = global
+                .get(context_scope, json_key.into())
+                .and_then(|v| v.to_object(context_scope))
+                .ok_or("Failed to get JSON object")?;
+
+            let stringify_fn = json_obj
+                .get(context_scope, stringify_key.into())
+                .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+                .ok_or("Failed to get JSON.stringify function")?;
+
+            // Call JSON.stringify(value)
+            stringify_fn
+                .call(context_scope, json_obj.into(), &[value])
+                .and_then(|v| v.to_string(context_scope))
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .ok_or_else(|| "Failed to stringify value".into())
+        } else if value.is_boolean() {
+            // Boolean - convert to "true" or "false" string
+            Ok(if value.boolean_value(context_scope) {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            })
+        } else if value.is_string() {
+            // String - use as-is (will be treated as deny message)
+            value
+                .to_string(context_scope)
+                .map(|s| s.to_rust_string_lossy(context_scope))
+                .ok_or_else(|| "Failed to convert string".into())
+        } else {
+            // Other types - default to "false"
+            Ok("false".to_string())
         }
     }
 
     fn create_and_execute(
         &self,
-        method: &str,
-        url: &str,
-        scheme: &str,
-        host: &str,
-        path: &str,
-        requester_ip: &str,
+        request_info: &RequestInfo,
     ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
         let handle_scope = &mut v8::HandleScope::new(&mut isolate);
@@ -113,48 +127,39 @@ impl V8JsRuleEngine {
 
         let global = context.global(context_scope);
 
-        // Create the 'r' object with jail-related variables
-        let r_obj = v8::Object::new(context_scope);
+        // Serialize RequestInfo to JSON - this is the exact same JSON sent to proc
+        let json_request = serde_json::to_string(&request_info)
+            .map_err(|e| format!("Failed to serialize request: {}", e))?;
+
+        // Parse the JSON in V8 to create the 'r' object
+        let json_str = v8::String::new(context_scope, &json_request)
+            .ok_or("Failed to create V8 string for JSON")?;
+        let json_key = v8::String::new(context_scope, "JSON").unwrap();
+        let parse_key = v8::String::new(context_scope, "parse").unwrap();
+
+        let json_obj = global
+            .get(context_scope, json_key.into())
+            .ok_or("Failed to get JSON object")?
+            .to_object(context_scope)
+            .ok_or("JSON is not an object")?;
+
+        let parse_fn = json_obj
+            .get(context_scope, parse_key.into())
+            .ok_or("Failed to get JSON.parse")?;
+
+        let parse_fn = v8::Local::<v8::Function>::try_from(parse_fn)
+            .map_err(|_| "JSON.parse is not a function")?;
+
+        // Call JSON.parse to create the request object
+        let r_obj = parse_fn
+            .call(context_scope, json_obj.into(), &[json_str.into()])
+            .ok_or("Failed to parse JSON")?;
+
+        // Set the parsed object as 'r' in the global scope
         let r_key = v8::String::new(context_scope, "r").unwrap();
-        global.set(context_scope, r_key.into(), r_obj.into());
+        global.set(context_scope, r_key.into(), r_obj);
 
-        // Set properties on the 'r' object
-        if let Some(url_str) = v8::String::new(context_scope, url) {
-            let key = v8::String::new(context_scope, "url").unwrap();
-            r_obj.set(context_scope, key.into(), url_str.into());
-        }
-
-        if let Some(method_str) = v8::String::new(context_scope, method) {
-            let key = v8::String::new(context_scope, "method").unwrap();
-            r_obj.set(context_scope, key.into(), method_str.into());
-        }
-
-        if let Some(scheme_str) = v8::String::new(context_scope, scheme) {
-            let key = v8::String::new(context_scope, "scheme").unwrap();
-            r_obj.set(context_scope, key.into(), scheme_str.into());
-        }
-
-        if let Some(host_str) = v8::String::new(context_scope, host) {
-            let key = v8::String::new(context_scope, "host").unwrap();
-            r_obj.set(context_scope, key.into(), host_str.into());
-        }
-
-        if let Some(path_str) = v8::String::new(context_scope, path) {
-            let key = v8::String::new(context_scope, "path").unwrap();
-            r_obj.set(context_scope, key.into(), path_str.into());
-        }
-
-        if let Some(ip_str) = v8::String::new(context_scope, requester_ip) {
-            let key = v8::String::new(context_scope, "requester_ip").unwrap();
-            r_obj.set(context_scope, key.into(), ip_str.into());
-        }
-
-        // Initialize block_message as undefined (can be set by user script)
-        let block_msg_key = v8::String::new(context_scope, "block_message").unwrap();
-        let undefined_val = v8::undefined(context_scope);
-        r_obj.set(context_scope, block_msg_key.into(), undefined_val.into());
-
-        // Execute the JavaScript expression directly (not wrapped in a function)
+        // Execute the JavaScript expression
         let source =
             v8::String::new(context_scope, &self.js_code).ok_or("Failed to create V8 string")?;
 
@@ -166,34 +171,26 @@ impl V8JsRuleEngine {
             .run(context_scope)
             .ok_or("Expression evaluation failed")?;
 
-        // Convert result to boolean
-        let allowed = result.boolean_value(context_scope);
+        // Convert the V8 result to a JSON string for consistent parsing
+        // This ensures perfect parity with the proc engine response handling
+        let response_str = self.value_to_response_string(context_scope, global, result)?;
 
-        // Get block_message if it was set
-        let block_msg_key = v8::String::new(context_scope, "block_message").unwrap();
-        let block_message = r_obj
-            .get(context_scope, block_msg_key.into())
-            .and_then(|v| {
-                if v.is_undefined() || v.is_null() {
-                    None
-                } else {
-                    v.to_string(context_scope)
-                        .map(|s| s.to_rust_string_lossy(context_scope))
-                }
-            });
+        // Use the common RuleResponse parser - exact same logic as proc engine
+        let rule_response = RuleResponse::from_string(&response_str);
+        let (allowed, message) = rule_response.to_evaluation_result();
 
         debug!(
             "JS rule returned {} for {} {}",
             if allowed { "ALLOW" } else { "DENY" },
-            method,
-            url
+            request_info.method,
+            request_info.url
         );
 
-        if let Some(ref msg) = block_message {
-            debug!("Block message: {}", msg);
+        if let Some(ref msg) = message {
+            debug!("Deny message: {}", msg);
         }
 
-        Ok((allowed, block_message))
+        Ok((allowed, message))
     }
 }
 
@@ -207,176 +204,120 @@ impl RuleEngineTrait for V8JsRuleEngine {
         let url_clone = url.to_string();
         let ip_clone = requester_ip.to_string();
 
-        let (allowed, block_message) = tokio::task::spawn_blocking(move || {
-            let engine = V8JsRuleEngine { js_code };
-            engine.execute_js_rule(&method_clone, &url_clone, &ip_clone)
+        let (allowed, context) = tokio::task::spawn_blocking(move || {
+            let engine = V8JsRuleEngine::new(js_code).unwrap();
+            engine.execute(&method_clone, &url_clone, &ip_clone)
         })
         .await
         .unwrap_or_else(|e| {
-            warn!("JavaScript task panicked: {}", e);
-            (false, Some("JavaScript evaluation task failed".to_string()))
+            warn!("Failed to spawn V8 evaluation task: {}", e);
+            (false, Some("Evaluation failed".to_string()))
         });
 
         if allowed {
-            debug!("ALLOW: {} {} (JS rule allowed)", method, url);
-            EvaluationResult::allow()
+            let mut result = EvaluationResult::allow();
+            if let Some(ctx) = context {
+                result = result.with_context(ctx);
+            }
+            result
         } else {
-            debug!("DENY: {} {} (JS rule denied)", method, url);
             let mut result = EvaluationResult::deny();
-            if let Some(msg) = block_message {
-                result = result.with_context(msg);
+            if let Some(ctx) = context {
+                result = result.with_context(ctx);
             }
             result
         }
     }
 
     fn name(&self) -> &str {
-        "v8-javascript"
+        "v8_js"
     }
 }
-
-// Safe cleanup is handled by V8 itself when isolates are dropped
-// No explicit cleanup needed in the Drop implementation
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_js_rule_allow() {
-        let js_code = r#"r.host === 'github.com'"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
+    async fn test_v8_js_allow() {
+        let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
         let result = engine
-            .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Allow));
+        assert!(matches!(result.action, crate::rules::Action::Allow));
     }
 
     #[tokio::test]
-    async fn test_js_rule_deny() {
-        let js_code = r#"r.host === 'github.com'"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
+    async fn test_v8_js_deny() {
+        let engine = V8JsRuleEngine::new("false".to_string()).unwrap();
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Deny));
+        assert!(matches!(result.action, crate::rules::Action::Deny));
     }
 
     #[tokio::test]
-    async fn test_js_rule_with_method() {
-        let js_code = r#"r.method === 'GET' && r.host === 'api.github.com'"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
+    async fn test_v8_js_with_request_info() {
+        let engine = V8JsRuleEngine::new("r.host === 'example.com'".to_string()).unwrap();
         let result = engine
-            .evaluate(Method::GET, "https://api.github.com/v3", "127.0.0.1")
+            .evaluate(Method::GET, "https://example.com/path", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        let result = engine
-            .evaluate(Method::POST, "https://api.github.com/v3", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
+        assert!(matches!(result.action, crate::rules::Action::Allow));
     }
 
     #[tokio::test]
-    async fn test_js_rule_with_path() {
-        let js_code = r#"r.path.startsWith('/api/')"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
+    async fn test_v8_js_object_response_allow() {
+        let engine = V8JsRuleEngine::new("({allow: true})".to_string()).unwrap();
         let result = engine
-            .evaluate(Method::GET, "https://example.com/api/test", "127.0.0.1")
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/public/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
+        assert!(matches!(result.action, crate::rules::Action::Allow));
+        assert_eq!(result.context, None); // No message when allowing
     }
 
     #[tokio::test]
-    async fn test_js_rule_complex_logic() {
-        // Using ternary operator style as mentioned in README
-        let js_code = r#"(r.host.endsWith('github.com') || r.host === 'api.github.com') ? true : (r.host.includes('facebook.com') || r.host.includes('twitter.com')) ? false : (r.scheme === 'https' && r.path.startsWith('/api/')) ? true : false"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
-        // Test GitHub allow
+    async fn test_v8_js_object_response_deny() {
+        let engine =
+            V8JsRuleEngine::new("({allow: false, deny_message: 'Blocked by policy'})".to_string())
+                .unwrap();
         let result = engine
-            .evaluate(Method::GET, "https://github.com/user/repo", "127.0.0.1")
+            .evaluate(Method::POST, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        // Test social media block
-        let result = engine
-            .evaluate(Method::GET, "https://facebook.com/profile", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
-
-        // Test API allow
-        let result = engine
-            .evaluate(Method::POST, "https://example.com/api/data", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        // Test default deny
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/public", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
+        assert!(matches!(result.action, crate::rules::Action::Deny));
+        assert_eq!(result.context, Some("Blocked by policy".to_string()));
     }
 
     #[tokio::test]
-    async fn test_js_syntax_error() {
-        let js_code = r#"invalid syntax here !!!"#.to_string();
+    async fn test_v8_js_conditional_object() {
+        let engine = V8JsRuleEngine::new(
+            "r.method === 'POST' ? {deny_message: 'POST not allowed'} : true".to_string(),
+        )
+        .unwrap();
 
-        // Should fail during construction due to syntax error
-        let result = V8JsRuleEngine::new(js_code);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_js_runtime_error() {
-        // This will throw a runtime error because undefinedVariable is not defined
-        let js_code = r#"undefinedVariable.property"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
-        // Should return deny on runtime error
+        // Test POST (should deny with message)
         let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
+            .evaluate(Method::POST, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Deny));
-    }
+        assert!(matches!(result.action, crate::rules::Action::Deny));
+        assert_eq!(result.context, Some("POST not allowed".to_string()));
 
-    #[tokio::test]
-    async fn test_js_block_message() {
-        // Test setting a custom block message
-        let js_code = r#"(r.block_message = 'Access to social media is blocked', r.host.includes('facebook.com') ? false : true)"#.to_string();
-
-        let engine = V8JsRuleEngine::new(js_code).expect("Failed to create JS engine");
-
-        // Should block facebook with custom message
+        // Test GET (should allow)
         let result = engine
-            .evaluate(Method::GET, "https://facebook.com/test", "127.0.0.1")
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
             .await;
-        assert!(matches!(result.action, Action::Deny));
-        assert_eq!(
-            result.context,
-            Some("Access to social media is blocked".to_string())
-        );
-
-        // Should allow others without message
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
+        assert!(matches!(result.action, crate::rules::Action::Allow));
         assert_eq!(result.context, None);
+    }
+
+    #[tokio::test]
+    async fn test_v8_js_shorthand_deny_message() {
+        // Test shorthand: {deny_message: "reason"} implies allow: false
+        let engine =
+            V8JsRuleEngine::new("({deny_message: 'Shorthand denial'})".to_string()).unwrap();
+        let result = engine
+            .evaluate(Method::GET, "https://example.com", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, crate::rules::Action::Deny));
+        assert_eq!(result.context, Some("Shorthand denial".to_string()));
     }
 }

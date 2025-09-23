@@ -44,10 +44,16 @@ httpjail --js-file rules.js -- curl https://api.example.com/health
 httpjail --request-log requests.log --js "true" -- npm install
 # Log format: "<timestamp> <+/-> <METHOD> <URL>" (+ = allowed, - = blocked)
 
-# Use custom script for request evaluation
-httpjail --sh /path/to/check.sh -- ./my-app
-# Script receives: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
-# Exit 0 to allow, non-zero to block. stdout becomes additional context in 403 response.
+# Use shell script for request evaluation (process per request)
+httpjail --sh "/path/to/script.sh" -- ./my-app
+# Script receives env vars: HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, etc.
+# Exit code 0 allows, non-zero blocks
+
+# Use line processor for request evaluation (efficient persistent process)
+httpjail --proc /path/to/filter.py -- ./my-app
+# Program receives JSON on stdin (one per line) and outputs allow/deny decisions
+# stdin  -> {"method": "GET", "url": "https://api.github.com", "host": "api.github.com", ...}
+# stdout -> true
 
 # Run as standalone proxy server (no command execution) and allow all
 httpjail --server --js "true"
@@ -199,6 +205,27 @@ Use the config:
 httpjail --js-file rules.js -- ./my-application
 ```
 
+## Shell Script Mode (--sh)
+
+The `--sh` flag executes a shell script for each request, passing request details through environment variables. While this makes for a nice demo and is simple to understand, the process lifecycle overhead of a few milliseconds per request can impact performance for high-throughput applications.
+
+```bash
+# Use a shell script for request evaluation
+httpjail --sh "./allow-github.sh" -- curl https://github.com
+
+# Example shell script (allow-github.sh):
+#!/bin/sh
+# Environment variables available:
+# HTTPJAIL_URL, HTTPJAIL_METHOD, HTTPJAIL_HOST, HTTPJAIL_SCHEME, HTTPJAIL_PATH
+
+if [ "$HTTPJAIL_HOST" = "github.com" ]; then
+    exit 0  # Allow
+else
+    echo "Blocked: not github.com"
+    exit 1  # Deny (stdout becomes error message)
+fi
+```
+
 ## JavaScript (V8) Evaluation
 
 httpjail includes first-class support for JavaScript-based request evaluation using Google's V8 engine. This provides flexible and powerful rule logic.
@@ -219,13 +246,13 @@ httpjail --js "(r.host.endsWith('github.com') || r.host === 'api.github.com') ? 
 # Path-based filtering
 httpjail --js "r.path.startsWith('/api/') && r.scheme === 'https'" -- npm install
 
-# Custom block message
-httpjail --js "(r.block_message = 'Social media blocked', !r.host.includes('facebook.com'))" -- curl https://facebook.com
+# Custom block message (using object return)
+httpjail --js "r.host.includes('facebook.com') ? {deny_message: 'Social media blocked'} : true" -- curl https://facebook.com
 ```
 
 **JavaScript API:**
 
-All request information is available via the `r` object:
+All request information is available via the `r` object (read-only):
 
 - `r.url` - Full URL being requested (string)
 - `r.method` - HTTP method (GET, POST, etc.)
@@ -233,84 +260,98 @@ All request information is available via the `r` object:
 - `r.scheme` - URL scheme (http or https)
 - `r.path` - Path portion of the URL
 - `r.requester_ip` - IP address of the client making the request
-- `r.block_message` - Optional message to set when denying (writable)
+
+**JavaScript Return Values:**
+
+JavaScript expressions can return either:
+- A boolean: `true` to allow, `false` to deny
+- An object: `{allow: true/false, deny_message: "optional message for denials"}`
+
+Examples:
+```javascript
+// Simple boolean
+true  // Allow
+false // Deny
+
+// Object with deny_message (parentheses needed when used as expression)
+({allow: false, deny_message: "Blocked by policy"})
+// Shorthand: if only deny_message is provided, request is denied
+({deny_message: "Blocked by policy"})
+
+// Conditional with deny message
+r.method === 'POST' ? {deny_message: 'POST not allowed'} : true
+```
 
 **JavaScript evaluation rules:**
 
-- JavaScript expressions evaluate to `true` to allow the request, `false` to block it
 - Code is executed in a sandboxed V8 isolate for security
 - Syntax errors are caught during startup and cause httpjail to exit
 - Runtime errors result in the request being blocked
 - Each request evaluation runs in a fresh context for thread safety
-- You can set `r.block_message` to provide a custom denial message
 
 **Performance considerations:**
 
-- V8 engine provides fast JavaScript execution
-- Fresh isolate creation per request ensures thread safety but adds some overhead
-- JavaScript evaluation is generally faster than external script execution
+- JavaScript mode is designed to be the fastest evaluation mode
+- V8 engine provides fast JavaScript execution with minimal overhead
+- Fresh isolate creation per request ensures thread safety
+- JavaScript evaluation is significantly faster than shell script execution (--sh)
+- Line processor mode (--proc) should be considered the fastest mode.
+    - Programs can use state such as caching
+    - We may parallelize this mode in the future
 
 > [!NOTE]
-> The `--js` flag conflicts with `--sh` and `--js-file`. Only one evaluation method can be used at a time.
+> The evaluation flags `--js`, `--js-file`, `--sh`, and `--proc` are mutually exclusive. Only one evaluation method can be used at a time.
 
-## Script-Based Evaluation
+## Line Processor Mode (--proc)
 
-Instead of writing JavaScript, you can use a custom script to evaluate each request. The script receives environment variables for each request and returns an exit code to allow (0) or block (non-zero) the request. Any output to stdout becomes additional context in the 403 response.
-
-```bash
-# Simple script example
-#!/bin/bash
-if [ "$HTTPJAIL_HOST" = "github.com" ] && [ "$HTTPJAIL_METHOD" = "GET" ]; then
-    exit 0  # Allow the request
-else
-    exit 1  # Block the request
-fi
-
-# Use the script
-httpjail --sh ./check_request.sh -- curl https://github.com
-
-# Inline script (with spaces, executed via shell)
-httpjail --sh '[ "$HTTPJAIL_HOST" = "github.com" ] && exit 0 || exit 1' -- git pull
-```
-
-If `--sh` has spaces, it's run through `sh`; otherwise it's executed directly.
-
-**Environment variables provided to the script:**
-
-- `HTTPJAIL_URL` - Full URL being requested
-- `HTTPJAIL_METHOD` - HTTP method (GET, POST, etc.)
-- `HTTPJAIL_HOST` - Hostname from the URL
-- `HTTPJAIL_SCHEME` - URL scheme (http or https)
-- `HTTPJAIL_PATH` - Path component of the URL
-- `HTTPJAIL_REQUESTER_IP` - IP address of the client making the request
-
-**Script requirements:**
-
-- Exit code 0 allows the request
-- Any non-zero exit code blocks the request
-- stdout is captured and included in 403 responses as additional context
-- stderr is logged for debugging but not sent to the client
-
-> [!TIP]
-> Script-based evaluation can also be used for custom logging! Your script can log requests to a database, send metrics to a monitoring service, or implement complex audit trails before returning the allow/deny decision.
-
-## Advanced Options
+The `--proc` flag starts a single line processor that receives JSON-formatted requests on stdin (one per line) and outputs decisions line-by-line. This approach eliminates process spawn overhead by keeping the evaluator in memory, making it suitable for production use. The API is designed to be equivalent to the JavaScript engine, supporting the same response formats. Both engines receive exactly the same JSON-encoded request object, ensuring perfect parity between the two evaluation modes.
 
 ```bash
-# Verbose logging
-httpjail -vvv --js "true" -- curl https://example.com
+# Use a persistent program (path to executable)
+httpjail --proc /usr/local/bin/filter.py -- curl https://github.com
 
-# Server mode - run as standalone proxy without executing commands
-httpjail --server --js "true"
-# Server defaults to ports 8080 (HTTP) and 8443 (HTTPS)
+# Example Python program (filter.py):
+#!/usr/bin/env python3
+import json
+import sys
 
-# Server mode with custom ports (format: port or ip:port)
-HTTPJAIL_HTTP_BIND=3128 HTTPJAIL_HTTPS_BIND=3129 httpjail --server --js "true"
-# Configure applications: HTTP_PROXY=http://localhost:3128 HTTPS_PROXY=http://localhost:3129
-
-# Bind to specific interface
-HTTPJAIL_HTTP_BIND=192.168.1.100:8080 httpjail --server --js "true"
+for line in sys.stdin:
+    request = json.loads(line)
+    # Request contains: url, method, scheme, host, path, requester_ip
+    
+    if 'github.com' in request['host']:
+        print('true')  # Allow
+    else:
+        print('false') # Deny
+    sys.stdout.flush()
 ```
+
+**Protocol for --proc (line processor):**
+- **Input**: JSON objects on stdin, one per line with fields:
+  - `url` - Full URL being requested
+  - `method` - HTTP method (GET, POST, etc.)
+  - `host` - Hostname from the URL
+  - `scheme` - URL scheme (http or https)
+  - `path` - Path component of the URL
+  - `requester_ip` - IP address of the client
+
+- **Output**: One response per line, either:
+  - Simple: `true` or `false` (matching JS boolean semantics)
+  - JSON: `{"allow": true/false, "deny_message": "optional message for denials"}`
+  - Shorthand: `{"deny_message": "reason"}` (implies allow: false)
+  - Any other output is treated as deny with the output as the deny_message
+
+**Performance advantages:**
+- Single process handles all requests (no spawn overhead)
+- Can maintain state/caches across requests
+- Suitable for high-throughput production use
+- May be parallelized in future versions for even better performance
+
+> [!NOTE]
+> Make sure to flush stdout after each response in your script to ensure real-time processing!
+
+
+
 
 ## Server Mode
 

@@ -25,6 +25,23 @@ for significantly faster build times while still providing reasonable performanc
 
 When writing tests, prefer pure rust solutions over shell script wrappers.
 
+**Important:** Shell script based tests (`.sh` files) should NOT be committed to the repository. They are acceptable for transient testing during development (WIP), but all submitted tests must be written in Rust as either integration or unit tests. This ensures consistency, maintainability, and proper CI integration.
+
+**Test Philosophy:** Write terse, minimal tests that cover the essential behavior. Avoid verbose test suites with many similar test cases. Each test should have a clear, specific purpose. Prefer 1-2 focused tests over 5-10 comprehensive tests. This keeps the test suite fast and maintainable.
+
+### Debugging Test Failures
+
+**Prefer logging over temporary scripts for debugging.** Tests automatically have tracing enabled via `ctor` initialization in `tests/common/logging.rs`. To debug test failures:
+
+1. Run tests with `RUST_LOG=debug cargo test` to see detailed logging
+2. Add `tracing::debug!()` or `tracing::info!()` statements rather than `println!` or temporary test files
+3. The logging setup uses `try_init()` so it won't panic if already initialized
+
+This approach ensures:
+- Debugging information is available in CI logs
+- No temporary files clutter the repository
+- Debugging aids can be left in place without affecting normal test runs
+
 When testing behavior outside of the strong jailing, use `--weak` for an environment-only
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.
@@ -68,6 +85,7 @@ This ensures fast feedback during development and prevents CI timeouts.
 - System-wide firewall rules that can't be isolated
 
 Each jail operates in its own network namespace (on Linux) or with its own proxy port, so most tests can safely run concurrently. This significantly reduces total test runtime.
+
 
 ## Cargo Cache
 
@@ -141,7 +159,70 @@ The CI workspace is located at `/home/ci/actions-runner/_work/httpjail/httpjail`
 ./scripts/wait-pr-checks.sh 47 coder/httpjail # Specify PR and repo explicitly
 ```
 
+### PR Review Scripts
+
+Two helper scripts are available for managing GitHub PR code review comments:
+
+#### Getting PR Comments
+
+```bash
+# Get all resolvable code review comments for the current PR
+./scripts/get-pr-comments.sh
+
+# Get raw output (useful for extracting comment IDs)
+./scripts/get-pr-comments.sh --raw
+
+# Get compact output (one line per comment)
+./scripts/get-pr-comments.sh --compact
+
+# Get comments for a specific PR
+./scripts/get-pr-comments.sh 54
+```
+
+The script shows comments with line numbers in the format:
+```
+username [CID=12345678] path/to/file.rs#L42: Comment text
+```
+
+#### Replying to PR Comments
+
+```bash
+# Reply to a specific comment (auto-marks as automated)
+./scripts/reply-to-comment.sh <COMMENT_ID> <MESSAGE>
+
+# Examples:
+./scripts/reply-to-comment.sh 2365688250 "Fixed in commit abc123"
+./scripts/reply-to-comment.sh 2365688250 "Thanks for the feedback - addressed this issue"
+```
+
+To find comment IDs, use:
+```bash
+./scripts/get-pr-comments.sh --raw | grep CID
+```
+
+**Best Practices for Replies:**
+- **IMPORTANT**: Push your commits to the remote branch BEFORE replying with commit hashes. GitHub needs the commits to be on the remote to create clickable links.
+  ```bash
+  git push origin branch-name  # Push commits first
+  ./scripts/reply-to-comment.sh CID "Fixed in abc123"  # Then reply
+  ```
+- Always include the commit hash that fixes the issue (e.g., "Fixed in a5813f3")
+- If the commit includes multiple unrelated changes, include a diff snippet showing just the relevant fix:
+  ```
+  Fixed in commit a5813f3. Relevant change:
+  \`\`\`diff
+  - old line
+  + new line
+  \`\`\`
+  ```
+- Use `git log --oneline -n 5` to find recent commit hashes
+- Use `git show <hash> -- <file>` to get the diff for a specific file
+
+**Note:** The reply script automatically marks all messages with "🤖 Automated 🤖" to indicate the response was generated with AI assistance. This script only works with resolvable code review comments (comments on specific lines of code), not general PR comments.
+
 ### Manual Testing on CI
+
+**Important:** When debugging on ci-1, prefer using `scp` to sync individual files rather than creating commits for every small edit. This avoids polluting the git history with debugging commits.
 
 ```bash
 # Set up a fresh workspace for your branch
@@ -153,7 +234,11 @@ gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- 
   git checkout $BRANCH_NAME
 "
 
-# Sync local changes to the test workspace
+# Sync individual files during debugging (preferred over commits)
+gcloud compute scp src/rules/proc.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/src/rules/ --zone us-central1-f --project httpjail
+gcloud compute scp tests/json_parity.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/tests/ --zone us-central1-f --project httpjail
+
+# Or sync entire directories if many files changed
 gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
 gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
 
