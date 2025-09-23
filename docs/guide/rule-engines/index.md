@@ -47,7 +47,7 @@ httpjail --js "r.host === 'github.com'" -- command
 import sys, json
 for line in sys.stdin:
     req = json.loads(line)
-    print("allow" if req["host"] == "github.com" else "deny")
+    print("true" if req["host"] == "github.com" else "false")
 ```
 
 ### Complex Logic
@@ -90,9 +90,9 @@ for line in sys.stdin:
 
     if host_limit["count"] < 100:  # 100 requests per minute
         host_limit["count"] += 1
-        print("allow")
+        print("true")
     else:
-        print("deny")
+        print("false")
     sys.stdout.flush()
 ```
 
