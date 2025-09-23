@@ -88,8 +88,8 @@ if [ ! -f "$WHITELIST_FILE" ]; then
     exit 1
 fi
 
-# Check if current host is in the whitelist
-if grep -q "^${HTTPJAIL_HOST}$" "$WHITELIST_FILE"; then
+# Check if current host is in the whitelist (exact match)
+if grep -Fxq "$HTTPJAIL_HOST" "$WHITELIST_FILE"; then
     exit 0  # Allow
 else
     echo "Host $HTTPJAIL_HOST not in whitelist"
