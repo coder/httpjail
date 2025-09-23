@@ -1,31 +1,15 @@
 // Minimal tests verifying parity between JavaScript (V8) and Proc rule engines.
 
+// Import common test utilities including automatic logging setup
+mod common;
+
 use httpjail::rules::proc::ProcRuleEngine;
 use httpjail::rules::v8_js::V8JsRuleEngine;
 use httpjail::rules::{Action, RuleEngineTrait};
 use hyper::Method;
 use std::fs;
 use std::io::Write;
-use std::sync::Once;
 use tempfile::NamedTempFile;
-use tracing_subscriber;
-
-static INIT: Once = Once::new();
-
-/// Initialize tracing for tests - can be called multiple times safely
-fn init_test_logging() {
-    INIT.call_once(|| {
-        // Set up tracing subscriber that outputs to stdout
-        // This allows debugging with RUST_LOG=debug cargo test
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive("httpjail=debug".parse().unwrap()),
-            )
-            .with_test_writer()
-            .init();
-    });
-}
 
 fn create_temp_script(content: &str) -> tempfile::TempPath {
     let mut file = NamedTempFile::new().unwrap();
@@ -47,7 +31,6 @@ fn create_temp_script(content: &str) -> tempfile::TempPath {
 
 #[tokio::test]
 async fn test_json_parity() {
-    init_test_logging();
     // Test that both engines receive identical request JSON
     let proc_script = create_temp_script(
         r#"#!/usr/bin/env python3
@@ -83,7 +66,6 @@ for line in sys.stdin:
 
 #[tokio::test]
 async fn test_response_parity() {
-    init_test_logging();
     // Test that both engines handle responses identically
     let test_cases = [
         ("true", "true", true),

@@ -108,6 +108,19 @@ This ensures fast feedback during development and prevents CI timeouts.
 
 Each jail operates in its own network namespace (on Linux) or with its own proxy port, so most tests can safely run concurrently. This significantly reduces total test runtime.
 
+### Test Debugging
+
+**Prefer logging over temporary scripts for debugging.** Tests automatically have tracing enabled via `ctor` initialization in `tests/common/logging.rs`. To debug test failures:
+
+1. Run tests with `RUST_LOG=debug cargo test` to see detailed logging
+2. Add `tracing::debug!()` or `tracing::info!()` statements rather than `println!` or temporary test files
+3. The logging setup uses `try_init()` so it won't panic if already initialized
+
+This approach ensures:
+- Debugging information is available in CI logs
+- No temporary files clutter the repository
+- Debugging aids can be left in place without affecting normal test runs
+
 ## Cargo Cache
 
 Occasionally you will encounter permissions issues due to running the tests under sudo. In these cases,
@@ -243,6 +256,8 @@ To find comment IDs, use:
 
 ### Manual Testing on CI
 
+**Important:** When debugging on ci-1, prefer using `scp` to sync individual files rather than creating commits for every small edit. This avoids polluting the git history with debugging commits.
+
 ```bash
 # Set up a fresh workspace for your branch
 BRANCH_NAME="your-branch-name"
@@ -253,7 +268,11 @@ gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- 
   git checkout $BRANCH_NAME
 "
 
-# Sync local changes to the test workspace
+# Sync individual files during debugging (preferred over commits)
+gcloud compute scp src/rules/proc.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/src/rules/ --zone us-central1-f --project httpjail
+gcloud compute scp tests/json_parity.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/tests/ --zone us-central1-f --project httpjail
+
+# Or sync entire directories if many files changed
 gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
 gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
 
