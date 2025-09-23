@@ -17,7 +17,7 @@
 # Advanced
 
 - [TLS Interception](./advanced/tls-interception.md)
-- [DNS Exfiltration](./advanced/dns-protection.md)
+- [DNS Exfiltration](./advanced/dns-exfiltration.md)
 - [Server Mode](./advanced/server-mode.md)
 
 ---
