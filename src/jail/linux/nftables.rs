@@ -215,24 +215,34 @@ table ip {table_name} {{
 
         let output = if let Some(ref namespace) = self.namespace {
             // Delete table in namespace
-            Command::new("ip")
+            // Use timeout to prevent hanging on nft delete
+            Command::new("timeout")
                 .args([
-                    "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
+                    "5", "ip", "netns", "exec", namespace, "nft", "delete", "table", "ip",
+                    &self.name,
                 ])
                 .output()
                 .context("Failed to execute nft delete in namespace")?
         } else {
             // Delete table on host
-            Command::new("nft")
-                .args(["delete", "table", "ip", &self.name])
+            // Use timeout to prevent hanging on nft delete
+            Command::new("timeout")
+                .args(["5", "nft", "delete", "table", "ip", &self.name])
                 .output()
                 .context("Failed to execute nft delete")?
         };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // Ignore if table doesn't exist (already removed)
-            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
+            // Exit code 124 means timeout expired
+            if output.status.code() == Some(124) {
+                debug!(
+                    "Timeout removing nftables table {} (may not exist or nft is hanging)",
+                    self.name
+                );
+            } else if !stderr.contains("No such file or directory")
+                && !stderr.contains("does not exist")
+            {
                 // Log but don't fail - best effort cleanup
                 debug!("Failed to remove nftables table {}: {}", self.name, stderr);
             }
