@@ -31,38 +31,16 @@ When writing tests, prefer pure rust solutions over shell script wrappers.
 
 ### Debugging Test Failures
 
-**Prefer logging over temporary scripts for debugging.** When tests fail, especially in CI:
+**Prefer logging over temporary scripts for debugging.** Tests automatically have tracing enabled via `ctor` initialization in `tests/common/logging.rs`. To debug test failures:
 
-1. **Add tracing/logging to tests**: Include a test setup function that initializes `tracing_subscriber` so tests can be run with `RUST_LOG=debug` for detailed output
-2. **Use eprintln! for immediate debugging**: Quick debug output that works in test environments
-3. **Test directly on CI machines when needed**: The `ci-ssh.sh` script provides direct access for reproducing issues
-4. **Document findings**: Once you understand a failure, document the root cause and fix properly
+1. Run tests with `RUST_LOG=debug cargo test` to see detailed logging
+2. Add `tracing::debug!()` or `tracing::info!()` statements rather than `println!` or temporary test files
+3. The logging setup uses `try_init()` so it won't panic if already initialized
 
-Example test logging setup:
-```rust
-use std::sync::Once;
-use tracing_subscriber;
-
-static INIT: Once = Once::new();
-
-fn init_test_logging() {
-    INIT.call_once(|| {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive("httpjail=debug".parse().unwrap())
-            )
-            .with_test_writer()
-            .init();
-    });
-}
-
-#[test]
-fn my_test() {
-    init_test_logging();
-    // test code...
-}
-```
+This approach ensures:
+- Debugging information is available in CI logs
+- No temporary files clutter the repository
+- Debugging aids can be left in place without affecting normal test runs
 
 When testing behavior outside of the strong jailing, use `--weak` for an environment-only
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
@@ -108,18 +86,6 @@ This ensures fast feedback during development and prevents CI timeouts.
 
 Each jail operates in its own network namespace (on Linux) or with its own proxy port, so most tests can safely run concurrently. This significantly reduces total test runtime.
 
-### Test Debugging
-
-**Prefer logging over temporary scripts for debugging.** Tests automatically have tracing enabled via `ctor` initialization in `tests/common/logging.rs`. To debug test failures:
-
-1. Run tests with `RUST_LOG=debug cargo test` to see detailed logging
-2. Add `tracing::debug!()` or `tracing::info!()` statements rather than `println!` or temporary test files
-3. The logging setup uses `try_init()` so it won't panic if already initialized
-
-This approach ensures:
-- Debugging information is available in CI logs
-- No temporary files clutter the repository
-- Debugging aids can be left in place without affecting normal test runs
 
 ## Cargo Cache
 
