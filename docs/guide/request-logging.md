@@ -11,6 +11,7 @@ httpjail --request-log requests.log --js "true" -- npm install
 ## Log Format
 
 Each request is logged on a single line:
+
 ```
 <timestamp> <+/-> <METHOD> <URL>
 ```
@@ -26,9 +27,11 @@ Each request is logged on a single line:
 2025-09-22T14:23:45.345Z - POST https://analytics.example.com/track
 ```
 
-## BigQuery Integration
+## Example: BigQuery Integration
 
-Stream request logs to BigQuery using Line Processor mode:
+Achieve more advanced logging with the line processor
+rule engine (`--proc`). Here's an example of how to log to
+every request to BigQuery:
 
 ```bash
 #!/bin/bash
@@ -38,34 +41,54 @@ Stream request logs to BigQuery using Line Processor mode:
 PROJECT="my-project"
 DATASET="httpjail_logs"
 TABLE="requests"
+BATCH_FILE="/tmp/requests-$$.ndjson"
 
-# Process requests and log to BigQuery
+# Process requests in batches
+batch_count=0
+max_batch=100
+
 while read -r line; do
-    # Parse the request JSON
-    request=$(echo "$line" | jq -c '{
+    # Parse and enrich the request
+    echo "$line" | jq -c '{
         timestamp: now | todate,
         url: .url,
         method: .method,
         host: .host,
-        path: .path
-    }')
+        path: .path,
+        requester_ip: .requester_ip
+    }' >> "$BATCH_FILE"
     
-    # Log to BigQuery (streaming insert)
-    echo "$request" | bq insert --project_id="$PROJECT" \
-        "$DATASET.$TABLE"
+    batch_count=$((batch_count + 1))
+    
+    # Load batch when threshold reached
+    if [ $batch_count -ge $max_batch ]; then
+        bq load --source_format=NEWLINE_DELIMITED_JSON \
+            --autodetect \
+            "$PROJECT:$DATASET.$TABLE" \
+            "$BATCH_FILE"
+        
+        > "$BATCH_FILE"  # Clear batch file
+        batch_count=0
+    fi
     
     # Allow all requests
     echo "true"
 done
+
+# Load any remaining records on exit
+trap 'bq load --source_format=NEWLINE_DELIMITED_JSON --autodetect "$PROJECT:$DATASET.$TABLE" "$BATCH_FILE"' EXIT
 ```
 
 Usage:
+
 ```bash
 httpjail --proc ./log-to-bigquery.sh --request-log local-backup.log -- your-app
 ```
 
 This approach:
-- Streams requests to BigQuery in real-time
+
+- Batches requests for efficient BigQuery loading
 - Maintains a local backup in `local-backup.log`
-- Allows custom processing and enrichment
-- Scales to high-volume applications
+- Uses newline-delimited JSON format (required by BigQuery)
+- Handles graceful shutdown with trap to load remaining data
+- Avoids per-request overhead of streaming inserts
