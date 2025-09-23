@@ -29,6 +29,7 @@ Full network isolation using namespaces and nftables.
 ┌─────────────────────────────────────────────────┐
 │              Target Process                     │
 │  • Isolated in network namespace                │
+│  • User dropped to $SUDO_USER                   │
 │  • All HTTP/HTTPS → local proxy                 │
 │  • All DNS queries → dummy resolver (6.6.6.6)   │
 │  • CA cert trusted via env vars                 │

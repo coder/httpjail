@@ -8,7 +8,6 @@ httpjail follows a simple configuration hierarchy:
 
 1. **Command-line options** - Highest priority, override everything
 2. **Environment variables** - Set by httpjail for the jailed process
-3. **Default behavior** - Deny all requests unless explicitly allowed
 
 ## Key Configuration Areas
 
@@ -76,22 +75,22 @@ httpjail --proc ./rate-limiter.py \
 
 These are automatically set in the jailed process:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `HTTP_PROXY` | HTTP proxy address | `http://127.0.0.1:34567` |
-| `HTTPS_PROXY` | HTTPS proxy address | `http://127.0.0.1:34567` |
-| `SSL_CERT_FILE` | CA certificate path | `/tmp/httpjail-ca.pem` |
-| `SSL_CERT_DIR` | CA certificate directory | `/tmp/httpjail-certs/` |
-| `NO_PROXY` | Bypass proxy for these hosts | `localhost,127.0.0.1` |
+| Variable        | Description                  | Example                  |
+| --------------- | ---------------------------- | ------------------------ |
+| `HTTP_PROXY`    | HTTP proxy address           | `http://127.0.0.1:34567` |
+| `HTTPS_PROXY`   | HTTPS proxy address          | `http://127.0.0.1:34567` |
+| `SSL_CERT_FILE` | CA certificate path          | `/tmp/httpjail-ca.pem`   |
+| `SSL_CERT_DIR`  | CA certificate directory     | `/tmp/httpjail-certs/`   |
+| `NO_PROXY`      | Bypass proxy for these hosts | `localhost,127.0.0.1`    |
 
 ### Controlling httpjail
 
 These affect httpjail's behavior:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `RUST_LOG` | Logging level | `debug`, `info`, `warn`, `error` |
-| `HTTPJAIL_CA_CERT` | Custom CA certificate path | `/etc/pki/custom-ca.pem` |
+| Variable           | Description                | Example                          |
+| ------------------ | -------------------------- | -------------------------------- |
+| `RUST_LOG`         | Logging level              | `debug`, `info`, `warn`, `error` |
+| `HTTPJAIL_CA_CERT` | Custom CA certificate path | `/etc/pki/custom-ca.pem`         |
 
 ## Platform-Specific Configuration
 
@@ -110,14 +109,6 @@ These affect httpjail's behavior:
 - Some apps may ignore proxy variables
 
 See [Platform Support](./platform-support.md) for detailed information.
-
-## Configuration Best Practices
-
-1. **Start simple**: Begin with basic JavaScript rules
-2. **Log everything in dev**: Use `--request-log /dev/stdout` during development
-3. **Test isolation**: Verify no requests leak through
-4. **Monitor performance**: Watch for slow rule evaluation
-5. **Document rules**: Keep rule logic clear and maintainable
 
 ## Troubleshooting Configuration
 

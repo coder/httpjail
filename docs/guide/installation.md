@@ -2,11 +2,23 @@
 
 httpjail can be installed in several ways depending on your needs and platform.
 
+## Cargo
+
+If you have Rust installed, you can install httpjail using Cargo:
+
+```bash
+# optional: brew install rust
+cargo install httpjail
+```
+
+This will compile httpjail from source and install it to your Cargo bin directory (usually `~/.cargo/bin/`).
+
 ## Pre-built Binaries
 
 The easiest way to install httpjail is to download a pre-built binary from the [releases page](https://github.com/coder/httpjail/releases).
 
 ### Linux
+
 ```bash
 # Download the latest release (example for Linux x86_64)
 curl -L https://github.com/coder/httpjail/releases/latest/download/httpjail-linux-amd64 -o httpjail
@@ -15,22 +27,13 @@ sudo mv httpjail /usr/local/bin/
 ```
 
 ### macOS
+
 ```bash
 # Download the latest release (example for macOS arm64)
 curl -L https://github.com/coder/httpjail/releases/latest/download/httpjail-darwin-arm64 -o httpjail
 chmod +x httpjail
 sudo mv httpjail /usr/local/bin/
 ```
-
-## Install via Cargo
-
-If you have Rust installed, you can install httpjail using Cargo:
-
-```bash
-cargo install httpjail
-```
-
-This will compile httpjail from source and install it to your Cargo bin directory (usually `~/.cargo/bin/`).
 
 ## Build from Source
 
@@ -61,11 +64,13 @@ This profile provides reasonable performance with significantly faster build tim
 ## System Requirements
 
 ### Linux
+
 - Linux kernel 3.8+ (for network namespaces)
 - Root privileges (for network namespace creation)
 - iptables (for traffic redirection)
 
-### macOS  
+### macOS
+
 - macOS 10.15+ (Catalina or later)
 - No special privileges required (uses weak mode)
 
