@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use simple_dns::{CLASS, Packet, PacketFlag, QCLASS, QTYPE, ResourceRecord, TYPE, rdata::RData};
 use std::fs::OpenOptions;
 use std::net::{Ipv4Addr, UdpSocket};
-use std::os::unix::io::AsRawFd;
 use tracing::{debug, info};
 
 const DUMMY_IPV4: Ipv4Addr = Ipv4Addr::new(6, 6, 6, 6);
