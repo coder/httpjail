@@ -88,6 +88,50 @@ r.host === 'api.example.com' && r.path.startsWith('/v1/public/')
 ['GET', 'HEAD', 'OPTIONS'].includes(r.method)
 ```
 
+### Host Whitelist
+
+```javascript
+// Simple host whitelist
+const allowedHosts = [
+  'github.com',
+  'api.github.com',
+  'raw.githubusercontent.com',
+  'codeload.github.com'
+];
+
+allowedHosts.includes(r.host)
+```
+
+### Host + Method Whitelist
+
+```javascript
+// Allow specific methods only for certain hosts
+const rules = [
+  {host: 'api.github.com', methods: ['GET', 'POST']},
+  {host: 'github.com', methods: ['GET']},
+  {host: 'uploads.github.com', methods: ['POST', 'PUT']}
+];
+
+rules.some(rule => 
+  rule.host === r.host && rule.methods.includes(r.method)
+)
+```
+
+### Regexp Matching on Method + URL
+
+```javascript
+// Whitelist patterns for METHOD + URL combinations
+const patterns = [
+  /^GET api\.github\.com\/repos\/.+/,
+  /^POST api\.example\.com\/v[12]\/.*/,
+  /^(GET|HEAD) .*\.cdn\.example\.com\/.*\.(jpg|png|gif)/
+];
+
+// Build request string using host and path for simpler patterns
+const requestString = `${r.method} ${r.host}${r.path}`;
+patterns.some(pattern => pattern.test(requestString))
+```
+
 ## When to Use
 
 Best for:
