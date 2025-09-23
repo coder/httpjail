@@ -65,7 +65,7 @@ Command:
 httpjail --sh "./rules.sh" -- curl https://api.github.com/repos
 ```
 
-`whitelist.txt`:
+In `whitelist.txt`:
 ```
 api.github.com
 github.com
@@ -74,7 +74,7 @@ api.gitlab.com
 gitlab.com
 ```
 
-`rules.sh`:
+In `rules.sh`:
 ```bash
 #!/bin/sh
 # Check if host is in whitelist file
