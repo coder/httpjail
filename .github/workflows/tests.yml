@@ -31,7 +31,9 @@ jobs:
           shared-key: ${{ runner.os }}
 
       - name: Install nextest
-        run: cargo install cargo-nextest --locked
+        uses: taiki-e/install-action@nextest
+        with:
+          tool: nextest
 
       - name: Run all tests
         run: cargo nextest run --profile ci
@@ -80,11 +82,15 @@ jobs:
         with:
           shared-key: ${{ runner.os }}
 
-      - name: Setup Rust environment and install nextest
+      - name: Setup Rust environment
         run: |
           source ~/.cargo/env
           rustup default stable
-          cargo install cargo-nextest || true
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+        with:
+          tool: nextest
 
       - name: Fix target directory permissions from previous runs
         run: |
