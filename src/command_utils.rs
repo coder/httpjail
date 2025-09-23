@@ -1,101 +1,137 @@
 use anyhow::{Context, Result};
 use std::process::{Command, Output};
-use std::thread;
 use std::time::Duration;
 use tracing::debug;
 
-/// Execute a command with a timeout using a polling approach.
+/// Execute a command with a timeout using tokio's async runtime.
 ///
-/// This polls the child process status periodically and kills it if it
-/// exceeds the specified timeout duration.
-pub fn execute_with_timeout_poll(mut command: Command, timeout: Duration) -> Result<Output> {
-    use std::time::Instant;
+/// This function can be called from either sync or async contexts.
+/// It uses tokio::task::block_in_place to efficiently run async code
+/// in a blocking manner without spawning new threads when possible.
+pub fn execute_with_timeout(command: Command, timeout_duration: Duration) -> Result<Output> {
+    // Get program and args before moving command
+    let program = command.get_program().to_os_string();
+    let args: Vec<_> = command.get_args().map(|s| s.to_os_string()).collect();
+
+    // Check if we're in a tokio runtime
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We're in a tokio runtime, use block_in_place for efficiency
+        tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+
+            handle.block_on(async move {
+                execute_with_timeout_async(program, args, timeout_duration).await
+            })
+        })
+    } else {
+        // No runtime exists, create a temporary one
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        rt.block_on(
+            async move { execute_with_timeout_async(program, args, timeout_duration).await },
+        )
+    }
+}
+
+/// Internal async implementation of command execution with timeout
+async fn execute_with_timeout_async(
+    program: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+    timeout_duration: Duration,
+) -> Result<Output> {
+    // Create tokio command
+    let mut tokio_cmd = tokio::process::Command::new(&program);
+    tokio_cmd.args(&args);
+    tokio_cmd.stdout(std::process::Stdio::piped());
+    tokio_cmd.stderr(std::process::Stdio::piped());
+    tokio_cmd.kill_on_drop(true); // Automatically cleanup on drop
 
     // Spawn the command
-    let mut child = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn command")?;
+    let child = tokio_cmd.spawn().context("Failed to spawn command")?;
 
-    let start = Instant::now();
-    let poll_interval = Duration::from_millis(100);
+    // Wait with timeout
+    match tokio::time::timeout(timeout_duration, child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            // Command completed successfully within timeout
+            Ok(output)
+        }
+        Ok(Err(e)) => {
+            // Command failed to execute
+            Err(e).context("Command execution failed")
+        }
+        Err(_) => {
+            // Timeout elapsed
+            debug!("Command timed out after {:?}", timeout_duration);
 
-    // Poll until timeout or process exits
-    loop {
-        // Check if process has exited
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                // Process has exited, get the output
-                return child
-                    .wait_with_output()
-                    .context("Failed to get command output");
-            }
-            Ok(None) => {
-                // Process still running
-                if start.elapsed() > timeout {
-                    // Timeout reached, kill the process
-                    debug!("Command timed out after {:?}, killing process", timeout);
-                    let _ = child.kill();
-                    // Wait and get the actual status (will be killed status)
-                    let status = child.wait().unwrap_or_else(|_| {
-                        // If we can't get status, create a synthetic one
-                        // On Unix, use from_raw (platform-specific)
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::ExitStatusExt;
-                            std::process::ExitStatus::from_raw(124 * 256) // exit code 124 in high byte
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            // On non-Unix, we can't create a synthetic exit status easily
-                            panic!("Failed to get process status after timeout");
-                        }
-                    });
-
-                    // Return output with timeout indication
-                    return Ok(Output {
-                        status,
-                        stdout: Vec::new(),
-                        stderr: format!("Command timed out after {:?}", timeout).into_bytes(),
-                    });
-                }
-                // Sleep before next poll
-                thread::sleep(poll_interval);
-            }
-            Err(e) => {
-                // Error checking process status
-                let _ = child.kill();
-                return Err(anyhow::anyhow!("Failed to check process status: {}", e));
-            }
+            // Child is automatically killed due to kill_on_drop(true)
+            // Return a synthetic output that matches GNU timeout behavior
+            Ok(Output {
+                status: create_timeout_exit_status(),
+                stdout: Vec::new(),
+                stderr: format!("Command timed out after {:?}", timeout_duration).into_bytes(),
+            })
         }
     }
 }
+
+/// Create an exit status that indicates timeout (exit code 124)
+/// This matches the behavior of GNU timeout command
+#[cfg(unix)]
+fn create_timeout_exit_status() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(124 << 8) // Exit code in high byte
+}
+
+#[cfg(not(unix))]
+fn create_timeout_exit_status() -> std::process::ExitStatus {
+    // On non-Unix, we can't easily create a specific exit status
+    // Just return a failed status - the stderr will indicate timeout
+    std::process::Command::new("false")
+        .status()
+        .unwrap_or_else(|_| {
+            // If even false doesn't exist, create any non-success status
+            std::process::Command::new("cmd")
+                .args(["/c", "exit 124"])
+                .status()
+                .unwrap()
+        })
+}
+
+// For backward compatibility, keep the old name as an alias
+pub use execute_with_timeout as execute_with_timeout_poll;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_command_completes_before_timeout() {
+    // Tests need to run within multi-threaded tokio runtime for block_in_place
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_command_completes_before_timeout() {
         let mut cmd = Command::new("echo");
         cmd.arg("hello");
 
-        let result = execute_with_timeout_poll(cmd, Duration::from_secs(5)).unwrap();
+        let result = execute_with_timeout(cmd, Duration::from_secs(5)).unwrap();
         assert!(result.status.success());
         assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "hello");
     }
 
-    #[test]
-    fn test_command_times_out() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_command_times_out() {
         let mut cmd = Command::new("sleep");
         cmd.arg("10");
 
-        let result = execute_with_timeout_poll(cmd, Duration::from_secs(1)).unwrap();
+        let result = execute_with_timeout(cmd, Duration::from_secs(1)).unwrap();
         // On timeout, the process is killed, so status won't be success
         assert!(!result.status.success());
         // The stderr should contain timeout message
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(stderr.contains("timed out"));
+
+        // On Unix, check for exit code 124
+        #[cfg(unix)]
+        assert_eq!(result.status.code(), Some(124));
     }
 }
