@@ -7,26 +7,19 @@ httpjail provides three different rule engines for evaluating HTTP requests. Eac
 | Feature | JavaScript (V8) | Shell Script | Line Processor |
 |---------|----------------|--------------|----------------|
 | **Performance** | | | |
-| Startup Time | Fast (~5ms) | None | Slow (~100ms) |
-| Per-Request Overhead | ~0.1ms | ~10-50ms | ~0.5ms |
-| Memory Usage | Low (5-10MB) | Variable | Variable |
-| Throughput | >10K req/s | ~50 req/s | ~2K req/s |
+| Per-Jail Overhead | None* | None | Process spawn (~2ms) |
+| Per-Request Overhead | ~1-2ms** | ~2-5ms*** | <1ms**** |
 | **Capabilities** | | | |
-| Stateful Processing | ❌ | ❌* | ✅ |
+| Stateful Processing | ❌ | ✅ | ✅ |
 | External Tool Access | ❌ | ✅ | ✅ |
-| Database Integration | ❌ | ✅ | ✅ |
-| Language Choice | JS only | Bash/Shell | Any |
+| Language Choice | JS only | Any | Any |
 | Sandboxed Execution | ✅ | ❌ | Depends |
-| **Development** | | | |
-| Setup Complexity | Simple | Simple | Moderate |
-| Debug Difficulty | Easy | Easy | Moderate |
-| Hot Reload | ❌ | ✅ | ❌ |
-| **Best For** | | | |
-| Primary Use Case | Production filtering | System integration | Stateful logic |
-| Request Volume | High | Low | Medium |
-| Security Level | Untrusted rules | Trusted only | Depends on impl |
+| Development Complexity | Easy | Easy | Moderate |
 
-*Shell scripts can use files for state but each invocation is independent
+\* V8 engine is created per-request, not per-jail (no persistent context)  
+\*\* Creates new V8 isolate + compiles JS for each request  
+\*\*\* Process spawn + script execution (similar to line processor startup)  
+\*\*\*\* Simple IPC: write JSON line, read response line
 
 ## Examples
 

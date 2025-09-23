@@ -165,6 +165,6 @@ httpjail --request-log /dev/stderr --js "false" -- curl https://example.com
 
 ## Next Steps
 
-- Learn about [JavaScript Rules](./javascript-rules.md) for more complex filtering
+- Learn about [JavaScript Rules](./rule-engines/javascript.md) for more complex filtering
 - Explore [Configuration](./configuration.md) options
 - Understand [Platform Support](./platform-support.md) differences

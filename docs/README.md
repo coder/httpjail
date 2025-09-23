@@ -41,6 +41,22 @@ The documentation will be available at `http://localhost:3000`.
 3. Test locally with `mdbook serve`
 4. Commit and push - GitHub Actions will deploy automatically
 
+## Writing Guidelines
+
+### Documentation Philosophy
+
+- **Keep it minimal** - Focus on the UX surface of the tool, not implementation details
+- **Minimal examples** - Show just enough to demonstrate the feature, not comprehensive tutorials
+- **We're not teaching programming** - Assume users know how to write code in their language of choice
+- **Focus on httpjail-specific behavior** - Document what the tool does, not general programming concepts
+
+### Avoid Content Repetition
+
+- **Don't duplicate content across pages** - Instead, link to the canonical source
+- **Comparisons belong in overview pages** - Engine comparisons should be in the Rule Engines index, not repeated in each engine's guide
+- **Common concepts should be centralized** - Debugging, performance tips, and other shared topics should have their own pages
+- **Use cross-references liberally** - Link to related content rather than repeating it
+
 ## Deployment
 
 Documentation is automatically deployed to GitHub Pages when changes are pushed to the `main` branch. The workflow:
