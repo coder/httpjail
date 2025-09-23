@@ -140,6 +140,11 @@ pub fn run_exec_dns_server(namespace_name: &str) -> Result<()> {
         libc::setgroups(0, std::ptr::null());
         libc::setgid(65534); // nogroup
         libc::setuid(65534); // nobody
+
+        // Re-establish parent death signal after credential change
+        // PR_SET_PDEATHSIG is cleared when credentials change (setuid/setgid)
+        // so we must set it again after dropping privileges
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
     }
 
     // Run simple DNS server loop
