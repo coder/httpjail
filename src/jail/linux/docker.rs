@@ -63,14 +63,21 @@ impl SystemResource for DockerRoutingTable {
     fn cleanup(&mut self) -> Result<()> {
         debug!("Cleaning up Docker routing table: {}", self.table_name);
 
-        let output = Command::new("nft")
-            .args(["delete", "table", "ip", &self.table_name])
+        // Use timeout to prevent hanging on nft delete
+        let output = Command::new("timeout")
+            .args(["5", "nft", "delete", "table", "ip", &self.table_name])
             .output()
             .context("Failed to delete Docker routing table")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if DockerNetwork::is_not_found_error(&stderr) {
+            // Exit code 124 means timeout expired
+            if output.status.code() == Some(124) {
+                warn!(
+                    "Timeout deleting Docker routing table {} (may not exist or nft is hanging)",
+                    self.table_name
+                );
+            } else if DockerNetwork::is_not_found_error(&stderr) {
                 debug!("Docker routing table {} already removed", self.table_name);
             } else {
                 warn!("Failed to delete Docker routing table: {}", stderr);
