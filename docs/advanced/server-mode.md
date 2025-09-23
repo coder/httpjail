@@ -21,3 +21,7 @@ curl https://github.com  # This request will go through httpjail
 ```
 
 **Note**: In server mode, httpjail does not create network isolation. Applications must be configured to use the proxy via environment variables or application-specific proxy settings.
+
+Server Mode is particularly powerful when paired with
+network-level firewall rules that force HTTP(s) traffic
+through the proxy.

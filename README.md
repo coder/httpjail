@@ -1,6 +1,6 @@
 # httpjail
 
-[![GitHub](https://img.shields.io/badge/GitHub-coder%2Fhttpjail-blue?logo=github&style=flat-square)](https://github.com/coder/httpjail)
+[![Documentation](https://img.shields.io/badge/docs-coder.github.io%2Fhttpjail-blue?logo=readthedocs&style=flat-square)](https://coder.github.io/httpjail/)
 [![Crates.io](https://img.shields.io/crates/v/httpjail.svg)](https://crates.io/crates/httpjail)
 [![CI](https://github.com/coder/httpjail/actions/workflows/tests.yml/badge.svg)](https://github.com/coder/httpjail/actions/workflows/tests.yml)
 

@@ -37,28 +37,18 @@ every request to BigQuery:
 #!/bin/bash
 # log-to-bigquery.sh
 
-LOG_FILE="/tmp/requests-$$.ndjson"
-
-# Process each request
 while read -r line; do
-    # Append to newline-delimited JSON file
+    # Create BigQuery insert payload
     echo "$line" | jq -c '{
-        timestamp: now | todate,
-        url: .url,
-        method: .method,
-        host: .host,
-        path: .path
-    }' >> "$LOG_FILE"
+        rows: [{
+            insertId: (now | tostring),
+            json: . + {timestamp: (now | todate)}
+        }]
+    }' | bq insert my-project:httpjail_logs.requests
     
     # Allow all requests
     echo "true"
 done
-
-# On exit, load all data to BigQuery
-trap 'bq load --source_format=NEWLINE_DELIMITED_JSON \
-    --autodetect \
-    my-project:httpjail_logs.requests \
-    "$LOG_FILE"' EXIT
 ```
 
 Usage:
@@ -67,8 +57,4 @@ Usage:
 httpjail --proc ./log-to-bigquery.sh --request-log local-backup.log -- your-app
 ```
 
-This example shows how to:
-
-- Collect requests in newline-delimited JSON format
-- Load data to BigQuery on process exit
-- Combine local logging with cloud analytics
+This example shows real-time logging where each request is immediately inserted into BigQuery. Note: `bq insert` is intended for testing only - for production use BigQuery client libraries.
