@@ -68,7 +68,23 @@ httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest w
 
 ## Documentation
 
-See the [documentation](https://coder.github.io/httpjail/) for more details.
+Docs are stored in the `docs/` directory and served
+at [coder.github.io/httpjail](https://coder.github.io/httpjail).
+
+Table of Contents:
+
+- [Installation](https://coder.github.io/httpjail/guide/installation.html)
+- [Quick Start](https://coder.github.io/httpjail/guide/quick-start.html)
+- [Configuration](https://coder.github.io/httpjail/guide/configuration.html)
+- [Rule Engines](https://coder.github.io/httpjail/guide/rule-engines/index.html)
+  - [JavaScript](https://coder.github.io/httpjail/guide/rule-engines/javascript.html)
+  - [Shell](https://coder.github.io/httpjail/guide/rule-engines/shell.html)
+  - [Line Processor](https://coder.github.io/httpjail/guide/rule-engines/line-processor.html)
+- [Platform Support](https://coder.github.io/httpjail/guide/platform-support.html)
+- [Request Logging](https://coder.github.io/httpjail/guide/request-logging.html)
+- [TLS Interception](https://coder.github.io/httpjail/advanced/tls-interception.html)
+- [DNS Exfiltration](https://coder.github.io/httpjail/advanced/dns-protection.html)
+- [Server Mode](https://coder.github.io/httpjail/advanced/server-mode.html)
 
 ## License
 
