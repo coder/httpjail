@@ -98,6 +98,6 @@ for line in sys.stdin:
 
 ## Next Steps
 
-- [JavaScript Rules](./javascript-rules.md) - Learn the JavaScript API
-- [Shell Scripts](./shell-scripts.md) - Integrate with system tools
+- [JavaScript Rules](./javascript.md) - Learn the JavaScript API
+- [Shell Scripts](./shell.md) - Integrate with system tools
 - [Line Processor](./line-processor.md) - Build stateful filters

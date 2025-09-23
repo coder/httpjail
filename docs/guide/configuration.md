@@ -20,7 +20,7 @@ Choose how requests are evaluated:
 - **Shell Script** (`--sh`) - System integration, external tools
 - **Line Processor** (`--proc`) - Stateful, streaming evaluation
 
-Only one rule engine can be active at a time. See [Rule Engines](./rule-engines.md) for detailed comparison.
+Only one rule engine can be active at a time. See [Rule Engines](./rule-engines/index.md) for detailed comparison.
 
 ### Network Mode
 
@@ -153,7 +153,6 @@ openssl x509 -in ~/.config/httpjail/ca-cert.pem -text -noout
 
 ## Next Steps
 
-- [Command Line Options](../reference/cli.md) - Complete CLI reference
-- [Rule Engines](./rule-engines.md) - Choose the right evaluation method
+- [Rule Engines](./rule-engines/index.md) - Choose the right evaluation method
 - [Request Logging](./request-logging.md) - Monitor and audit requests
 - [Platform Support](./platform-support.md) - Platform-specific details
