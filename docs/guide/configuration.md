@@ -1,52 +1,159 @@
 # Configuration
 
-httpjail can be configured through command-line options and environment variables.
+httpjail's behavior can be configured through command-line options, environment variables, and configuration files. This page provides an overview of how these work together.
 
-## Command Line Options
+## Configuration Hierarchy
 
-### Core Options
+httpjail follows a simple configuration hierarchy:
 
-- `--js <EXPR>` - JavaScript expression to evaluate requests
-- `--js-file <PATH>` - JavaScript file to evaluate requests  
-- `--sh <PATH>` - Shell script to evaluate requests
-- `--request-log <PATH>` - Log all requests to file
-- `--weak` - Use weak mode (environment variables only, no network isolation)
+1. **Command-line options** - Highest priority, override everything
+2. **Environment variables** - Set by httpjail for the jailed process
+3. **Default behavior** - Deny all requests unless explicitly allowed
 
-### Advanced Options
+## Key Configuration Areas
 
-- `--timeout <SECONDS>` - Command timeout (default: no timeout)
-- `--server` - Run in server mode
-- `--address <ADDR>` - Proxy address (default: 127.0.0.1:0)
-- `--no-jail-cleanup` - Don't clean up jail on exit (for debugging)
+### Rule Engine Selection
 
-## Rule Evaluation
+Choose how requests are evaluated:
 
-Rules are evaluated in the following order:
-1. JavaScript expression (`--js`)
-2. JavaScript file (`--js-file`)
-3. Shell script (`--sh`)
-4. Default: deny all
+- **JavaScript** (`--js` or `--js-file`) - Fast, sandboxed evaluation
+- **Shell Script** (`--sh`) - System integration, external tools
+- **Line Processor** (`--proc`) - Stateful, streaming evaluation
 
-Only one rule type can be active at a time.
+Only one rule engine can be active at a time. See [Rule Engines](./rule-engines.md) for detailed comparison.
 
-## Logging
+### Network Mode
 
-Request logs follow the format:
+Control the isolation level:
+
+- **Strong mode** (default on Linux) - Full network namespace isolation
+- **Weak mode** (`--weak`) - Environment variables only, no isolation
+- **Server mode** (`--server`) - Run as standalone proxy server
+
+### Logging and Monitoring
+
+Track what's happening:
+
+- **Request logging** (`--request-log`) - Log all HTTP requests
+- **Debug output** (`RUST_LOG=debug`) - Detailed operational logs
+- **Process output** - Captured from the jailed command
+
+See [Request Logging](./request-logging.md) for details.
+
+## Common Configurations
+
+### Development Environment
+
+```bash
+# Allow localhost and common dev services
+httpjail --js "['localhost', '127.0.0.1'].includes(r.host)" \
+         --request-log /dev/stdout \
+         -- npm run dev
 ```
-<timestamp> <+|-> <METHOD> <URL>
+
+### CI/CD Pipeline
+
+```bash
+# Strict allow-list for builds
+httpjail --js-file ci-rules.js \
+         --request-log build-network.log \
+         --timeout 600 \
+         -- make build
 ```
 
-Where:
-- `+` indicates allowed request
-- `-` indicates blocked request
+### Production Service
+
+```bash
+# Stateful filtering with monitoring
+httpjail --proc ./rate-limiter.py \
+         --request-log /var/log/httpjail/requests.log \
+         -- ./api-server
+```
 
 ## Environment Variables
 
-httpjail sets the following environment variables in the jailed process:
+### Set by httpjail
 
-- `HTTP_PROXY` - Proxy address for HTTP requests
-- `HTTPS_PROXY` - Proxy address for HTTPS requests  
-- `SSL_CERT_FILE` - Path to CA certificate for HTTPS interception
-- `SSL_CERT_DIR` - Directory containing CA certificate
+These are automatically set in the jailed process:
 
-These ensure most applications automatically use httpjail's proxy.
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `HTTP_PROXY` | HTTP proxy address | `http://127.0.0.1:34567` |
+| `HTTPS_PROXY` | HTTPS proxy address | `http://127.0.0.1:34567` |
+| `SSL_CERT_FILE` | CA certificate path | `/tmp/httpjail-ca.pem` |
+| `SSL_CERT_DIR` | CA certificate directory | `/tmp/httpjail-certs/` |
+| `NO_PROXY` | Bypass proxy for these hosts | `localhost,127.0.0.1` |
+
+### Controlling httpjail
+
+These affect httpjail's behavior:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `RUST_LOG` | Logging level | `debug`, `info`, `warn`, `error` |
+| `HTTPJAIL_CA_CERT` | Custom CA certificate path | `/etc/pki/custom-ca.pem` |
+
+## Platform-Specific Configuration
+
+### Linux
+
+- Uses network namespaces for strong isolation
+- Requires root/sudo for namespace operations
+- iptables rules for traffic redirection
+- Supports all network modes
+
+### macOS
+
+- Limited to weak mode (environment variables)
+- No root required for standard operation
+- Certificate trust via Keychain Access
+- Some apps may ignore proxy variables
+
+See [Platform Support](./platform-support.md) for detailed information.
+
+## Configuration Best Practices
+
+1. **Start simple**: Begin with basic JavaScript rules
+2. **Log everything in dev**: Use `--request-log /dev/stdout` during development
+3. **Test isolation**: Verify no requests leak through
+4. **Monitor performance**: Watch for slow rule evaluation
+5. **Document rules**: Keep rule logic clear and maintainable
+
+## Troubleshooting Configuration
+
+### Rules not matching
+
+```bash
+# Debug rule evaluation
+RUST_LOG=debug httpjail --js "r.host === 'example.com'" -- curl https://example.com
+
+# Log all requests to see what's being evaluated
+httpjail --request-log /dev/stderr --js "false" -- your-app
+```
+
+### Environment variables not working
+
+```bash
+# Check what's set in the jail
+httpjail --js "true" -- env | grep -E "(HTTP|PROXY|SSL)"
+
+# Verify proxy is listening
+httpjail --js "true" -- curl -I http://127.0.0.1:$PROXY_PORT
+```
+
+### Certificate issues
+
+```bash
+# Trust the CA certificate
+httpjail trust --install
+
+# Check certificate details
+openssl x509 -in ~/.config/httpjail/ca-cert.pem -text -noout
+```
+
+## Next Steps
+
+- [Command Line Options](../reference/cli.md) - Complete CLI reference
+- [Rule Engines](./rule-engines.md) - Choose the right evaluation method
+- [Request Logging](./request-logging.md) - Monitor and audit requests
+- [Platform Support](./platform-support.md) - Platform-specific details

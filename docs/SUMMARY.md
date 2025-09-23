@@ -6,10 +6,13 @@
 
 - [Installation](./guide/installation.md)
 - [Quick Start](./guide/quick-start.md)
+- [Command Line Options](./reference/cli.md)
 - [Configuration](./guide/configuration.md)
+- [Rule Engines](./guide/rule-engines.md)
   - [JavaScript Rules](./guide/javascript-rules.md)
   - [Shell Scripts](./guide/shell-scripts.md)
-  - [Request Logging](./guide/request-logging.md)
+  - [Line Processor](./guide/line-processor.md)
+- [Request Logging](./guide/request-logging.md)
 - [Platform Support](./guide/platform-support.md)
   - [Linux](./guide/linux.md)
   - [macOS](./guide/macos.md)
@@ -17,7 +20,6 @@
 
 # Reference
 
-- [Command Line Options](./reference/cli.md)
 - [Environment Variables](./reference/environment.md)
 - [JavaScript API](./reference/javascript-api.md)
 - [Exit Codes](./reference/exit-codes.md)
