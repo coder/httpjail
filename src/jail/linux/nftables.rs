@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 use tracing::{debug, info};
 
-use crate::command_utils::execute_with_timeout_poll;
+use crate::command_utils::{CommandResult, execute_with_timeout};
 
 /// RAII wrapper for nftables table that ensures cleanup on drop
 #[derive(Debug)]
@@ -216,40 +216,45 @@ table ip {table_name} {{
             return Ok(());
         }
 
-        let output = if let Some(ref namespace) = self.namespace {
+        let result = if let Some(ref namespace) = self.namespace {
             // Delete table in namespace
             // Use Rust timeout to prevent hanging on nft delete
             let mut cmd = Command::new("ip");
             cmd.args([
                 "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
             ]);
-            execute_with_timeout_poll(cmd, Duration::from_secs(5))
-                .context("Failed to execute nft delete in namespace")?
+            execute_with_timeout(cmd, Duration::from_secs(5))
         } else {
             // Delete table on host
             // Use Rust timeout to prevent hanging on nft delete
             let mut cmd = Command::new("nft");
             cmd.args(["delete", "table", "ip", &self.name]);
-            execute_with_timeout_poll(cmd, Duration::from_secs(5))
-                .context("Failed to execute nft delete")?
+            execute_with_timeout(cmd, Duration::from_secs(5))
         };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Exit code 124 means timeout expired
-            if output.status.code() == Some(124) {
+        match result {
+            CommandResult::Error(e) => {
+                debug!("Failed to execute nft delete: {}", e);
+            }
+            CommandResult::TimedOut { .. } => {
                 debug!(
                     "Timeout removing nftables table {} (may not exist or nft is hanging)",
                     self.name
                 );
-            } else if !stderr.contains("No such file or directory")
-                && !stderr.contains("does not exist")
-            {
-                // Log but don't fail - best effort cleanup
-                debug!("Failed to remove nftables table {}: {}", self.name, stderr);
             }
-        } else {
-            debug!("Removed nftables table: {}", self.name);
+            CommandResult::Completed(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.contains("No such file or directory")
+                        && !stderr.contains("does not exist")
+                    {
+                        // Log but don't fail - best effort cleanup
+                        debug!("Failed to remove nftables table {}: {}", self.name, stderr);
+                    }
+                } else {
+                    debug!("Removed nftables table: {}", self.name);
+                }
+            }
         }
 
         self.created = false;

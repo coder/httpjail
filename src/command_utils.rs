@@ -1,14 +1,108 @@
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::process::{Command, Output};
 use std::time::Duration;
 use tracing::debug;
+
+/// Result of executing a command with timeout
+/// This is a specialized Result type that avoids nesting
+#[derive(Debug)]
+pub enum CommandResult {
+    /// Command completed execution (may have succeeded or failed)
+    Completed(Output),
+    /// Command was terminated due to timeout
+    TimedOut {
+        /// Any stdout captured before timeout
+        stdout: Vec<u8>,
+        /// Any stderr captured before timeout  
+        stderr: Vec<u8>,
+        /// How long we waited before timing out
+        duration: Duration,
+    },
+    /// Failed to spawn or execute the command
+    Error(anyhow::Error),
+}
+
+impl CommandResult {
+    /// Map an anyhow::Result to CommandResult::Error
+    fn from_result<T, F>(result: anyhow::Result<T>, f: F) -> Self
+    where
+        F: FnOnce(T) -> Self,
+    {
+        match result {
+            Ok(value) => f(value),
+            Err(e) => CommandResult::Error(e),
+        }
+    }
+    /// Check if the command timed out
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, CommandResult::TimedOut { .. })
+    }
+
+    /// Check if the command completed successfully (exit code 0)
+    /// Returns false for timeout, errors, or non-zero exit codes
+    pub fn is_success(&self) -> bool {
+        match self {
+            CommandResult::Completed(output) => output.status.success(),
+            CommandResult::TimedOut { .. } | CommandResult::Error(_) => false,
+        }
+    }
+
+    /// Check if this was an error (failed to spawn/execute)
+    pub fn is_error(&self) -> bool {
+        matches!(self, CommandResult::Error(_))
+    }
+
+    /// Get the error if this was an execution error
+    pub fn error(&self) -> Option<&anyhow::Error> {
+        match self {
+            CommandResult::Error(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Get the exit code if the command completed
+    /// Returns None for timeouts or errors
+    pub fn exit_code(&self) -> Option<i32> {
+        match self {
+            CommandResult::Completed(output) => output.status.code(),
+            CommandResult::TimedOut { .. } | CommandResult::Error(_) => None,
+        }
+    }
+
+    /// Get stdout bytes
+    pub fn stdout(&self) -> &[u8] {
+        match self {
+            CommandResult::Completed(output) => &output.stdout,
+            CommandResult::TimedOut { stdout, .. } => stdout,
+            CommandResult::Error(_) => &[],
+        }
+    }
+
+    /// Get stderr bytes
+    pub fn stderr(&self) -> &[u8] {
+        match self {
+            CommandResult::Completed(output) => &output.stderr,
+            CommandResult::TimedOut { stderr, .. } => stderr,
+            CommandResult::Error(_) => &[],
+        }
+    }
+
+    /// Get stderr as string
+    pub fn stderr_string(&self) -> String {
+        String::from_utf8_lossy(self.stderr()).to_string()
+    }
+}
 
 /// Execute a command with a timeout using tokio's async runtime.
 ///
 /// This function can be called from either sync or async contexts.
 /// It uses tokio::task::block_in_place to efficiently run async code
 /// in a blocking manner without spawning new threads when possible.
-pub fn execute_with_timeout(command: Command, timeout_duration: Duration) -> Result<Output> {
+///
+/// Returns `CommandResult::Completed` if the command finishes (successfully or not),
+/// `CommandResult::TimedOut` if the timeout expires, or `CommandResult::Error` if
+/// the command fails to spawn.
+pub fn execute_with_timeout(command: Command, timeout_duration: Duration) -> CommandResult {
     // Get program and args before moving command
     let program = command.get_program().to_os_string();
     let args: Vec<_> = command.get_args().map(|s| s.to_os_string()).collect();
@@ -25,13 +119,16 @@ pub fn execute_with_timeout(command: Command, timeout_duration: Duration) -> Res
         })
     } else {
         // No runtime exists, create a temporary one
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?;
-
-        rt.block_on(
-            async move { execute_with_timeout_async(program, args, timeout_duration).await },
+        CommandResult::from_result(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime"),
+            |rt| {
+                rt.block_on(async move {
+                    execute_with_timeout_async(program, args, timeout_duration).await
+                })
+            },
         )
     }
 }
@@ -41,7 +138,7 @@ async fn execute_with_timeout_async(
     program: std::ffi::OsString,
     args: Vec<std::ffi::OsString>,
     timeout_duration: Duration,
-) -> Result<Output> {
+) -> CommandResult {
     // Create tokio command
     let mut tokio_cmd = tokio::process::Command::new(&program);
     tokio_cmd.args(&args);
@@ -50,58 +147,34 @@ async fn execute_with_timeout_async(
     tokio_cmd.kill_on_drop(true); // Automatically cleanup on drop
 
     // Spawn the command
-    let child = tokio_cmd.spawn().context("Failed to spawn command")?;
+    let child = match tokio_cmd.spawn().context("Failed to spawn command") {
+        Ok(child) => child,
+        Err(e) => return CommandResult::Error(e),
+    };
 
     // Wait with timeout
     match tokio::time::timeout(timeout_duration, child.wait_with_output()).await {
         Ok(Ok(output)) => {
-            // Command completed successfully within timeout
-            Ok(output)
+            // Command completed within timeout
+            CommandResult::Completed(output)
         }
         Ok(Err(e)) => {
             // Command failed to execute
-            Err(e).context("Command execution failed")
+            CommandResult::Error(e.into())
         }
         Err(_) => {
             // Timeout elapsed
             debug!("Command timed out after {:?}", timeout_duration);
 
             // Child is automatically killed due to kill_on_drop(true)
-            // Return a synthetic output that matches GNU timeout behavior
-            Ok(Output {
-                status: create_timeout_exit_status(),
+            CommandResult::TimedOut {
                 stdout: Vec::new(),
                 stderr: format!("Command timed out after {:?}", timeout_duration).into_bytes(),
-            })
+                duration: timeout_duration,
+            }
         }
     }
 }
-
-/// Create an exit status that indicates timeout (exit code 124)
-/// This matches the behavior of GNU timeout command
-#[cfg(unix)]
-fn create_timeout_exit_status() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(124 << 8) // Exit code in high byte
-}
-
-#[cfg(not(unix))]
-fn create_timeout_exit_status() -> std::process::ExitStatus {
-    // On non-Unix, we can't easily create a specific exit status
-    // Just return a failed status - the stderr will indicate timeout
-    std::process::Command::new("false")
-        .status()
-        .unwrap_or_else(|_| {
-            // If even false doesn't exist, create any non-success status
-            std::process::Command::new("cmd")
-                .args(["/c", "exit 124"])
-                .status()
-                .unwrap()
-        })
-}
-
-// For backward compatibility, keep the old name as an alias
-pub use execute_with_timeout as execute_with_timeout_poll;
 
 #[cfg(test)]
 mod tests {
@@ -113,9 +186,14 @@ mod tests {
         let mut cmd = Command::new("echo");
         cmd.arg("hello");
 
-        let result = execute_with_timeout(cmd, Duration::from_secs(5)).unwrap();
-        assert!(result.status.success());
-        assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "hello");
+        let result = execute_with_timeout(cmd, Duration::from_secs(5));
+        assert!(!result.is_error());
+        assert!(result.is_success());
+        assert!(!result.is_timeout());
+        assert_eq!(String::from_utf8_lossy(result.stdout()).trim(), "hello");
+
+        // Test exit code getter
+        assert_eq!(result.exit_code(), Some(0));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -123,15 +201,40 @@ mod tests {
         let mut cmd = Command::new("sleep");
         cmd.arg("10");
 
-        let result = execute_with_timeout(cmd, Duration::from_secs(1)).unwrap();
-        // On timeout, the process is killed, so status won't be success
-        assert!(!result.status.success());
-        // The stderr should contain timeout message
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        assert!(stderr.contains("timed out"));
+        let result = execute_with_timeout(cmd, Duration::from_secs(1));
+        assert!(!result.is_error());
+        assert!(result.is_timeout());
+        assert!(!result.is_success());
 
-        // On Unix, check for exit code 124
-        #[cfg(unix)]
-        assert_eq!(result.status.code(), Some(124));
+        // The stderr should contain timeout message
+        let stderr_str = result.stderr_string();
+        assert!(stderr_str.contains("timed out"));
+
+        // Timeout should have no exit code
+        assert_eq!(result.exit_code(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_command_fails_with_exit_code() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 42"]);
+
+        let result = execute_with_timeout(cmd, Duration::from_secs(5));
+        assert!(!result.is_error());
+        assert!(!result.is_timeout());
+        assert!(!result.is_success());
+        assert_eq!(result.exit_code(), Some(42));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_command_spawn_error() {
+        let mut cmd = Command::new("/nonexistent/command");
+        cmd.arg("test");
+
+        let result = execute_with_timeout(cmd, Duration::from_secs(5));
+        assert!(result.is_error());
+        assert!(!result.is_timeout());
+        assert!(!result.is_success());
+        assert!(result.error().is_some());
     }
 }
