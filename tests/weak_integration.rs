@@ -345,3 +345,7 @@ fn test_host_header_security() {
     // This demonstrates that httpjail prevents the Host header bypass attack
     // that would otherwise be possible with direct curl execution
 }
+
+// The proc/JS parity tests have been moved to tests/json_parity.rs
+// which directly tests the rule engines without the fragility of
+// going through the full httpjail binary and external processes

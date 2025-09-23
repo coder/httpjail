@@ -1,5 +1,7 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
+pub mod logging; // Automatic test logging setup
+
 use std::process::Command;
 
 /// Construct httpjail command with standard test settings
@@ -39,6 +41,13 @@ impl HttpjailCommand {
     pub fn js(mut self, code: &str) -> Self {
         self.args.push("--js".to_string());
         self.args.push(code.to_string());
+        self
+    }
+
+    /// Use a line processor program (--proc)
+    pub fn proc_path(mut self, path: &str) -> Self {
+        self.args.push("--proc".to_string());
+        self.args.push(path.to_string());
         self
     }
 

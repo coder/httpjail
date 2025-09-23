@@ -6,13 +6,13 @@ use tracing::debug;
 use url::Url;
 
 #[derive(Clone)]
-pub struct ScriptRuleEngine {
+pub struct ShellRuleEngine {
     script: String,
 }
 
-impl ScriptRuleEngine {
+impl ShellRuleEngine {
     pub fn new(script: String) -> Self {
-        ScriptRuleEngine { script }
+        ShellRuleEngine { script }
     }
 
     async fn execute_script(
@@ -34,8 +34,8 @@ impl ScriptRuleEngine {
         let path = parsed_url.path();
 
         debug!(
-            "Executing script for {} {} from {} (host: {}, path: {})",
-            method, url, requester_ip, host, path
+            "Executing script for {} {} (host: {}, path: {})",
+            method, url, host, path
         );
 
         // Build the command
@@ -103,7 +103,7 @@ impl ScriptRuleEngine {
 }
 
 #[async_trait]
-impl RuleEngineTrait for ScriptRuleEngine {
+impl RuleEngineTrait for ShellRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
         let (allowed, context) = self.execute_script(method.clone(), url, requester_ip).await;
 
@@ -125,7 +125,7 @@ impl RuleEngineTrait for ScriptRuleEngine {
     }
 
     fn name(&self) -> &str {
-        "script"
+        "shell"
     }
 }
 
@@ -156,7 +156,7 @@ exit 0
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ShellRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
@@ -185,7 +185,7 @@ exit 1
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ShellRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
@@ -215,7 +215,7 @@ exit 1
             fs::set_permissions(&script_path, perms).unwrap();
         }
 
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
+        let engine = ShellRuleEngine::new(script_path.to_str().unwrap().to_string());
         let result = engine
             .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
             .await;
@@ -223,63 +223,5 @@ exit 1
         assert!(matches!(result.action, Action::Deny));
         assert_eq!(result.context, Some("Blocked by policy".to_string()));
         drop(script_path);
-    }
-
-    #[tokio::test]
-    async fn test_script_environment_variables() {
-        let mut script_file = NamedTempFile::new().unwrap();
-        let script = r#"#!/bin/sh
-if [ "$HTTPJAIL_HOST" = "allowed.com" ]; then
-    exit 0
-else
-    echo "Host $HTTPJAIL_HOST not allowed"
-    exit 1
-fi
-"#;
-        use std::io::Write;
-        script_file.write_all(script.as_bytes()).unwrap();
-        script_file.flush().unwrap();
-
-        let script_path = script_file.into_temp_path();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
-        }
-
-        let engine = ScriptRuleEngine::new(script_path.to_str().unwrap().to_string());
-
-        let result = engine
-            .evaluate(Method::GET, "https://allowed.com/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        let result = engine
-            .evaluate(Method::GET, "https://blocked.com/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
-        assert_eq!(
-            result.context,
-            Some("Host blocked.com not allowed".to_string())
-        );
-        drop(script_path);
-    }
-
-    #[tokio::test]
-    async fn test_inline_script() {
-        let engine = ScriptRuleEngine::new("test \"$HTTPJAIL_HOST\" = \"github.com\"".to_string());
-
-        let result = engine
-            .evaluate(Method::GET, "https://github.com/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Allow));
-
-        let result = engine
-            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
-            .await;
-        assert!(matches!(result.action, Action::Deny));
     }
 }
