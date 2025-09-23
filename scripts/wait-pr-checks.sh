@@ -1,9 +1,10 @@
 #!/bin/bash
 # wait-pr-checks.sh - Poll GitHub Actions status for a PR and exit on first failure or when all pass
 #
-# Usage: ./scripts/wait-pr-checks.sh [pr-number] [repo]
+# Usage: ./scripts/wait-pr-checks.sh [pr-number] [repo] [filter-regex]
 #   pr-number: Optional PR number (auto-detects from current branch if not provided)
 #   repo: Optional repository in format owner/repo (defaults to coder/httpjail)
+#   filter-regex: Optional regex to filter workflow names (e.g., "docs|deploy" to only watch docs/deploy workflows)
 #
 # Exit codes:
 #   0 - All checks passed
@@ -13,6 +14,9 @@
 # Requires: gh, jq
 
 set -euo pipefail
+
+# Initialize filter variable
+FILTER_REGEX=""
 
 # Parse arguments and auto-detect PR if needed
 if [ $# -eq 0 ]; then
@@ -27,12 +31,13 @@ if [ $# -eq 0 ]; then
     if [ -z "$PR_NUMBER" ]; then
         echo "Error: No PR found for branch '${CURRENT_BRANCH}'" >&2
         echo "" >&2
-        echo "Usage: $0 [pr-number] [repo]" >&2
+        echo "Usage: $0 [pr-number] [repo] [filter-regex]" >&2
         echo "  When called without arguments, auto-detects PR from current branch" >&2
         echo "  Examples:" >&2
-        echo "    $0                    # Auto-detect PR from current branch" >&2
-        echo "    $0 47                 # Monitor PR #47" >&2
-        echo "    $0 47 coder/httpjail  # Monitor PR #47 in specific repo" >&2
+        echo "    $0                           # Auto-detect PR from current branch" >&2
+        echo "    $0 47                        # Monitor PR #47" >&2
+        echo "    $0 47 coder/httpjail         # Monitor PR #47 in specific repo" >&2
+        echo "    $0 47 coder/httpjail 'docs'  # Monitor only docs-related checks" >&2
         exit 2
     fi
     
@@ -42,9 +47,17 @@ if [ $# -eq 0 ]; then
 elif [ $# -eq 1 ]; then
     PR_NUMBER="$1"
     REPO="coder/httpjail"
-else
+elif [ $# -eq 2 ]; then
     PR_NUMBER="$1"
     REPO="$2"
+elif [ $# -eq 3 ]; then
+    PR_NUMBER="$1"
+    REPO="$2"
+    FILTER_REGEX="$3"
+else
+    echo "Error: Too many arguments" >&2
+    echo "Usage: $0 [pr-number] [repo] [filter-regex]" >&2
+    exit 2
 fi
 
 # Check for required tools
@@ -60,6 +73,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "Monitoring PR #${PR_NUMBER} in ${REPO}..."
+if [ -n "$FILTER_REGEX" ]; then
+    echo "Filtering checks to match: $FILTER_REGEX"
+fi
 echo "Polling every second. Press Ctrl+C to stop."
 echo ""
 
@@ -74,11 +90,18 @@ while true; do
         continue
     fi
     
+    # Apply filter if specified
+    if [ -n "$FILTER_REGEX" ]; then
+        filtered_output=$(echo "$json_output" | jq --arg regex "$FILTER_REGEX" '[.[] | select(.name | test($regex; "i"))]')
+    else
+        filtered_output="$json_output"
+    fi
+    
     # Parse JSON to get counts
-    pending_count=$(echo "$json_output" | jq '[.[] | select(.state == "PENDING" or .state == "IN_PROGRESS" or .state == "QUEUED")] | length')
-    failed_count=$(echo "$json_output" | jq '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | length')
-    passed_count=$(echo "$json_output" | jq '[.[] | select(.state == "SUCCESS")] | length')
-    total_count=$(echo "$json_output" | jq 'length')
+    pending_count=$(echo "$filtered_output" | jq '[.[] | select(.state == "PENDING" or .state == "IN_PROGRESS" or .state == "QUEUED")] | length')
+    failed_count=$(echo "$filtered_output" | jq '[.[] | select(.state == "FAILURE" or .state == "ERROR")] | length')
+    passed_count=$(echo "$filtered_output" | jq '[.[] | select(.state == "SUCCESS")] | length')
+    total_count=$(echo "$filtered_output" | jq 'length')
     
     # Build status string
     current_status="✓ ${passed_count} passed | ⏳ ${pending_count} pending | ✗ ${failed_count} failed"
@@ -92,13 +115,13 @@ while true; do
     # Check for failures
     if [ $failed_count -gt 0 ]; then
         echo -e "\n\n${RED}❌ The following check(s) failed:${NC}"
-        echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "  - \(.name)"'
+        echo "$filtered_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "  - \(.name)"'
         
         # Try to fetch logs for the first failed check
         echo -e "\n${YELLOW}Fetching logs for first failed check...${NC}\n"
         
         # Get the first failed check details
-        first_failed=$(echo "$json_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "\(.name)|\(.link)"' | head -1)
+        first_failed=$(echo "$filtered_output" | jq -r '.[] | select(.state == "FAILURE" or .state == "ERROR") | "\(.name)|\(.link)"' | head -1)
         
         if [ -n "$first_failed" ]; then
             IFS='|' read -r check_name check_link <<< "$first_failed"
