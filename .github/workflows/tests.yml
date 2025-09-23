@@ -13,10 +13,13 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  test-macos:
-    name: macOS Integration Tests
-    runs-on: macos-15-xlarge
-
+  # Detection job that runs first and determines if only docs changed
+  detect-docs-only:
+    name: Detect docs-only changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.docs-check.outputs.docs-only }}
+      run-tests: ${{ steps.docs-check.outputs.docs-only != 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,47 +29,57 @@ jobs:
         id: docs-check
         uses: ./.github/actions/check-docs-only
 
+      - name: Display detection result
+        run: |
+          if [[ "${{ steps.docs-check.outputs.docs-only }}" == "true" ]]; then
+            echo "📚 Documentation-only changes detected - expensive checks will be skipped"
+          else
+            echo "🔧 Code changes detected - all checks will run"
+          fi
+
+  test-macos:
+    name: macOS Integration Tests
+    runs-on: macos-15-xlarge
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.run-tests == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Install Rust
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
       - name: Setup Rust cache
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}
 
       - name: Install nextest
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: taiki-e/install-action@nextest
         with:
           tool: nextest
 
       - name: Run all tests
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: cargo nextest run --profile ci
 
+  # Placeholder job that runs when tests are skipped
+  test-macos-skip:
+    name: macOS Integration Tests
+    runs-on: ubuntu-latest
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only == 'true'
+    steps:
       - name: Skip tests for docs-only changes
-        if: steps.docs-check.outputs.docs-only == 'true'
-        run: echo "✅ Skipping tests - only documentation changed"
+        run: echo "✅ Skipping macOS tests - only documentation changed"
 
   test-linux:
     name: Linux Tests
     runs-on: [self-hosted, linux]
-
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.run-tests == 'true'
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for docs-only changes
-        id: docs-check
-        uses: ./.github/actions/check-docs-only
-
       - name: Fix permissions from previous runs
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           # Clean up any files left from previous sudo runs before checkout
           # Use GITHUB_WORKSPACE parent directory or current working directory
@@ -78,15 +91,15 @@ jobs:
           if [ -d /home/ci/.cargo ]; then
             sudo chown -R ci:ci /home/ci/.cargo || true
           fi
+          
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
       - name: Fix permissions on current directory
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           # Clean up any files left from previous sudo runs
           if [ -d target ]; then
@@ -102,93 +115,93 @@ jobs:
           fi
 
       - name: Setup Rust cache
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}
 
       - name: Setup Rust environment
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           source ~/.cargo/env
           rustup default stable
 
       - name: Install nextest
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: taiki-e/install-action@nextest
         with:
           tool: nextest
 
       - name: Fix target directory permissions from previous runs
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           if [ -d target ]; then
             sudo chown -R ci:ci target || true
           fi
 
       - name: Run all tests (non-root)
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           source ~/.cargo/env
           cargo nextest run --profile ci --verbose -E 'not (binary(linux_integration) or binary(weak_integration))'
 
       - name: Install dependencies for weak mode (curl)
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: sudo apt-get update && sudo apt-get install -y curl
 
       - name: Run weak mode integration tests (Linux)
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           source ~/.cargo/env
           cargo nextest run --profile ci --test weak_integration
 
       - name: Run Linux jail integration tests (sudo)
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           source ~/.cargo/env
           # Run Linux-specific jail tests with sudo to satisfy root requirements
           sudo -E $(which cargo) nextest run --profile ci --test linux_integration --verbose
 
+  # Placeholder job that runs when tests are skipped
+  test-linux-skip:
+    name: Linux Tests
+    runs-on: ubuntu-latest
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only == 'true'
+    steps:
       - name: Skip tests for docs-only changes
-        if: steps.docs-check.outputs.docs-only == 'true'
-        run: echo "✅ Skipping tests - only documentation changed"
+        run: echo "✅ Skipping Linux tests - only documentation changed"
 
   clippy:
     name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.run-tests == 'true'
     strategy:
       matrix:
         os: [ubuntu-latest-8-cores, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for docs-only changes
-        id: docs-check
-        uses: ./.github/actions/check-docs-only
 
       - name: Install Rust
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: clippy
 
       - name: Setup Rust cache
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}
 
       - name: Run clippy
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: cargo clippy --all-targets -- -D warnings
 
+  # Placeholder job that runs when clippy is skipped
+  clippy-skip:
+    name: Clippy (${{ matrix.os }})
+    runs-on: ubuntu-latest
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only == 'true'
+    strategy:
+      matrix:
+        os: [ubuntu-latest-8-cores, macos-latest]
+    steps:
       - name: Skip clippy for docs-only changes
-        if: steps.docs-check.outputs.docs-only == 'true'
-        run: echo "✅ Skipping clippy - only documentation changed"
+        run: echo "✅ Skipping clippy on ${{ matrix.os }} - only documentation changed"
 
   fmt:
     name: Format
@@ -214,34 +227,25 @@ jobs:
   udeps:
     name: Unused dependency check
     runs-on: ubuntu-latest-8-cores
-
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.run-tests == 'true'
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for docs-only changes
-        id: docs-check
-        uses: ./.github/actions/check-docs-only
 
       - name: Install Rust (nightly for cargo-udeps)
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: nightly
 
       - name: Setup Rust cache
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}
 
       - name: Install cargo-udeps
-        if: steps.docs-check.outputs.docs-only != 'true'
         uses: taiki-e/install-action@cargo-udeps
 
       - name: Check for unused dependencies
-        if: steps.docs-check.outputs.docs-only != 'true'
         run: |
           set -euo pipefail
           # Run with nightly; capture output without failing the step
@@ -266,6 +270,12 @@ jobs:
             exit 1
           fi
 
+  # Placeholder job that runs when udeps is skipped
+  udeps-skip:
+    name: Unused dependency check
+    runs-on: ubuntu-latest
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only == 'true'
+    steps:
       - name: Skip udeps for docs-only changes
-        if: steps.docs-check.outputs.docs-only == 'true'
         run: echo "✅ Skipping unused dependency check - only documentation changed"
