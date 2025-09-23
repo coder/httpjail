@@ -38,7 +38,7 @@ jobs:
       - name: Install mdbook-linkcheck
         run: |
           curl -sSL https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/latest/download/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip -o linkcheck.zip
-          unzip -q linkcheck.zip
+          unzip -q -o linkcheck.zip
           chmod +x mdbook-linkcheck
           sudo mv mdbook-linkcheck /usr/local/bin/
           
