@@ -6,7 +6,7 @@ Stream requests to a long-running process for stateful, high-performance filteri
 
 1. httpjail spawns your processor once at startup
 2. For each HTTP request, httpjail sends a JSON line to the processor's stdin
-3. The processor evaluates and responds with "allow" or "deny"
+3. The processor evaluates and responds with "true" or "false"
 4. The process continues running until httpjail exits
 
 ## Protocol
@@ -27,13 +27,12 @@ Each request is sent as a single JSON line:
 
 ### Response Format
 
-Your processor can respond with one line per request:
+Your processor must respond with one line per request:
 
-- **Simple text**: `"allow"` or `"deny"`
-- **Text with message**: `"deny: Custom error message"`
 - **Boolean strings**: `"true"` (allow) or `"false"` (deny)
 - **JSON object**: `{"allow": false, "deny_message": "Blocked by policy"}`
-- **Just message**: `{"deny_message": "Blocked"}` (implies deny)
+- **JSON with message only**: `{"deny_message": "Blocked"}` (implies deny)
+- **Any other text**: Treated as deny with that text as the message (e.g., `"Access denied"` becomes a deny with message "Access denied")
 
 ## Command Line Usage
 
@@ -62,13 +61,13 @@ for line in sys.stdin:
     try:
         req = json.loads(line)
         if req['host'] in allowed_hosts:
-            print("allow")
+            print("true")
         else:
             # Can return JSON for custom messages
             response = {"allow": False, "deny_message": f"{req['host']} not allowed"}
             print(json.dumps(response))
     except:
-        print("deny: Invalid request")
+        print("Invalid request")  # Any non-boolean text becomes deny message
     sys.stdout.flush()  # Ensure immediate response
 ```
 
@@ -81,9 +80,9 @@ while IFS= read -r line; do
     host=$(echo "$line" | jq -r .host)
 
     if [[ "$host" == *.github.com ]]; then
-        echo "allow"
+        echo "true"
     else
-        echo "deny"
+        echo "false"
     fi
 done
 ```
