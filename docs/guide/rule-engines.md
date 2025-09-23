@@ -2,102 +2,31 @@
 
 httpjail provides three different rule engines for evaluating HTTP requests. Each has different trade-offs in terms of performance, flexibility, and ease of use.
 
-## Available Engines
+## Engine Comparison
 
-### JavaScript (V8)
+| Feature | JavaScript (V8) | Shell Script | Line Processor |
+|---------|----------------|--------------|----------------|
+| **Performance** | | | |
+| Startup Time | Fast (~5ms) | None | Slow (~100ms) |
+| Per-Request Overhead | ~0.1ms | ~10-50ms | ~0.5ms |
+| Memory Usage | Low (5-10MB) | Variable | Variable |
+| Throughput | >10K req/s | ~50 req/s | ~2K req/s |
+| **Capabilities** | | | |
+| Stateful Processing | ❌ | ❌* | ✅ |
+| External Tool Access | ❌ | ✅ | ✅ |
+| Database Integration | ❌ | ✅ | ✅ |
+| Language Choice | JS only | Bash/Shell | Any |
+| Sandboxed Execution | ✅ | ❌ | Depends |
+| **Development** | | | |
+| Setup Complexity | Simple | Simple | Moderate |
+| Debug Difficulty | Easy | Easy | Moderate |
+| Hot Reload | ❌ | ✅ | ❌ |
+| **Best For** | | | |
+| Primary Use Case | Production filtering | System integration | Stateful logic |
+| Request Volume | High | Low | Medium |
+| Security Level | Untrusted rules | Trusted only | Depends on impl |
 
-Fast, secure JavaScript evaluation using the V8 engine. Best for most use cases.
-
-**Pros:**
-
-- ⚡ Fastest performance (compiled and cached)
-- 🔒 Sandboxed execution environment
-- 📝 Familiar JavaScript syntax
-- 🎯 Direct access to request properties
-
-**Cons:**
-
-- Limited to JavaScript expressions
-- No external tool integration
-- No stateful operations between requests
-
-**Use when:** You need high-performance filtering with simple to moderate logic.
-
-### Shell Scripts
-
-Execute shell scripts for each request with full system access.
-
-**Pros:**
-
-- 🔧 Full system access and tool integration
-- 📊 Can maintain state between requests
-- 🔗 Integrate with existing scripts and tools
-- 💾 Can query databases or external services
-
-**Cons:**
-
-- Slow (process spawn per request)
-- Security considerations with shell execution
-- Platform-specific behavior
-
-**Use when:** You need to integrate with existing tools or require complex system interactions.
-
-### Line Processor
-
-Stream-based processing with line-by-line evaluation.
-
-**Pros:**
-
-- 🚀 Long-running process (no spawn overhead)
-- 📈 Can maintain state across requests
-- 🐍 Language agnostic (Python, Ruby, etc.)
-- 🔄 Bi-directional communication
-
-**Cons:**
-
-- More complex to implement
-- Requires handling the protocol correctly
-- Process management considerations
-
-**Use when:** You have high request volume and need stateful processing or want to use a specific language.
-
-## Performance Comparison
-
-| Engine         | Startup Time | Per-Request Overhead | Memory Usage | Stateful |
-| -------------- | ------------ | -------------------- | ------------ | -------- |
-| JavaScript     | Fast         | ~0.1ms               | Low          | No       |
-| Shell Script   | None         | ~10-50ms             | Variable     | No\*     |
-| Line Processor | Slow         | ~0.5ms               | Variable     | Yes      |
-
-\*Shell scripts can use files for state but each invocation is independent
-
-## Choosing a Rule Engine
-
-### For Production Use
-
-**JavaScript** is recommended for production environments due to:
-
-- Excellent performance
-- Predictable resource usage
-- Security isolation
-- Simple deployment
-
-### For Development/Testing
-
-**Shell scripts** work well for:
-
-- Rapid prototyping
-- Integration testing
-- Debugging complex scenarios
-
-### For Complex Filtering
-
-**Line Processor** excels at:
-
-- Machine learning models
-- Statistical analysis
-- Complex stateful logic
-- Custom protocols
+*Shell scripts can use files for state but each invocation is independent
 
 ## Examples
 
