@@ -1,5 +1,7 @@
 #![allow(dead_code)] // These are utility functions used across different test modules
 
+pub mod logging; // Automatic test logging setup
+
 use std::process::Command;
 
 /// Construct httpjail command with standard test settings

@@ -29,6 +29,41 @@ When writing tests, prefer pure rust solutions over shell script wrappers.
 
 **Test Philosophy:** Write terse, minimal tests that cover the essential behavior. Avoid verbose test suites with many similar test cases. Each test should have a clear, specific purpose. Prefer 1-2 focused tests over 5-10 comprehensive tests. This keeps the test suite fast and maintainable.
 
+### Debugging Test Failures
+
+**Prefer logging over temporary scripts for debugging.** When tests fail, especially in CI:
+
+1. **Add tracing/logging to tests**: Include a test setup function that initializes `tracing_subscriber` so tests can be run with `RUST_LOG=debug` for detailed output
+2. **Use eprintln! for immediate debugging**: Quick debug output that works in test environments
+3. **Test directly on CI machines when needed**: The `ci-ssh.sh` script provides direct access for reproducing issues
+4. **Document findings**: Once you understand a failure, document the root cause and fix properly
+
+Example test logging setup:
+```rust
+use std::sync::Once;
+use tracing_subscriber;
+
+static INIT: Once = Once::new();
+
+fn init_test_logging() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("httpjail=debug".parse().unwrap())
+            )
+            .with_test_writer()
+            .init();
+    });
+}
+
+#[test]
+fn my_test() {
+    init_test_logging();
+    // test code...
+}
+```
+
 When testing behavior outside of the strong jailing, use `--weak` for an environment-only
 invocation of the tool. `--weak` works by setting the `HTTP_PROXY` and `HTTPS_PROXY` environment
 variables to the proxy address.

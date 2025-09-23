@@ -29,7 +29,6 @@ fn init_test_logging() {
 
 fn create_temp_script(content: &str) -> tempfile::TempPath {
     let mut file = NamedTempFile::new().unwrap();
-    eprintln!("Creating temp script at: {:?}", file.path());
     file.write_all(content.as_bytes()).unwrap();
     file.flush().unwrap();
 
@@ -39,16 +38,10 @@ fn create_temp_script(content: &str) -> tempfile::TempPath {
         let mut perms = fs::metadata(file.path()).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(file.path(), perms).unwrap();
-        eprintln!("Set permissions to 0755 for: {:?}", file.path());
     }
 
-    // Verify the script is executable
-    eprintln!(
-        "Script content preview: {:?}",
-        &content[..50.min(content.len())]
-    );
-
     // IMPORTANT: Convert to TempPath to close the file handle while keeping the file
+    // This prevents "Text file busy" error on Linux when executing the script
     file.into_temp_path()
 }
 

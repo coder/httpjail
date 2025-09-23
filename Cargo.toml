@@ -55,6 +55,7 @@ tempfile = "3.8"
 assert_cmd = "2.0"
 predicates = "3.0"
 serial_test = "3.0"
+ctor = "0.2"
 
 [package.metadata.cargo-udeps.ignore]
 dev = ["serial_test"]
