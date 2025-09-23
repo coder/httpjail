@@ -46,6 +46,18 @@ httpjail creates an isolated network environment for your process:
 3. **Rule Evaluation**: Each request is evaluated against your configured rules
 4. **Action**: Requests are either allowed through or blocked based on the evaluation
 
+```mermaid
+graph LR
+    A[Application] -->|HTTP/HTTPS Request| B[httpjail Proxy]
+    B --> C{Rule Engine}
+    C -->|Allow| D[Forward to Target]
+    C -->|Deny| E[Return 403]
+    D --> F[Target Server]
+    F -->|Response| B
+    B -->|Response| A
+    E -->|Error| A
+```
+
 ## Getting Started
 
 The simplest way to use httpjail is with JavaScript rules:

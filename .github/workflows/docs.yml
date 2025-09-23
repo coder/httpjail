@@ -27,6 +27,19 @@ jobs:
         uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: 'latest'
+      
+      - name: Install mdbook-mermaid
+        run: |
+          curl -sSL https://github.com/badboy/mdbook-mermaid/releases/latest/download/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          sudo mv mdbook-mermaid /usr/local/bin/
+          mdbook-mermaid install .
+      
+      - name: Install mdbook-linkcheck
+        run: |
+          curl -sSL https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/latest/download/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip -o linkcheck.zip
+          unzip -q linkcheck.zip
+          chmod +x mdbook-linkcheck
+          sudo mv mdbook-linkcheck /usr/local/bin/
           
       - name: Build documentation
         run: mdbook build

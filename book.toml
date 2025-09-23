@@ -13,6 +13,9 @@ build-dir = "book"
 
 [preprocessor.links]
 
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
@@ -24,7 +27,7 @@ cname = ""
 mathjax-support = false
 copy-fonts = true
 additional-css = []
-additional-js = []
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 no-section-label = false
 fold.enable = true
 fold.level = 0
@@ -45,3 +48,13 @@ expand = true
 heading-split-level = 3
 
 [output.html.redirect]
+
+[output.linkcheck]
+# Optional: Only check internal links (faster builds)
+follow-web-links = false
+# Optional: Allow links outside book root
+traverse-parent-directories = false
+# Optional: Exclude patterns (regex)
+exclude = [ "^https://crates\\.io", "^https://docs\\.rs" ]
+# Optional: HTTP request configuration
+warning-policy = "warn"
