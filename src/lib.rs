@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_if)]
 
+pub mod command_utils;
 pub mod dangerous_verifier;
 pub mod jail;
 pub mod limited_body;

@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info};
+
+use crate::command_utils::execute_with_timeout_poll;
 
 /// RAII wrapper for nftables table that ensures cleanup on drop
 #[derive(Debug)]
@@ -215,20 +218,19 @@ table ip {table_name} {{
 
         let output = if let Some(ref namespace) = self.namespace {
             // Delete table in namespace
-            // Use timeout to prevent hanging on nft delete
-            Command::new("timeout")
-                .args([
-                    "5", "ip", "netns", "exec", namespace, "nft", "delete", "table", "ip",
-                    &self.name,
-                ])
-                .output()
+            // Use Rust timeout to prevent hanging on nft delete
+            let mut cmd = Command::new("ip");
+            cmd.args([
+                "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
+            ]);
+            execute_with_timeout_poll(cmd, Duration::from_secs(5))
                 .context("Failed to execute nft delete in namespace")?
         } else {
             // Delete table on host
-            // Use timeout to prevent hanging on nft delete
-            Command::new("timeout")
-                .args(["5", "nft", "delete", "table", "ip", &self.name])
-                .output()
+            // Use Rust timeout to prevent hanging on nft delete
+            let mut cmd = Command::new("nft");
+            cmd.args(["delete", "table", "ip", &self.name]);
+            execute_with_timeout_poll(cmd, Duration::from_secs(5))
                 .context("Failed to execute nft delete")?
         };
 

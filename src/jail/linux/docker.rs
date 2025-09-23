@@ -1,10 +1,12 @@
 //! Docker container execution wrapped in Linux jail network isolation
 
 use super::LinuxJail;
+use crate::command_utils::execute_with_timeout_poll;
 use crate::jail::{Jail, JailConfig};
 use crate::sys_resource::{ManagedResource, SystemResource};
 use anyhow::{Context, Result};
 use std::process::{Command, ExitStatus};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Docker network resource that gets cleaned up on drop
@@ -63,10 +65,10 @@ impl SystemResource for DockerRoutingTable {
     fn cleanup(&mut self) -> Result<()> {
         debug!("Cleaning up Docker routing table: {}", self.table_name);
 
-        // Use timeout to prevent hanging on nft delete
-        let output = Command::new("timeout")
-            .args(["5", "nft", "delete", "table", "ip", &self.table_name])
-            .output()
+        // Use Rust timeout to prevent hanging on nft delete
+        let mut cmd = Command::new("nft");
+        cmd.args(["delete", "table", "ip", &self.table_name]);
+        let output = execute_with_timeout_poll(cmd, Duration::from_secs(5))
             .context("Failed to delete Docker routing table")?;
 
         if !output.status.success() {
