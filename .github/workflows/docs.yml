@@ -30,7 +30,8 @@ jobs:
       
       - name: Install mdbook-mermaid
         run: |
-          curl -sSL https://github.com/badboy/mdbook-mermaid/releases/latest/download/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          VERSION=$(curl -s https://api.github.com/repos/badboy/mdbook-mermaid/releases/latest | grep tag_name | cut -d '"' -f 4)
+          curl -sSL "https://github.com/badboy/mdbook-mermaid/releases/download/${VERSION}/mdbook-mermaid-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz
           sudo mv mdbook-mermaid /usr/local/bin/
           mdbook-mermaid install .
       
