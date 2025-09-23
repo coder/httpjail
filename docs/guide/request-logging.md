@@ -37,46 +37,28 @@ every request to BigQuery:
 #!/bin/bash
 # log-to-bigquery.sh
 
-# Configure BigQuery
-PROJECT="my-project"
-DATASET="httpjail_logs"
-TABLE="requests"
-BATCH_FILE="/tmp/requests-$$.ndjson"
+LOG_FILE="/tmp/requests-$$.ndjson"
 
-# Process requests in batches
-batch_count=0
-max_batch=100
-
+# Process each request
 while read -r line; do
-    # Parse and enrich the request
+    # Append to newline-delimited JSON file
     echo "$line" | jq -c '{
         timestamp: now | todate,
         url: .url,
         method: .method,
         host: .host,
-        path: .path,
-        requester_ip: .requester_ip
-    }' >> "$BATCH_FILE"
-    
-    batch_count=$((batch_count + 1))
-    
-    # Load batch when threshold reached
-    if [ $batch_count -ge $max_batch ]; then
-        bq load --source_format=NEWLINE_DELIMITED_JSON \
-            --autodetect \
-            "$PROJECT:$DATASET.$TABLE" \
-            "$BATCH_FILE"
-        
-        > "$BATCH_FILE"  # Clear batch file
-        batch_count=0
-    fi
+        path: .path
+    }' >> "$LOG_FILE"
     
     # Allow all requests
     echo "true"
 done
 
-# Load any remaining records on exit
-trap 'bq load --source_format=NEWLINE_DELIMITED_JSON --autodetect "$PROJECT:$DATASET.$TABLE" "$BATCH_FILE"' EXIT
+# On exit, load all data to BigQuery
+trap 'bq load --source_format=NEWLINE_DELIMITED_JSON \
+    --autodetect \
+    my-project:httpjail_logs.requests \
+    "$LOG_FILE"' EXIT
 ```
 
 Usage:
@@ -85,10 +67,8 @@ Usage:
 httpjail --proc ./log-to-bigquery.sh --request-log local-backup.log -- your-app
 ```
 
-This approach:
+This example shows how to:
 
-- Batches requests for efficient BigQuery loading
-- Maintains a local backup in `local-backup.log`
-- Uses newline-delimited JSON format (required by BigQuery)
-- Handles graceful shutdown with trap to load remaining data
-- Avoids per-request overhead of streaming inserts
+- Collect requests in newline-delimited JSON format
+- Load data to BigQuery on process exit
+- Combine local logging with cloud analytics
