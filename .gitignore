@@ -4,3 +4,5 @@ target/
 CLAUDE.local.md
 artifacts/
 book
+test-build
+mermaid*.js
