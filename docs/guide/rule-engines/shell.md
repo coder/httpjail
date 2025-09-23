@@ -60,17 +60,41 @@ esac
 
 ### Domain Allowlist
 
+Command:
+```bash
+httpjail --sh "./rules.sh" -- curl https://api.github.com/repos
+```
+
+In `whitelist.txt`:
+```
+api.github.com
+github.com
+raw.githubusercontent.com
+api.gitlab.com
+gitlab.com
+```
+
+In `rules.sh`:
 ```bash
 #!/bin/sh
-# Check against allowed domains
-ALLOWED="api.github.com api.gitlab.com"
+# Check if host is in whitelist file
 
-for domain in $ALLOWED; do
-    [ "$HTTPJAIL_HOST" = "$domain" ] && exit 0
-done
+# Read whitelist file (one domain per line)
+WHITELIST_FILE="./whitelist.txt"
 
-echo "Domain not allowed"
-exit 1
+# Check if whitelist file exists
+if [ ! -f "$WHITELIST_FILE" ]; then
+    echo "Whitelist file not found: $WHITELIST_FILE"
+    exit 1
+fi
+
+# Check if current host is in the whitelist (exact match)
+if grep -Fxq "$HTTPJAIL_HOST" "$WHITELIST_FILE"; then
+    exit 0  # Allow
+else
+    echo "Host $HTTPJAIL_HOST not in whitelist"
+    exit 1  # Deny
+fi
 ```
 
 ### Method-Based Restrictions
