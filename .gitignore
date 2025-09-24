@@ -6,3 +6,4 @@ artifacts/
 book
 test-build
 mermaid*.js
+profile.pb.gz

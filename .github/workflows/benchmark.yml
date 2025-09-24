@@ -18,9 +18,14 @@ jobs:
     - name: Run benchmarks
       run: cargo bench --bench rule_engines
     
+    - name: Generate pprof profile for proc_engine
+      run: cargo run --release --example profile_proc --features profile
+    
     - name: Upload benchmark results
       uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
-        path: target/criterion/
+        path: |
+          target/criterion/
+          profile.pb.gz
         retention-days: 30

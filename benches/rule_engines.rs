@@ -3,7 +3,6 @@ use httpjail::rules::{
     RuleEngine, proc::ProcRuleEngine, shell::ShellRuleEngine, v8_js::V8JsRuleEngine,
 };
 use hyper::Method;
-use pprof::criterion::{Output, PProfProfiler};
 use std::time::Duration;
 
 fn bench_v8_js_engine(c: &mut Criterion) {
@@ -42,8 +41,7 @@ fn bench_proc_engine(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default()
-        .measurement_time(Duration::from_secs(10))
-        .with_profiler(PProfProfiler::new(100, Output::Protobuf));
+        .measurement_time(Duration::from_secs(10));
     targets = bench_v8_js_engine, bench_shell_engine, bench_proc_engine
 }
 
