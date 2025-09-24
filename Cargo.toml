@@ -49,6 +49,7 @@ atty = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 socket2 = "0.5"
+nix = { version = "0.30", features = ["process", "fs", "sched", "user", "signal"] }
 
 [dev-dependencies]
 tempfile = "3.8"
@@ -56,6 +57,7 @@ assert_cmd = "2.0"
 predicates = "3.0"
 serial_test = "3.0"
 ctor = "0.2"
+tokio = { version = "1.35", features = ["rt", "macros", "time", "process"] }
 
 [package.metadata.cargo-udeps.ignore]
 dev = ["serial_test"]

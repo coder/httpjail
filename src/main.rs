@@ -105,6 +105,10 @@ struct RunArgs {
     #[arg(long = "cleanup", hide = true)]
     cleanup: bool,
 
+    /// Run internal DNS server for namespace (hidden, for internal use only)
+    #[arg(long = "__internal-dns-server", value_name = "NAMESPACE", hide = true)]
+    internal_dns_server: Option<String>,
+
     /// Run as standalone proxy server (without executing a command)
     #[arg(
         long = "server",
@@ -375,6 +379,14 @@ async fn main() -> Result<()> {
 
         info!("Cleanup completed successfully");
         return Ok(());
+    }
+
+    // Handle internal DNS server mode (for Linux namespace DNS)
+    #[cfg(target_os = "linux")]
+    if let Some(namespace_name) = args.run_args.internal_dns_server {
+        // This is executed after exec() in the child process
+        // Run the DNS server directly without any unsafe operations
+        return httpjail::jail::linux::dns::run_exec_dns_server(&namespace_name);
     }
 
     // Handle server mode

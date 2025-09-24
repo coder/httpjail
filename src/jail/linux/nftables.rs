@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info};
+
+use crate::command_utils::{CommandResult, execute_with_timeout};
 
 /// RAII wrapper for nftables table that ensures cleanup on drop
 #[derive(Debug)]
@@ -50,7 +53,6 @@ table ip {table_name} {{
     chain input {{
         type filter hook input priority -100; policy accept;
         iifname "{veth_host}" tcp dport {{ {http_port}, {https_port} }} accept comment "httpjail_{jail_id} proxy"
-        iifname "{veth_host}" udp dport 53 accept comment "httpjail_{jail_id} dns"
         iifname "{veth_host}" accept comment "httpjail_{jail_id} all"
     }}
     
@@ -115,7 +117,6 @@ table ip {table_name} {{
         host_ip: &str,
         http_port: u16,
         https_port: u16,
-        _dns_port: u16, // No longer needed but kept for compatibility
     ) -> Result<Self> {
         let table_name = "httpjail".to_string();
 
@@ -123,9 +124,13 @@ table ip {table_name} {{
         let ruleset = format!(
             r#"
 table ip {table_name} {{
-    # NAT output chain: redirect HTTP/HTTPS to host proxy
+    # NAT output chain: redirect HTTP/HTTPS/DNS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
+
+        # Redirect ALL DNS to in-namespace server on localhost
+        # This catches all UDP port 53 traffic and redirects to our forked server
+        udp dport 53 dnat to 127.0.0.1:53
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -134,15 +139,15 @@ table ip {table_name} {{
         tcp dport 443 dnat to {host_ip}:{https_port}
     }}
 
-    # FILTER output chain: block non-HTTP/HTTPS egress
+    # FILTER output chain: block non-HTTP/HTTPS/DNS egress
     chain outfilter {{
         type filter hook output priority 0; policy drop;
 
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic directly to the host (UDP only)
-        ip daddr {host_ip} udp dport 53 accept
+        # Allow DNS traffic to localhost after DNAT
+        ip daddr 127.0.0.1 udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
@@ -211,31 +216,45 @@ table ip {table_name} {{
             return Ok(());
         }
 
-        let output = if let Some(ref namespace) = self.namespace {
+        let result = if let Some(ref namespace) = self.namespace {
             // Delete table in namespace
-            Command::new("ip")
-                .args([
-                    "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
-                ])
-                .output()
-                .context("Failed to execute nft delete in namespace")?
+            // Use Rust timeout to prevent hanging on nft delete
+            let mut cmd = Command::new("ip");
+            cmd.args([
+                "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
+            ]);
+            execute_with_timeout(cmd, Duration::from_secs(5))
         } else {
             // Delete table on host
-            Command::new("nft")
-                .args(["delete", "table", "ip", &self.name])
-                .output()
-                .context("Failed to execute nft delete")?
+            // Use Rust timeout to prevent hanging on nft delete
+            let mut cmd = Command::new("nft");
+            cmd.args(["delete", "table", "ip", &self.name]);
+            execute_with_timeout(cmd, Duration::from_secs(5))
         };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Ignore if table doesn't exist (already removed)
-            if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
-                // Log but don't fail - best effort cleanup
-                debug!("Failed to remove nftables table {}: {}", self.name, stderr);
+        match result {
+            CommandResult::Error(e) => {
+                debug!("Failed to execute nft delete: {}", e);
             }
-        } else {
-            debug!("Removed nftables table: {}", self.name);
+            CommandResult::TimedOut { .. } => {
+                debug!(
+                    "Timeout removing nftables table {} (may not exist or nft is hanging)",
+                    self.name
+                );
+            }
+            CommandResult::Completed(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.contains("No such file or directory")
+                        && !stderr.contains("does not exist")
+                    {
+                        // Log but don't fail - best effort cleanup
+                        debug!("Failed to remove nftables table {}: {}", self.name, stderr);
+                    }
+                } else {
+                    debug!("Removed nftables table: {}", self.name);
+                }
+            }
         }
 
         self.created = false;

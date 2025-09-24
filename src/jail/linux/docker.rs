@@ -1,10 +1,12 @@
 //! Docker container execution wrapped in Linux jail network isolation
 
 use super::LinuxJail;
+use crate::command_utils::{CommandResult, execute_with_timeout};
 use crate::jail::{Jail, JailConfig};
 use crate::sys_resource::{ManagedResource, SystemResource};
 use anyhow::{Context, Result};
 use std::process::{Command, ExitStatus};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Docker network resource that gets cleaned up on drop
@@ -63,20 +65,36 @@ impl SystemResource for DockerRoutingTable {
     fn cleanup(&mut self) -> Result<()> {
         debug!("Cleaning up Docker routing table: {}", self.table_name);
 
-        let output = Command::new("nft")
-            .args(["delete", "table", "ip", &self.table_name])
-            .output()
-            .context("Failed to delete Docker routing table")?;
+        // Use Rust timeout to prevent hanging on nft delete
+        let mut cmd = Command::new("nft");
+        cmd.args(["delete", "table", "ip", &self.table_name]);
+        let result = execute_with_timeout(cmd, Duration::from_secs(5));
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if DockerNetwork::is_not_found_error(&stderr) {
-                debug!("Docker routing table {} already removed", self.table_name);
-            } else {
-                warn!("Failed to delete Docker routing table: {}", stderr);
+        match result {
+            CommandResult::Error(e) => {
+                warn!(
+                    "Failed to execute nft delete for Docker routing table: {}",
+                    e
+                );
             }
-        } else {
-            info!("Removed Docker routing table {}", self.table_name);
+            CommandResult::TimedOut { .. } => {
+                warn!(
+                    "Timeout deleting Docker routing table {} (may not exist or nft is hanging)",
+                    self.table_name
+                );
+            }
+            CommandResult::Completed(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if DockerNetwork::is_not_found_error(&stderr) {
+                        debug!("Docker routing table {} already removed", self.table_name);
+                    } else {
+                        warn!("Failed to delete Docker routing table: {}", stderr);
+                    }
+                } else {
+                    info!("Removed Docker routing table {}", self.table_name);
+                }
+            }
         }
 
         Ok(())
