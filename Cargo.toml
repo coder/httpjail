@@ -58,7 +58,7 @@ predicates = "3.0"
 serial_test = "3.0"
 ctor = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
-pprof = { version = "0.13", features = ["protobuf-codec", "criterion"] }
+pprof = { version = "0.14", features = ["protobuf-codec", "criterion"] }
 
 [package.metadata.cargo-udeps.ignore]
 dev = ["serial_test"]
