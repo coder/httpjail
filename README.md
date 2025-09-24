@@ -22,12 +22,8 @@ Or download a pre-built binary from the [releases page](https://github.com/coder
 - 🔒 **Process-level network isolation** - Isolate processes in restricted network environments
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🛡️ **DNS exfiltration protection** - Prevents data leakage through DNS queries
-- 🔧 **Script-based evaluation** - Custom request evaluation logic via external scripts
-- 🚀 **JavaScript evaluation** - Fast, secure request filtering using V8 JavaScript engine
-- 📝 **Request logging** - Monitor and log all HTTP/HTTPS requests
-- ⛔ **Default deny** - Requests are blocked unless explicitly allowed
+- 🔧 **Multiple evaluation approaches** - JS expressions or custom programs
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
-- ⚡ **Zero configuration** - Works out of the box with sensible defaults
 
 ## Quick Start
 
