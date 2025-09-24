@@ -79,7 +79,7 @@ Table of Contents:
 - [Platform Support](https://coder.github.io/httpjail/guide/platform-support.html)
 - [Request Logging](https://coder.github.io/httpjail/guide/request-logging.html)
 - [TLS Interception](https://coder.github.io/httpjail/advanced/tls-interception.html)
-- [DNS Exfiltration](https://coder.github.io/httpjail/advanced/dns-protection.html)
+- [DNS Exfiltration](https://coder.github.io/httpjail/advanced/dns-exfiltration.html)
 - [Server Mode](https://coder.github.io/httpjail/advanced/server-mode.html)
 
 ## License
