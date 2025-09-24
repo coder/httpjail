@@ -679,16 +679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "flate2"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a3d7db9596fecd151c5f638c0ee5d5bd487b6e0ea232e5dc96d5250f6f94b1d"
-dependencies = [
- "crc32fast",
- "miniz_oxide 0.8.9",
-]
-
-[[package]]
 name = "float-cmp"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -988,7 +978,6 @@ dependencies = [
  "ctrlc",
  "dirs",
  "filetime",
- "flate2",
  "http-body-util",
  "hyper",
  "hyper-rustls",
@@ -1735,6 +1724,7 @@ checksum = "ef5c97c51bd34c7e742402e216abdeb44d415fbe6ae41d56b114723e953711cb"
 dependencies = [
  "backtrace",
  "cfg-if",
+ "criterion",
  "findshlibs",
  "libc",
  "log",
