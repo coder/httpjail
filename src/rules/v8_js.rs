@@ -71,7 +71,6 @@ impl V8JsRuleEngine {
 
     /// Convert a V8 value to a response string that can be parsed by RuleResponse
     fn value_to_response_string(
-        &self,
         context_scope: &mut v8::ContextScope<v8::HandleScope>,
         global: v8::Local<v8::Object>,
         value: v8::Local<v8::Value>,
@@ -116,12 +115,12 @@ impl V8JsRuleEngine {
         }
     }
 
-    fn create_and_execute(
-        &self,
+    fn execute_with_isolate(
+        isolate: &mut v8::OwnedIsolate,
+        js_code: &str,
         request_info: &RequestInfo,
     ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
-        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
-        let handle_scope = &mut v8::HandleScope::new(&mut isolate);
+        let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
         let context_scope = &mut v8::ContextScope::new(handle_scope, context);
 
@@ -160,8 +159,7 @@ impl V8JsRuleEngine {
         global.set(context_scope, r_key.into(), r_obj);
 
         // Execute the JavaScript expression
-        let source =
-            v8::String::new(context_scope, &self.js_code).ok_or("Failed to create V8 string")?;
+        let source = v8::String::new(context_scope, js_code).ok_or("Failed to create V8 string")?;
 
         let script = v8::Script::compile(context_scope, source, None)
             .ok_or("Failed to compile JavaScript expression")?;
@@ -173,7 +171,7 @@ impl V8JsRuleEngine {
 
         // Convert the V8 result to a JSON string for consistent parsing
         // This ensures perfect parity with the proc engine response handling
-        let response_str = self.value_to_response_string(context_scope, global, result)?;
+        let response_str = Self::value_to_response_string(context_scope, global, result)?;
 
         // Use the common RuleResponse parser - exact same logic as proc engine
         let rule_response = RuleResponse::from_string(&response_str);
@@ -192,6 +190,15 @@ impl V8JsRuleEngine {
 
         Ok((allowed, message))
     }
+
+    fn create_and_execute(
+        &self,
+        request_info: &RequestInfo,
+    ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+        // Create a new isolate for each execution (simpler approach)
+        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+        Self::execute_with_isolate(&mut isolate, &self.js_code, request_info)
+    }
 }
 
 #[async_trait]
@@ -199,14 +206,18 @@ impl RuleEngineTrait for V8JsRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
         // Run the JavaScript evaluation in a blocking task to avoid
         // issues with V8's single-threaded nature
-        let js_code = self.js_code.clone();
         let method_clone = method.clone();
         let url_clone = url.to_string();
         let ip_clone = requester_ip.to_string();
 
+        // Clone self to move into the closure
+        let self_clone = Self {
+            js_code: self.js_code.clone(),
+            runtime: self.runtime.clone(),
+        };
+
         let (allowed, context) = tokio::task::spawn_blocking(move || {
-            let engine = V8JsRuleEngine::new(js_code).unwrap();
-            engine.execute(&method_clone, &url_clone, &ip_clone)
+            self_clone.execute(&method_clone, &url_clone, &ip_clone)
         })
         .await
         .unwrap_or_else(|e| {
@@ -319,5 +330,181 @@ mod tests {
             .await;
         assert!(matches!(result.action, crate::rules::Action::Deny));
         assert_eq!(result.context, Some("Shorthand denial".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_request_field_access() {
+        use crate::rules::Action;
+        // Test accessing various fields of the request
+        let test_cases = vec![
+            (
+                "r.method === 'GET'",
+                Method::GET,
+                "https://example.com",
+                true,
+            ),
+            (
+                "r.method === 'POST'",
+                Method::GET,
+                "https://example.com",
+                false,
+            ),
+            (
+                "r.host === 'example.com'",
+                Method::GET,
+                "https://example.com/test",
+                true,
+            ),
+            (
+                "r.host === 'other.com'",
+                Method::GET,
+                "https://example.com/test",
+                false,
+            ),
+            (
+                "r.path === '/test'",
+                Method::GET,
+                "https://example.com/test",
+                true,
+            ),
+            (
+                "r.path.startsWith('/api')",
+                Method::GET,
+                "https://example.com/api/v1",
+                true,
+            ),
+            (
+                "r.path.startsWith('/api')",
+                Method::GET,
+                "https://example.com/v1/api",
+                false,
+            ),
+        ];
+
+        for (js_code, method, url, expected_allow) in test_cases {
+            let engine = V8JsRuleEngine::new(js_code.to_string()).unwrap();
+            let result = engine.evaluate(method, url, "127.0.0.1").await;
+
+            assert_eq!(
+                matches!(result.action, Action::Allow),
+                expected_allow,
+                "Expression '{}' should {} request to {}",
+                js_code,
+                if expected_allow { "allow" } else { "deny" },
+                url
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_object_response() {
+        use crate::rules::Action;
+        // Test returning an object with allow/deny and message
+        let js_code = r#"
+            if (r.host === 'blocked.com') {
+                ({ allow: false, deny_message: `Host ${r.host} is blocked` })
+            } else {
+                ({ allow: true })
+            }
+        "#;
+
+        let engine = V8JsRuleEngine::new(js_code.to_string()).unwrap();
+
+        // Test allowed request
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+        assert_eq!(result.context, None);
+
+        // Test denied request with message
+        let result = engine
+            .evaluate(Method::GET, "https://blocked.com/test", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Deny));
+        assert_eq!(
+            result.context,
+            Some("Host blocked.com is blocked".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_complex_logic() {
+        use crate::rules::Action;
+        let js_code = r#"
+            // Allow GitHub and GitLab
+            const allowed_hosts = ['github.com', 'gitlab.com'];
+            
+            // Block certain paths
+            const blocked_paths = ['/admin', '/config'];
+            
+            if (blocked_paths.some(p => r.path.startsWith(p))) {
+                ({ deny_message: 'Access to administrative paths denied' })
+            } else if (allowed_hosts.includes(r.host)) {
+                true
+            } else {
+                false
+            }
+        "#;
+
+        let engine = V8JsRuleEngine::new(js_code.to_string()).unwrap();
+
+        // Test allowed hosts
+        let result = engine
+            .evaluate(Method::GET, "https://github.com/repo", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+
+        let result = engine
+            .evaluate(Method::GET, "https://gitlab.com/project", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Allow));
+
+        // Test blocked paths
+        let result = engine
+            .evaluate(Method::GET, "https://github.com/admin", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Deny));
+        assert_eq!(
+            result.context,
+            Some("Access to administrative paths denied".to_string())
+        );
+
+        // Test non-allowed host
+        let result = engine
+            .evaluate(Method::GET, "https://example.com/test", "127.0.0.1")
+            .await;
+        assert!(matches!(result.action, Action::Deny));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_evaluation() {
+        use crate::rules::Action;
+        use std::sync::Arc;
+        // Test that multiple evaluations can run concurrently
+        let engine = Arc::new(V8JsRuleEngine::new("r.host === 'example.com'".to_string()).unwrap());
+
+        let mut tasks = vec![];
+        for i in 0..10 {
+            let engine_clone = engine.clone();
+            let host = if i % 2 == 0 {
+                "example.com"
+            } else {
+                "other.com"
+            };
+            let should_allow = i % 2 == 0;
+
+            tasks.push(tokio::spawn(async move {
+                let result = engine_clone
+                    .evaluate(Method::GET, &format!("https://{}/path", host), "127.0.0.1")
+                    .await;
+                (should_allow, matches!(result.action, Action::Allow))
+            }));
+        }
+
+        for task in tasks {
+            let (should_allow, did_allow) = task.await.unwrap();
+            assert_eq!(should_allow, did_allow);
+        }
     }
 }

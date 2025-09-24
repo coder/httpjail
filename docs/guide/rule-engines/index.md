@@ -7,13 +7,15 @@ httpjail provides three different rule engines for evaluating HTTP requests. Eac
 | Feature                | JavaScript (V8) | Shell Script | Line Processor |
 | ---------------------- | --------------- | ------------ | -------------- |
 | **Performance**        |                 |              |                |
-| Per-Request Overhead   | ~100µs          | ~1-3ms       | ~100µs         |
+| Per-Request Latency    | 550µs-1.3ms     | 700µs-1.6ms  | 70-90µs        |
 | **Capabilities**       |                 |              |                |
 | Stateful Processing    | ❌              | ✅           | ✅             |
 | External Tool Access   | ❌              | ✅           | ✅             |
 | Language Choice        | JS only         | Any          | Any            |
 | Sandboxed Execution    | ✅              | ❌           | Depends        |
 | Development Complexity | Easy            | Easy         | Moderate       |
+
+> **Performance Note**: Latency measurements are from benchmarks on modern hardware. JavaScript (V8) creates a new isolate per request for safety. Line processor maintains a persistent process, providing the best performance for high-throughput scenarios.
 
 ## Examples
 
@@ -56,7 +58,7 @@ const allowed = ["api.example.com", "cdn.example.com"];
 allowed.includes(r.host) && r.method === "GET" && r.path.startsWith("/v1/");
 ```
 
-**Shell Script** - Can use any tool but slow:
+**Shell Script** - Can use any tool but slower:
 
 ```bash
 #!/bin/bash

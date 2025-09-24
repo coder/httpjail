@@ -41,6 +41,7 @@ v8 = "129"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 simple-dns = "0.7"
+tempfile = "3.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
@@ -56,6 +57,8 @@ assert_cmd = "2.0"
 predicates = "3.0"
 serial_test = "3.0"
 ctor = "0.2"
+criterion = { version = "0.5", features = ["async_tokio"] }
+pprof = { version = "0.13", features = ["protobuf-codec", "criterion"] }
 
 [package.metadata.cargo-udeps.ignore]
 dev = ["serial_test"]
@@ -65,3 +68,11 @@ inherits = "release"
 opt-level = 1
 lto = false
 codegen-units = 16
+
+[profile.bench]
+inherits = "release"
+debug = true
+
+[[bench]]
+name = "rule_engines"
+harness = false
