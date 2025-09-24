@@ -4,22 +4,16 @@ httpjail provides three different rule engines for evaluating HTTP requests. Eac
 
 ## Engine Comparison
 
-| Feature | JavaScript (V8) | Shell Script | Line Processor |
-|---------|----------------|--------------|----------------|
-| **Performance** | | | |
-| Per-Jail Overhead | None* | None | Process spawn (~2ms) |
-| Per-Request Overhead | ~1-2ms** | ~2-5ms*** | <1ms**** |
-| **Capabilities** | | | |
-| Stateful Processing | ❌ | ✅ | ✅ |
-| External Tool Access | ❌ | ✅ | ✅ |
-| Language Choice | JS only | Any | Any |
-| Sandboxed Execution | ✅ | ❌ | Depends |
-| Development Complexity | Easy | Easy | Moderate |
-
-\* V8 engine is created per-request, not per-jail (no persistent context)  
-\*\* Creates new V8 isolate + compiles JS for each request  
-\*\*\* Process spawn + script execution (similar to line processor startup)  
-\*\*\*\* Simple IPC: write JSON line, read response line
+| Feature                | JavaScript (V8) | Shell Script | Line Processor |
+| ---------------------- | --------------- | ------------ | -------------- |
+| **Performance**        |                 |              |                |
+| Per-Request Overhead   | ~100µs          | ~1-3ms       | ~100µs         |
+| **Capabilities**       |                 |              |                |
+| Stateful Processing    | ❌              | ✅           | ✅             |
+| External Tool Access   | ❌              | ✅           | ✅             |
+| Language Choice        | JS only         | Any          | Any            |
+| Sandboxed Execution    | ✅              | ❌           | Depends        |
+| Development Complexity | Easy            | Easy         | Moderate       |
 
 ## Examples
 
