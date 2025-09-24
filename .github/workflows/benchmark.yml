@@ -3,11 +3,10 @@ name: Benchmarks
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
-    paths:
-      - 'src/rules/**'
-      - 'benches/**'
-      - '.github/workflows/benchmark.yml'
+    branches:
+      # workflow dispatch cannot be triggered off the main branch,
+      # so we have this one execption
+      - bench
 
 jobs:
   benchmark:
@@ -24,14 +23,9 @@ jobs:
     - name: Run benchmarks
       run: cargo bench --bench rule_engines
     
-    - name: Generate pprof profile for proc_engine
-      run: cargo run --release --example profile_proc --features profile
-    
     - name: Upload benchmark results
       uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
-        path: |
-          target/criterion/
-          profile.pb.gz
+        path: target/criterion/
         retention-days: 30
