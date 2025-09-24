@@ -3,22 +3,40 @@ name: Benchmarks
 on:
   workflow_dispatch:
   pull_request:
-    branches:
-      # workflow dispatch cannot be triggered off the main branch,
-      # so we have this one execption
-      - bench
+    branches: [main]
+    paths:
+      - 'src/rules/**'
+      - 'benches/**'
+      - '.github/workflows/benchmark.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     
     steps:
     - uses: actions/checkout@v4
     
     - name: Install Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+    
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ runner.os }}
+        # Share cache with other Linux workflows
+        cache-on-failure: true
+        # Cache benchmark-specific dependencies
+        cache-targets: true
+        cache-all-crates: true
+    
+    - name: Build benchmarks first (populates cache)
+      run: cargo build --release --bench rule_engines
     
     - name: Run benchmarks
       run: cargo bench --bench rule_engines
