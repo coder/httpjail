@@ -71,7 +71,6 @@ impl V8JsRuleEngine {
 
     /// Convert a V8 value to a response string that can be parsed by RuleResponse
     fn value_to_response_string(
-        &self,
         context_scope: &mut v8::ContextScope<v8::HandleScope>,
         global: v8::Local<v8::Object>,
         value: v8::Local<v8::Value>,
@@ -116,12 +115,12 @@ impl V8JsRuleEngine {
         }
     }
 
-    fn create_and_execute(
-        &self,
+    fn execute_with_isolate(
+        isolate: &mut v8::OwnedIsolate,
+        js_code: &str,
         request_info: &RequestInfo,
     ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
-        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
-        let handle_scope = &mut v8::HandleScope::new(&mut isolate);
+        let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
         let context_scope = &mut v8::ContextScope::new(handle_scope, context);
 
@@ -160,8 +159,7 @@ impl V8JsRuleEngine {
         global.set(context_scope, r_key.into(), r_obj);
 
         // Execute the JavaScript expression
-        let source =
-            v8::String::new(context_scope, &self.js_code).ok_or("Failed to create V8 string")?;
+        let source = v8::String::new(context_scope, js_code).ok_or("Failed to create V8 string")?;
 
         let script = v8::Script::compile(context_scope, source, None)
             .ok_or("Failed to compile JavaScript expression")?;
@@ -173,7 +171,7 @@ impl V8JsRuleEngine {
 
         // Convert the V8 result to a JSON string for consistent parsing
         // This ensures perfect parity with the proc engine response handling
-        let response_str = self.value_to_response_string(context_scope, global, result)?;
+        let response_str = Self::value_to_response_string(context_scope, global, result)?;
 
         // Use the common RuleResponse parser - exact same logic as proc engine
         let rule_response = RuleResponse::from_string(&response_str);
@@ -192,6 +190,15 @@ impl V8JsRuleEngine {
 
         Ok((allowed, message))
     }
+
+    fn create_and_execute(
+        &self,
+        request_info: &RequestInfo,
+    ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+        // Create a new isolate for each execution (simpler approach)
+        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+        Self::execute_with_isolate(&mut isolate, &self.js_code, request_info)
+    }
 }
 
 #[async_trait]
@@ -199,14 +206,18 @@ impl RuleEngineTrait for V8JsRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
         // Run the JavaScript evaluation in a blocking task to avoid
         // issues with V8's single-threaded nature
-        let js_code = self.js_code.clone();
         let method_clone = method.clone();
         let url_clone = url.to_string();
         let ip_clone = requester_ip.to_string();
 
+        // Clone self to move into the closure
+        let self_clone = Self {
+            js_code: self.js_code.clone(),
+            runtime: self.runtime.clone(),
+        };
+
         let (allowed, context) = tokio::task::spawn_blocking(move || {
-            let engine = V8JsRuleEngine::new(js_code).unwrap();
-            engine.execute(&method_clone, &url_clone, &ip_clone)
+            self_clone.execute(&method_clone, &url_clone, &ip_clone)
         })
         .await
         .unwrap_or_else(|e| {
