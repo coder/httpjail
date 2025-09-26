@@ -1,0 +1,34 @@
+name: 'Check Docs Only Changes'
+description: 'Check if only documentation files were changed'
+outputs:
+  docs-only:
+    description: "True if only documentation files were changed"
+    value: ${{ steps.check.outputs.docs_only }}
+runs:
+  using: "composite"
+  steps:
+    - name: Check if only docs changed
+      id: check
+      shell: bash
+      run: |
+        # Determine the base SHA for comparison
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # For PRs, compare against the base branch
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          FILES_CHANGED=$(git diff --name-only "${BASE_SHA}"...HEAD)
+        else
+          # For pushes, compare with previous commit
+          FILES_CHANGED=$(git diff --name-only HEAD~1...HEAD 2>/dev/null || echo "")
+        fi
+        
+        # Check if all changed files are in docs/ directory
+        if [ -z "$FILES_CHANGED" ]; then
+          echo "docs_only=false" >> $GITHUB_OUTPUT
+          echo "No files changed"
+        elif echo "$FILES_CHANGED" | grep -vE '^docs/' > /dev/null; then
+          echo "docs_only=false" >> $GITHUB_OUTPUT
+          echo "Non-documentation files changed"
+        else
+          echo "docs_only=true" >> $GITHUB_OUTPUT
+          echo "All changes are in docs/ folder, checks will pass automatically"
+        fi
