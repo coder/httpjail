@@ -1,10 +1,17 @@
 # Request Body Limiting
 
-The `max_tx_bytes` feature allows you to limit the total size of HTTP requests (headers + body) sent to upstream servers. This is useful for:
+The `max_tx_bytes` feature allows you to limit the total size of HTTP requests sent to upstream servers.
 
-- **Preventing large uploads**: Limit file upload sizes to specific endpoints
-- **Cost control**: Prevent expensive large requests to metered APIs
-- **Security**: Mitigate data exfiltration through large POST requests
+This is primarily designed for mitigating code exfiltration attacks through covert channels.
+
+## Size Calculation
+
+The `max_tx_bytes` limit applies to **complete** HTTP requests, including:
+
+1. **Request line**: `METHOD /path HTTP/1.1\r\n`
+2. **Headers**: Each header as `Name: Value\r\n`
+3. **Header separator**: Final `\r\n` between headers and body
+4. **Body**: Request body bytes
 
 ## Response Format
 
@@ -30,8 +37,8 @@ The limiting behavior depends on whether the request includes a `Content-Length`
 
 When the request includes a `Content-Length` header (most standard HTTP clients):
 
-1. **Early Detection**: httpjail calculates the total request size (headers + Content-Length)
-2. **Immediate Rejection**: If the total exceeds `max_tx_bytes`, the client receives a `413 Payload Too Large` error immediately
+1. **Early Detection**: httpjail calculates the total request size
+2. **Immediate Rejection**: If it exceeds `max_tx_bytes`, the client receives a `413 Payload Too Large` error immediately
 3. **No Upstream Contact**: The upstream server is never contacted, preventing unnecessary load
 4. **Clear Feedback**: The error message indicates the actual size and limit
 
@@ -48,7 +55,7 @@ Request body size (5000 bytes) exceeds maximum allowed (1024 bytes)
 When the request uses chunked encoding or doesn't include `Content-Length`:
 
 1. **Stream Truncation**: The request body is truncated at the limit during streaming
-2. **Upstream Receives Partial**: The upstream server receives exactly `max_tx_bytes` total bytes (headers + truncated body)
+2. **Upstream Receives Partial**: The upstream server receives exactly `max_tx_bytes` total bytes (url + headers + truncated body)
 3. **Connection Closes**: The connection terminates after reaching the limit
 
 ## Examples
@@ -90,33 +97,6 @@ for line in sys.stdin:
     sys.stdout.flush()
 ```
 
-## Size Calculation
-
-The `max_tx_bytes` limit includes:
-
-1. **Request line**: `METHOD /path HTTP/1.1\r\n`
-2. **Headers**: Each header as `Name: Value\r\n`
-3. **Header separator**: Final `\r\n` between headers and body
-4. **Body**: Request body bytes
-
-### Example Calculation
-
-For this request:
-```http
-POST /upload HTTP/1.1\r\n
-Host: example.com\r\n
-Content-Length: 500\r\n
-\r\n
-[500 bytes of body data]
-```
-
-Total size:
-- Request line: `POST /upload HTTP/1.1\r\n` = 24 bytes
-- Host header: `Host: example.com\r\n` = 19 bytes
-- Content-Length header: `Content-Length: 500\r\n` = 21 bytes
-- Header separator: `\r\n` = 2 bytes
-- Body: 500 bytes
-- **Total: 566 bytes**
 
 ## Use Cases
 
