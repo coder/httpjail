@@ -2,12 +2,12 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'bench/**'
   pull_request:
-    branches: [main]
-    paths:
-      - 'src/rules/**'
-      - 'benches/**'
-      - '.github/workflows/benchmark.yml'
+    branches:
+      - 'bench/**'
 
 env:
   CARGO_TERM_COLOR: always
