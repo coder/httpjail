@@ -32,6 +32,7 @@ Your processor must respond with one line per request:
 - **Boolean strings**: `"true"` (allow) or `"false"` (deny)
 - **JSON object**: `{"allow": false, "deny_message": "Blocked by policy"}`
 - **JSON with message only**: `{"deny_message": "Blocked"}` (implies deny)
+- **JSON with byte limit**: `{"allow": {"max_tx_bytes": 1024}}` (allow but limit request upload to N bytes)
 - **Any other text**: Treated as deny with that text as the message (e.g., `"Access denied"` becomes a deny with message "Access denied")
 
 ## Command Line Usage
@@ -56,12 +57,17 @@ httpjail --proc "./filter.sh --strict" -- your-command
 import sys, json
 
 allowed_hosts = {'github.com', 'api.github.com'}
+upload_hosts = {'uploads.example.com'}
 
 for line in sys.stdin:
     try:
         req = json.loads(line)
         if req['host'] in allowed_hosts:
             print("true")
+        elif req['host'] in upload_hosts:
+            # Limit upload endpoints to 1KB requests
+            response = {"allow": {"max_tx_bytes": 1024}}
+            print(json.dumps(response))
         else:
             # Can return JSON for custom messages
             response = {"allow": False, "deny_message": f"{req['host']} not allowed"}

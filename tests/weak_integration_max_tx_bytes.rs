@@ -37,10 +37,10 @@ fn test_max_tx_bytes_limits_request_upload() {
                 line.clear();
                 if reader.read_line(&mut line).is_ok() {
                     total_bytes += line.len();
-                    if line.starts_with("Content-Length:") {
-                        if let Some(len_str) = line.split(':').nth(1) {
-                            content_length = len_str.trim().parse().unwrap_or(0);
-                        }
+                    if line.starts_with("Content-Length:")
+                        && let Some(len_str) = line.split(':').nth(1)
+                    {
+                        content_length = len_str.trim().parse().unwrap_or(0);
                     }
                     if line == "\r\n" {
                         break;
@@ -72,22 +72,47 @@ fn test_max_tx_bytes_limits_request_upload() {
     // Start httpjail in server mode with max_tx_bytes limit
     // Note: We use server mode and send HTTP request directly to avoid curl's localhost proxy bypass behavior
     let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
+    let proxy_port = 18080u16; // Use a specific port for this test
     let mut httpjail = Command::new(httpjail_path)
         .arg("--server")
         .arg("--js")
         .arg("({allow: {max_tx_bytes: 1024}})")
+        .env("HTTPJAIL_HTTP_BIND", proxy_port.to_string())
         .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start httpjail server");
 
-    // Give httpjail time to start (default HTTP port is 8080)
-    thread::sleep(Duration::from_millis(1000));
+    // Wait for httpjail to start listening
+    let mut connected = false;
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(100));
 
-    // Verify httpjail started successfully
-    if let Ok(Some(status)) = httpjail.try_wait() {
-        panic!("httpjail server exited early with status: {}", status);
+        // Check if process exited
+        if let Ok(Some(status)) = httpjail.try_wait() {
+            let mut stderr = httpjail.stderr.take().unwrap();
+            let mut stderr_content = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut stderr_content);
+            panic!(
+                "httpjail server exited early with status: {}\nStderr: {}",
+                status, stderr_content
+            );
+        }
+
+        // Try to connect
+        if TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).is_ok() {
+            connected = true;
+            break;
+        }
+    }
+
+    if !connected {
+        let _ = httpjail.kill();
+        panic!(
+            "httpjail server did not start listening on port {} within 2 seconds",
+            proxy_port
+        );
     }
 
     // Send HTTP request directly to httpjail proxy with large body (5KB)
@@ -105,8 +130,8 @@ fn test_max_tx_bytes_limits_request_upload() {
     );
 
     // Connect directly to httpjail proxy and send the request
-    let mut proxy_stream =
-        TcpStream::connect("127.0.0.1:8080").expect("Failed to connect to httpjail proxy");
+    let mut proxy_stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port))
+        .expect("Failed to connect to httpjail proxy");
     proxy_stream
         .write_all(request.as_bytes())
         .expect("Failed to write request");
