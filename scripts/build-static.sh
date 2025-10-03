@@ -97,9 +97,25 @@ SIZE=$(du -h "$BINARY" | cut -f1)
 echo "Binary size: $SIZE"
 echo ""
 
-# Test basic functionality
+# Test basic functionality (skip if cross-compiling)
 echo "4. Testing binary..."
-if "$BINARY" --version; then
+
+# Detect if we're cross-compiling
+HOST_ARCH=$(uname -m)
+HOST_TARGET=""
+case "$HOST_ARCH" in
+    x86_64)
+        HOST_TARGET="x86_64-unknown-linux-gnu"
+        ;;
+    aarch64|arm64)
+        HOST_TARGET="aarch64-unknown-linux-gnu"
+        ;;
+esac
+
+if [ "$TARGET" != "$HOST_TARGET" ]; then
+    echo "⚠ Skipping execution test (cross-compiling: $HOST_TARGET -> $TARGET)"
+    echo "✓ Binary built successfully (not tested)"
+elif "$BINARY" --version; then
     echo "✓ Binary runs successfully"
 else
     echo "✗ Binary failed to run"
