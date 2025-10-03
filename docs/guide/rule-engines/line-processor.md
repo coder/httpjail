@@ -27,12 +27,12 @@ Each request is sent as a single JSON line:
 
 ### Response Format
 
-Your processor must respond with one line per request:
+Your processor must respond with one line per request.
 
-- **Boolean strings**: `"true"` (allow) or `"false"` (deny)
-- **JSON object**: `{"allow": false, "deny_message": "Blocked by policy"}`
-- **JSON with message only**: `{"deny_message": "Blocked"}` (implies deny)
-- **JSON with byte limit**: `{"allow": {"max_tx_bytes": 1024}}` (allow but limit request upload to N bytes, returns 413 if Content-Length exceeds limit)
+{{#include ../../includes/response-format-table.md}}
+
+**Additional:**
+- **Boolean strings**: `"true"` (allow) or `"false"` (deny) - same as boolean
 - **Any other text**: Treated as deny with that text as the message (e.g., `"Access denied"` becomes a deny with message "Access denied")
 
 ## Command Line Usage
@@ -66,8 +66,6 @@ for line in sys.stdin:
             print("true")
         elif req['host'] in upload_hosts:
             # Limit upload endpoints to 1KB requests
-            # Returns 413 error if Content-Length exceeds limit
-            # Truncates body if no Content-Length header
             response = {"allow": {"max_tx_bytes": 1024}}
             print(json.dumps(response))
         else:
