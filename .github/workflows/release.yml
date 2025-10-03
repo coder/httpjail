@@ -57,7 +57,12 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
+      - name: Build static Linux binary
+        if: contains(matrix.target, 'linux')
+        run: ./scripts/build-static.sh --ci ${{ matrix.target }}
+
       - name: Build binary
+        if: "!contains(matrix.target, 'linux')"
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Create tarball
