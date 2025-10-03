@@ -2,6 +2,7 @@
 
 pub mod dangerous_verifier;
 pub mod jail;
+pub mod limited_body;
 pub mod macos_keychain;
 pub mod proxy;
 pub mod proxy_tls;

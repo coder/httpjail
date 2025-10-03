@@ -41,13 +41,11 @@ allowedHosts.includes(r.host);
 httpjail --js-file rules.js -- command
 ```
 
-## Response Types
+## Response Format
 
-Your JavaScript can return:
+{{#include ../../includes/response-format-table.md}}
 
-- **Boolean**: `true` to allow, `false` to deny
-- **Object with message**: `{allow: false, deny_message: "Custom error"}`
-- **Just a message**: `{deny_message: "Blocked"}` (implies deny)
+**Examples:**
 
 ```javascript
 // Simple boolean
@@ -59,6 +57,9 @@ false // Deny
 
 // Conditional with message
 r.host === 'facebook.com' ? {deny_message: 'Social media blocked'} : true
+
+// Limit request upload size to 1KB (headers + body)
+({allow: {max_tx_bytes: 1024}})
 ```
 
 ## Common Patterns

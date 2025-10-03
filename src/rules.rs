@@ -21,6 +21,7 @@ pub enum Action {
 pub struct EvaluationResult {
     pub action: Action,
     pub context: Option<String>,
+    pub max_tx_bytes: Option<u64>,
 }
 
 impl EvaluationResult {
@@ -28,6 +29,7 @@ impl EvaluationResult {
         Self {
             action: Action::Allow,
             context: None,
+            max_tx_bytes: None,
         }
     }
 
@@ -35,11 +37,17 @@ impl EvaluationResult {
         Self {
             action: Action::Deny,
             context: None,
+            max_tx_bytes: None,
         }
     }
 
     pub fn with_context(mut self, context: String) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    pub fn with_max_tx_bytes(mut self, max_tx_bytes: u64) -> Self {
+        self.max_tx_bytes = Some(max_tx_bytes);
         self
     }
 }

@@ -51,12 +51,12 @@ impl V8JsRuleEngine {
         method: &Method,
         url: &str,
         requester_ip: &str,
-    ) -> (bool, Option<String>) {
+    ) -> (bool, Option<String>, Option<u64>) {
         let request_info = match RequestInfo::from_request(method, url, requester_ip) {
             Ok(info) => info,
             Err(e) => {
                 warn!("Failed to parse request info: {}", e);
-                return (false, Some("Invalid request format".to_string()));
+                return (false, Some("Invalid request format".to_string()), None);
             }
         };
 
@@ -64,7 +64,7 @@ impl V8JsRuleEngine {
             Ok(result) => result,
             Err(e) => {
                 warn!("JavaScript execution failed: {}", e);
-                (false, Some("JavaScript execution failed".to_string()))
+                (false, Some("JavaScript execution failed".to_string()), None)
             }
         }
     }
@@ -115,11 +115,12 @@ impl V8JsRuleEngine {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn execute_with_isolate(
         isolate: &mut v8::OwnedIsolate,
         js_code: &str,
         request_info: &RequestInfo,
-    ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+    ) -> Result<(bool, Option<String>, Option<u64>), Box<dyn std::error::Error>> {
         let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
         let context_scope = &mut v8::ContextScope::new(handle_scope, context);
@@ -175,7 +176,7 @@ impl V8JsRuleEngine {
 
         // Use the common RuleResponse parser - exact same logic as proc engine
         let rule_response = RuleResponse::from_string(&response_str);
-        let (allowed, message) = rule_response.to_evaluation_result();
+        let (allowed, message, max_tx_bytes) = rule_response.to_evaluation_result();
 
         debug!(
             "JS rule returned {} for {} {}",
@@ -188,13 +189,14 @@ impl V8JsRuleEngine {
             debug!("Deny message: {}", msg);
         }
 
-        Ok((allowed, message))
+        Ok((allowed, message, max_tx_bytes))
     }
 
+    #[allow(clippy::type_complexity)]
     fn create_and_execute(
         &self,
         request_info: &RequestInfo,
-    ) -> Result<(bool, Option<String>), Box<dyn std::error::Error>> {
+    ) -> Result<(bool, Option<String>, Option<u64>), Box<dyn std::error::Error>> {
         // Create a new isolate for each execution (simpler approach)
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
         Self::execute_with_isolate(&mut isolate, &self.js_code, request_info)
@@ -216,19 +218,22 @@ impl RuleEngineTrait for V8JsRuleEngine {
             runtime: self.runtime.clone(),
         };
 
-        let (allowed, context) = tokio::task::spawn_blocking(move || {
+        let (allowed, context, max_tx_bytes) = tokio::task::spawn_blocking(move || {
             self_clone.execute(&method_clone, &url_clone, &ip_clone)
         })
         .await
         .unwrap_or_else(|e| {
             warn!("Failed to spawn V8 evaluation task: {}", e);
-            (false, Some("Evaluation failed".to_string()))
+            (false, Some("Evaluation failed".to_string()), None)
         });
 
         if allowed {
             let mut result = EvaluationResult::allow();
             if let Some(ctx) = context {
                 result = result.with_context(ctx);
+            }
+            if let Some(bytes) = max_tx_bytes {
+                result = result.with_max_tx_bytes(bytes);
             }
             result
         } else {
