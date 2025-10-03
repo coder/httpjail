@@ -23,27 +23,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: 'latest'
-      
-      - name: Install mdbook-mermaid
-        run: |
-          VERSION=$(curl -s https://api.github.com/repos/badboy/mdbook-mermaid/releases/latest | grep tag_name | cut -d '"' -f 4)
-          curl -sSL "https://github.com/badboy/mdbook-mermaid/releases/download/${VERSION}/mdbook-mermaid-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz
-          sudo mv mdbook-mermaid /usr/local/bin/
-          mdbook-mermaid install .
-      
-      - name: Install mdbook-linkcheck
-        run: |
-          curl -sSL https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/latest/download/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip -o linkcheck.zip
-          unzip -q -o linkcheck.zip
-          chmod +x mdbook-linkcheck
-          sudo mv mdbook-linkcheck /usr/local/bin/
-          
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build documentation
-        run: mdbook build
+        run: ./scripts/mdbook.sh build
         
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

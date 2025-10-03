@@ -1,0 +1,22 @@
+/* Minimal CSS to enable multi-line code in tables */
+/* Let mdbook theme handle all other styling */
+
+table td pre {
+    margin: 0;
+}
+
+table td pre code {
+    display: block;
+}
+
+/* Make <br> tags work as line breaks in code */
+table td pre code br {
+    display: block;
+    content: "";
+}
+
+/* Keep tables left-aligned - override general.css margin: 0 auto */
+.table-wrapper table {
+    margin-left: 0;
+    margin-right: 0;
+}

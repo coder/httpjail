@@ -55,6 +55,103 @@ pub fn create_connect_403_response_with_context(context: Option<String>) -> Vec<
     response.into_bytes()
 }
 
+// Use the limited body module for request size limiting
+use crate::limited_body::LimitedBody;
+
+/// Result of applying byte limit check to a request
+pub enum ByteLimitResult {
+    /// Request is within limit (or no Content-Length), proceed with wrapped body
+    WithinLimit(Box<Request<BoxBody<Bytes, HyperError>>>),
+    /// Request exceeds limit based on Content-Length header
+    ExceedsLimit { content_length: u64, max_bytes: u64 },
+}
+
+/// Applies a byte limit to an outgoing request by wrapping its body.
+///
+/// This function first checks the Content-Length header as a heuristic to detect
+/// requests that would exceed the limit. If Content-Length indicates the request
+/// is oversized, it returns `ByteLimitResult::ExceedsLimit` so the caller can
+/// reject the request with a 413 error. This prevents the request from hanging
+/// and provides immediate feedback to the client.
+///
+/// If no Content-Length is present or the request is within limits, the body is
+/// wrapped in a `LimitedBody` that enforces truncation as a fallback.
+///
+/// # Arguments
+///
+/// * `req` - The request to limit (already boxed)
+/// * `max_bytes` - Maximum total bytes for the request (headers + body)
+///
+/// # Returns
+///
+/// `ByteLimitResult` indicating whether to proceed or reject the request
+pub fn apply_request_byte_limit(
+    req: Request<BoxBody<Bytes, HyperError>>,
+    max_bytes: u64,
+) -> ByteLimitResult {
+    let (parts, body) = req.into_parts();
+
+    // Calculate request header size to subtract from max_tx_bytes
+    // Request line: "GET /path HTTP/1.1\r\n"
+    let method_str = parts.method.as_str();
+    let path_str = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/");
+    let request_line_size = format!("{} {} HTTP/1.1\r\n", method_str, path_str).len() as u64;
+
+    // Headers: each header is "name: value\r\n"
+    let headers_size: u64 = parts
+        .headers
+        .iter()
+        .map(|(name, value)| name.as_str().len() as u64 + 2 + value.len() as u64 + 2)
+        .sum();
+
+    // Final "\r\n" separator between headers and body
+    let total_header_size = request_line_size + headers_size + 2;
+
+    // Check Content-Length as a heuristic to reject oversized requests early
+    // This both provides convenience (immediate error) and prevents hangs
+    if let Some(content_length) = parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let total_size = total_header_size + content_length;
+        if total_size > max_bytes {
+            debug!(
+                content_length = content_length,
+                header_size = total_header_size,
+                total_size = total_size,
+                max_bytes = max_bytes,
+                "Request exceeds byte limit based on Content-Length"
+            );
+            return ByteLimitResult::ExceedsLimit {
+                content_length,
+                max_bytes,
+            };
+        }
+    }
+
+    // Subtract header size from total limit to get body limit
+    let body_limit = max_bytes.saturating_sub(total_header_size);
+
+    debug!(
+        max_tx_bytes = max_bytes,
+        header_size = total_header_size,
+        body_limit = body_limit,
+        "Applying request byte limit"
+    );
+
+    let limited_body = LimitedBody::new(body, body_limit);
+    ByteLimitResult::WithinLimit(Box::new(Request::from_parts(
+        parts,
+        BodyExt::boxed(limited_body),
+    )))
+}
+
 // Shared HTTP/HTTPS client for upstream requests
 static HTTPS_CLIENT: OnceLock<
     Client<
@@ -457,8 +554,11 @@ pub async fn handle_http_request(
         .await;
     match evaluation.action {
         Action::Allow => {
-            debug!("Request allowed: {}", full_url);
-            match proxy_request(req, &full_url).await {
+            debug!(
+                "Request allowed: {} (max_tx_bytes: {:?})",
+                full_url, evaluation.max_tx_bytes
+            );
+            match proxy_request(req, &full_url, evaluation.max_tx_bytes).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -476,12 +576,38 @@ pub async fn handle_http_request(
 async fn proxy_request(
     req: Request<Incoming>,
     full_url: &str,
+    max_tx_bytes: Option<u64>,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Parse the target URL
     let target_uri = full_url.parse::<Uri>()?;
 
     // Prepare request for upstream
-    let new_req = prepare_upstream_request(req, target_uri);
+    let prepared_req = prepare_upstream_request(req, target_uri.clone());
+
+    // Apply byte limit to outgoing request if specified, converting to BoxBody
+    let new_req = if let Some(max_bytes) = max_tx_bytes {
+        match apply_request_byte_limit(prepared_req, max_bytes) {
+            ByteLimitResult::WithinLimit(req) => *req,
+            ByteLimitResult::ExceedsLimit {
+                content_length,
+                max_bytes,
+            } => {
+                // Request exceeds limit based on Content-Length - reject immediately
+                let message = format!(
+                    "Request body size ({} bytes) exceeds maximum allowed ({} bytes)",
+                    content_length, max_bytes
+                );
+                return Ok(create_error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &message,
+                )?);
+            }
+        }
+    } else {
+        // Convert to BoxBody for consistent types
+        let (parts, body) = prepared_req.into_parts();
+        Request::from_parts(parts, body.boxed())
+    };
 
     // Use the shared HTTP/HTTPS client
     let client = get_client();
@@ -524,7 +650,6 @@ async fn proxy_request(
         .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
 
     let boxed_body = body.boxed();
-
     Ok(Response::from_parts(parts, boxed_body))
 }
 

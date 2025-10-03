@@ -1,6 +1,6 @@
 use crate::proxy::{
-    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
-    create_forbidden_response,
+    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, apply_request_byte_limit,
+    create_connect_403_response_with_context, create_forbidden_response,
 };
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
@@ -493,7 +493,7 @@ async fn handle_decrypted_https_request(
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
-            match proxy_https_request(req, &host).await {
+            match proxy_https_request(req, &host, evaluation.max_tx_bytes).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -512,6 +512,7 @@ async fn handle_decrypted_https_request(
 async fn proxy_https_request(
     req: Request<Incoming>,
     host: &str,
+    max_tx_bytes: Option<u64>,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
     let path = req
@@ -525,7 +526,32 @@ async fn proxy_https_request(
     debug!("Forwarding request to: {}", target_url);
 
     // Prepare request for upstream using common function
-    let new_req = crate::proxy::prepare_upstream_request(req, target_uri);
+    let prepared_req = crate::proxy::prepare_upstream_request(req, target_uri);
+
+    // Apply byte limit to outgoing request if specified, converting to BoxBody
+    let new_req = if let Some(max_bytes) = max_tx_bytes {
+        match apply_request_byte_limit(prepared_req, max_bytes) {
+            crate::proxy::ByteLimitResult::WithinLimit(req) => *req,
+            crate::proxy::ByteLimitResult::ExceedsLimit {
+                content_length,
+                max_bytes,
+            } => {
+                // Request exceeds limit based on Content-Length - reject immediately
+                let message = format!(
+                    "Request body size ({} bytes) exceeds maximum allowed ({} bytes)",
+                    content_length, max_bytes
+                );
+                return Ok(crate::proxy::create_error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &message,
+                )?);
+            }
+        }
+    } else {
+        // Convert to BoxBody for consistent types
+        let (parts, body) = prepared_req.into_parts();
+        Request::from_parts(parts, body.boxed())
+    };
 
     // Use the shared HTTP/HTTPS client from proxy module
     let client = crate::proxy::get_client();
@@ -592,7 +618,6 @@ async fn proxy_https_request(
         .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
 
     let boxed_body = body.boxed();
-
     Ok(Response::from_parts(parts, boxed_body))
 }
 

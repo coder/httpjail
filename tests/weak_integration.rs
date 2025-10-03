@@ -349,3 +349,5 @@ fn test_host_header_security() {
 // The proc/JS parity tests have been moved to tests/json_parity.rs
 // which directly tests the rule engines without the fragility of
 // going through the full httpjail binary and external processes
+
+// The max_tx_bytes test has been moved to tests/weak_integration_max_tx_bytes.rs

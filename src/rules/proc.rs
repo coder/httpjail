@@ -107,7 +107,7 @@ impl ProcRuleEngine {
         &self,
         process_guard: &mut Option<ProcessState>,
         json_request: &str,
-    ) -> Result<(bool, Option<String>), String> {
+    ) -> Result<(bool, Option<String>, Option<u64>), String> {
         // Ensure we have a running process
         self.ensure_process_running(process_guard).await?;
 
@@ -165,9 +165,9 @@ impl ProcRuleEngine {
 
                 // Parse response
                 let rule_response = RuleResponse::from_string(response);
-                let (allowed, message) = rule_response.to_evaluation_result();
+                let (allowed, message, max_tx_bytes) = rule_response.to_evaluation_result();
 
-                Ok((allowed, message))
+                Ok((allowed, message, max_tx_bytes))
             }
             Ok(Err(e)) => {
                 error!("Error reading from program: {}", e);
@@ -226,13 +226,17 @@ impl ProcRuleEngine {
                 .send_request_to_process(&mut process_guard, &json_request)
                 .await
             {
-                Ok((allowed, message)) => {
+                Ok((allowed, message, max_tx_bytes)) => {
                     if allowed {
                         debug!("ALLOW: {} {} (program allowed)", method, url);
-                        return match message {
-                            Some(msg) => EvaluationResult::allow().with_context(msg),
-                            None => EvaluationResult::allow(),
-                        };
+                        let mut result = EvaluationResult::allow();
+                        if let Some(msg) = message {
+                            result = result.with_context(msg);
+                        }
+                        if let Some(bytes) = max_tx_bytes {
+                            result = result.with_max_tx_bytes(bytes);
+                        }
+                        return result;
                     } else {
                         debug!("DENY: {} {} (program denied)", method, url);
                         return match message {
