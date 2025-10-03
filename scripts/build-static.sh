@@ -1,35 +1,48 @@
 #!/bin/bash
 # Build and verify static glibc binaries for Linux
 # This uses the gnu target with crt-static for better portability while avoiding musl/V8 issues
+#
+# Usage: ./build-static.sh [--ci|--non-interactive] [TARGET]
+#   TARGET: Optional rust target (e.g., x86_64-unknown-linux-gnu)
+#           If not provided, detects from uname -m
 
 set -e
 
 # Parse arguments
 NON_INTERACTIVE=false
-if [[ "$1" == "--non-interactive" ]] || [[ "$1" == "--ci" ]]; then
-    NON_INTERACTIVE=true
-fi
+TARGET=""
+
+for arg in "$@"; do
+    if [[ "$arg" == "--non-interactive" ]] || [[ "$arg" == "--ci" ]]; then
+        NON_INTERACTIVE=true
+    elif [[ "$arg" == *"unknown-linux-gnu"* ]]; then
+        TARGET="$arg"
+    fi
+done
 
 echo "=== httpjail static build verification ==="
 echo ""
 
-# Determine architecture
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)
-        TARGET="x86_64-unknown-linux-gnu"
-        ;;
-    aarch64|arm64)
-        TARGET="aarch64-unknown-linux-gnu"
-        ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        exit 1
-        ;;
-esac
+# Determine target if not provided
+if [ -z "$TARGET" ]; then
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)
+            TARGET="x86_64-unknown-linux-gnu"
+            ;;
+        aarch64|arm64)
+            TARGET="aarch64-unknown-linux-gnu"
+            ;;
+        *)
+            echo "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+    esac
+    echo "Auto-detected target from architecture: $ARCH -> $TARGET"
+else
+    echo "Using specified target: $TARGET"
+fi
 
-echo "Detected architecture: $ARCH"
-echo "Target: $TARGET"
 echo "Note: Using gnu target with crt-static for static glibc linking"
 echo ""
 
