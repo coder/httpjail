@@ -1,1 +1,1 @@
-../../../SECURITY.md
+../SECURITY.md
