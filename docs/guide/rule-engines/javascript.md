@@ -48,7 +48,7 @@ Your JavaScript can return:
 - **Boolean**: `true` to allow, `false` to deny
 - **Object with message**: `{allow: false, deny_message: "Custom error"}`
 - **Just a message**: `{deny_message: "Blocked"}` (implies deny)
-- **Object with byte limit**: `{allow: {max_tx_bytes: 1024}}` (allow but limit request upload to N bytes)
+- **Object with byte limit**: `{allow: {max_tx_bytes: 1024}}` (allow but limit request upload to N bytes, returns 413 if Content-Length exceeds limit)
 
 ```javascript
 // Simple boolean
@@ -146,6 +146,10 @@ uploadHosts.includes(r.host)
   ? {allow: {max_tx_bytes: 1024}}
   : r.host.endsWith('.example.com')
 ```
+
+**Behavior:**
+- If the request includes a `Content-Length` header that exceeds the limit, the client receives a `413 Payload Too Large` error immediately without contacting the upstream server
+- If no `Content-Length` header is present (e.g., chunked encoding), the request body is truncated at the limit as it streams to the upstream server
 
 ## When to Use
 

@@ -530,7 +530,23 @@ async fn proxy_https_request(
 
     // Apply byte limit to outgoing request if specified, converting to BoxBody
     let new_req = if let Some(max_bytes) = max_tx_bytes {
-        apply_request_byte_limit(prepared_req, max_bytes)
+        match apply_request_byte_limit(prepared_req, max_bytes) {
+            crate::proxy::ByteLimitResult::WithinLimit(req) => *req,
+            crate::proxy::ByteLimitResult::ExceedsLimit {
+                content_length,
+                max_bytes,
+            } => {
+                // Request exceeds limit based on Content-Length - reject immediately
+                let message = format!(
+                    "Request body size ({} bytes) exceeds maximum allowed ({} bytes)",
+                    content_length, max_bytes
+                );
+                return Ok(crate::proxy::create_error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &message,
+                )?);
+            }
+        }
     } else {
         // Convert to BoxBody for consistent types
         let (parts, body) = prepared_req.into_parts();
