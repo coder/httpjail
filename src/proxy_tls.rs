@@ -1,3 +1,4 @@
+use crate::limited_body::LimitedBody;
 use crate::proxy::{
     HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
     create_forbidden_response,
@@ -533,7 +534,7 @@ async fn proxy_https_request(
         use http_body_util::BodyExt;
         let (parts, body) = new_req.into_parts();
 
-        // Calculate request header size
+        // Calculate request header size to subtract from max_tx_bytes
         // Request line: "GET /path HTTP/1.1\r\n"
         let method_str = parts.method.as_str();
         let path_str = parts
@@ -550,15 +551,20 @@ async fn proxy_https_request(
             .map(|(name, value)| name.as_str().len() as u64 + 2 + value.len() as u64 + 2)
             .sum();
 
-        // Final "\r\n" separator
+        // Final "\r\n" separator between headers and body
         let total_header_size = request_line_size + headers_size + 2;
 
+        // Subtract header size from total limit to get body limit
+        let body_limit = max_bytes.saturating_sub(total_header_size);
+
         debug!(
-            "Applying request byte limit: {} bytes (headers: {} bytes)",
-            max_bytes, total_header_size
+            max_tx_bytes = max_bytes,
+            header_size = total_header_size,
+            body_limit = body_limit,
+            "Applying request byte limit"
         );
 
-        let limited_body = crate::proxy::LimitedBody::new(body, max_bytes, total_header_size);
+        let limited_body = LimitedBody::new(body, body_limit);
         new_req = Request::from_parts(parts, BodyExt::boxed(limited_body));
     }
 

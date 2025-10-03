@@ -55,103 +55,8 @@ pub fn create_connect_403_response_with_context(context: Option<String>) -> Vec<
     response.into_bytes()
 }
 
-/// A body wrapper that limits the total bytes transmitted
-/// Tracks both header and body bytes, terminating when limit is exceeded
-use hyper::body::{Body, Frame, SizeHint};
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
-pub struct LimitedBody {
-    inner: BoxBody<Bytes, HyperError>,
-    bytes_transmitted: u64,
-    max_bytes: u64,
-}
-
-impl LimitedBody {
-    pub fn new(inner: BoxBody<Bytes, HyperError>, max_bytes: u64, header_size: u64) -> Self {
-        Self {
-            inner,
-            bytes_transmitted: header_size,
-            max_bytes,
-        }
-    }
-}
-
-impl Body for LimitedBody {
-    type Data = Bytes;
-    type Error = HyperError;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // Check if we've exceeded the limit
-        if self.bytes_transmitted >= self.max_bytes {
-            debug!(
-                "Byte limit exceeded: {} >= {} bytes, terminating connection",
-                self.bytes_transmitted, self.max_bytes
-            );
-            return Poll::Ready(None); // Terminate the stream
-        }
-
-        // Poll the inner body
-        match Pin::new(&mut self.inner).poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    let frame_size = data.len() as u64;
-                    let new_total = self.bytes_transmitted + frame_size;
-
-                    if new_total > self.max_bytes {
-                        // This frame would exceed the limit
-                        let bytes_remaining = self.max_bytes - self.bytes_transmitted;
-                        debug!(
-                            "Frame would exceed byte limit: {} + {} > {}, truncating to {} bytes",
-                            self.bytes_transmitted, frame_size, self.max_bytes, bytes_remaining
-                        );
-
-                        if bytes_remaining > 0 {
-                            // Send partial frame
-                            self.bytes_transmitted = self.max_bytes;
-                            let truncated = data.slice(0..bytes_remaining as usize);
-                            Poll::Ready(Some(Ok(Frame::data(truncated))))
-                        } else {
-                            // No bytes remaining, terminate
-                            Poll::Ready(None)
-                        }
-                    } else {
-                        // Frame fits within limit
-                        self.bytes_transmitted = new_total;
-                        Poll::Ready(Some(Ok(frame)))
-                    }
-                } else {
-                    // Non-data frame (trailers, etc.), pass through
-                    Poll::Ready(Some(Ok(frame)))
-                }
-            }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.bytes_transmitted >= self.max_bytes || self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        let remaining = self.max_bytes.saturating_sub(self.bytes_transmitted);
-        let inner_hint = self.inner.size_hint();
-
-        // Return the minimum of the inner hint and our remaining bytes
-        let mut hint = SizeHint::new();
-        if let Some(inner_upper) = inner_hint.upper() {
-            hint.set_upper(std::cmp::min(inner_upper, remaining));
-        } else {
-            hint.set_upper(remaining);
-        }
-        hint
-    }
-}
+// Use the limited body module for request size limiting
+use crate::limited_body::LimitedBody;
 
 // Shared HTTP/HTTPS client for upstream requests
 static HTTPS_CLIENT: OnceLock<
@@ -589,7 +494,7 @@ async fn proxy_request(
     if let Some(max_bytes) = max_tx_bytes {
         let (parts, body) = new_req.into_parts();
 
-        // Calculate request header size
+        // Calculate request header size to subtract from max_tx_bytes
         // Request line: "GET /path HTTP/1.1\r\n"
         let method_str = parts.method.as_str();
         let path_str = parts
@@ -606,15 +511,20 @@ async fn proxy_request(
             .map(|(name, value)| name.as_str().len() as u64 + 2 + value.len() as u64 + 2)
             .sum();
 
-        // Final "\r\n" separator
+        // Final "\r\n" separator between headers and body
         let total_header_size = request_line_size + headers_size + 2;
 
+        // Subtract header size from total limit to get body limit
+        let body_limit = max_bytes.saturating_sub(total_header_size);
+
         debug!(
-            "Applying request byte limit: {} bytes (headers: {} bytes)",
-            max_bytes, total_header_size
+            max_tx_bytes = max_bytes,
+            header_size = total_header_size,
+            body_limit = body_limit,
+            "Applying request byte limit"
         );
 
-        let limited_body = LimitedBody::new(body, max_bytes, total_header_size);
+        let limited_body = LimitedBody::new(body, body_limit);
         new_req = Request::from_parts(parts, BodyExt::boxed(limited_body));
     }
 
