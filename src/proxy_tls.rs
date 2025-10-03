@@ -493,7 +493,7 @@ async fn handle_decrypted_https_request(
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
-            match proxy_https_request(req, &host).await {
+            match proxy_https_request(req, &host, evaluation.max_tx_bytes).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -512,6 +512,7 @@ async fn handle_decrypted_https_request(
 async fn proxy_https_request(
     req: Request<Incoming>,
     host: &str,
+    max_tx_bytes: Option<u64>,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
     let path = req
@@ -525,7 +526,41 @@ async fn proxy_https_request(
     debug!("Forwarding request to: {}", target_url);
 
     // Prepare request for upstream using common function
-    let new_req = crate::proxy::prepare_upstream_request(req, target_uri);
+    let mut new_req = crate::proxy::prepare_upstream_request(req, target_uri);
+
+    // Apply byte limit to outgoing request if specified
+    if let Some(max_bytes) = max_tx_bytes {
+        use http_body_util::BodyExt;
+        let (parts, body) = new_req.into_parts();
+
+        // Calculate request header size
+        // Request line: "GET /path HTTP/1.1\r\n"
+        let method_str = parts.method.as_str();
+        let path_str = parts
+            .uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/");
+        let request_line_size = format!("{} {} HTTP/1.1\r\n", method_str, path_str).len() as u64;
+
+        // Headers: each header is "name: value\r\n"
+        let headers_size: u64 = parts
+            .headers
+            .iter()
+            .map(|(name, value)| name.as_str().len() as u64 + 2 + value.len() as u64 + 2)
+            .sum();
+
+        // Final "\r\n" separator
+        let total_header_size = request_line_size + headers_size + 2;
+
+        debug!(
+            "Applying request byte limit: {} bytes (headers: {} bytes)",
+            max_bytes, total_header_size
+        );
+
+        let limited_body = crate::proxy::LimitedBody::new(body, max_bytes, total_header_size);
+        new_req = Request::from_parts(parts, BodyExt::boxed(limited_body));
+    }
 
     // Use the shared HTTP/HTTPS client from proxy module
     let client = crate::proxy::get_client();
@@ -592,7 +627,6 @@ async fn proxy_https_request(
         .insert(HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE.parse().unwrap());
 
     let boxed_body = body.boxed();
-
     Ok(Response::from_parts(parts, boxed_body))
 }
 
