@@ -1,7 +1,6 @@
-use crate::limited_body::LimitedBody;
 use crate::proxy::{
-    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, create_connect_403_response_with_context,
-    create_forbidden_response,
+    HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, apply_request_byte_limit,
+    create_connect_403_response_with_context, create_forbidden_response,
 };
 use crate::rules::{Action, RuleEngine};
 use crate::tls::CertificateManager;
@@ -527,46 +526,16 @@ async fn proxy_https_request(
     debug!("Forwarding request to: {}", target_url);
 
     // Prepare request for upstream using common function
-    let mut new_req = crate::proxy::prepare_upstream_request(req, target_uri);
+    let prepared_req = crate::proxy::prepare_upstream_request(req, target_uri);
 
-    // Apply byte limit to outgoing request if specified
-    if let Some(max_bytes) = max_tx_bytes {
-        use http_body_util::BodyExt;
-        let (parts, body) = new_req.into_parts();
-
-        // Calculate request header size to subtract from max_tx_bytes
-        // Request line: "GET /path HTTP/1.1\r\n"
-        let method_str = parts.method.as_str();
-        let path_str = parts
-            .uri
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/");
-        let request_line_size = format!("{} {} HTTP/1.1\r\n", method_str, path_str).len() as u64;
-
-        // Headers: each header is "name: value\r\n"
-        let headers_size: u64 = parts
-            .headers
-            .iter()
-            .map(|(name, value)| name.as_str().len() as u64 + 2 + value.len() as u64 + 2)
-            .sum();
-
-        // Final "\r\n" separator between headers and body
-        let total_header_size = request_line_size + headers_size + 2;
-
-        // Subtract header size from total limit to get body limit
-        let body_limit = max_bytes.saturating_sub(total_header_size);
-
-        debug!(
-            max_tx_bytes = max_bytes,
-            header_size = total_header_size,
-            body_limit = body_limit,
-            "Applying request byte limit"
-        );
-
-        let limited_body = LimitedBody::new(body, body_limit);
-        new_req = Request::from_parts(parts, BodyExt::boxed(limited_body));
-    }
+    // Apply byte limit to outgoing request if specified, converting to BoxBody
+    let new_req = if let Some(max_bytes) = max_tx_bytes {
+        apply_request_byte_limit(prepared_req, max_bytes)
+    } else {
+        // Convert to BoxBody for consistent types
+        let (parts, body) = prepared_req.into_parts();
+        Request::from_parts(parts, body.boxed())
+    };
 
     // Use the shared HTTP/HTTPS client from proxy module
     let client = crate::proxy::get_client();
