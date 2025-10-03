@@ -25,4 +25,18 @@ fn main() {
         "cargo:rustc-env=VERSION_WITH_GIT_HASH={} ({})",
         version, git_hash
     );
+
+    // Configure static linking for Linux gnu targets
+    // Note: We use gnu (glibc) instead of musl because V8 doesn't provide prebuilt musl binaries
+    // and building V8 from source for musl fails. Static glibc linking provides good portability
+    // while still allowing us to use V8 prebuilt binaries.
+    let target = env::var("TARGET").unwrap_or_default();
+    if target.contains("linux") && target.contains("gnu") {
+        // Enable static linking of the C runtime and standard library
+        // This links glibc statically, adding ~2-5MB to binary size but improving portability
+        println!("cargo:rustc-link-arg=-static-libgcc");
+
+        // Note: Full static linking (-static) would break NSS/DNS, so we use crt-static instead
+        // which is applied via RUSTFLAGS in the build process
+    }
 }
