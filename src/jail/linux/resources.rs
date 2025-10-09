@@ -3,28 +3,17 @@ use anyhow::{Context, Result};
 use std::future::Future;
 use tracing::debug;
 
-/// Run async code, using current tokio runtime if available or creating a new one
-fn block_on<F: Future + Send + 'static>(future: F) -> F::Output
+/// Run async code, using the ambient tokio runtime when available
+fn block_on<F>(future: F) -> F::Output
 where
-    F::Output: Send,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
 {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're in a tokio runtime - use spawn_blocking to avoid nested runtime issues
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .expect("Failed to create tokio runtime")
-                    .block_on(future)
-            })
-            .join()
-            .expect("Thread panicked")
-        }
-        Err(_) => {
-            // No runtime, create a new one
-            tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime")
-                .block_on(future)
-        }
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime")
+            .block_on(future),
     }
 }
 
