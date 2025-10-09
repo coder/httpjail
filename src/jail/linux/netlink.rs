@@ -6,14 +6,15 @@
 
 use anyhow::{Context, Result};
 use futures::stream::TryStreamExt;
-use nix::mount::{MsFlags, mount, umount};
+use nix::mount::umount;
 use nix::sched::{CloneFlags, setns};
-use rtnetlink::{Handle, IpVersion, new_connection};
+use rtnetlink::{Handle, new_connection};
 use std::fs;
 use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
+use tracing::debug;
 
 const NETNS_RUN_DIR: &str = "/var/run/netns";
 
@@ -77,7 +78,7 @@ pub fn create_netns(name: &str) -> Result<()> {
         }
     }
 
-    info!("Created network namespace: {}", name);
+    debug!("Created network namespace: {}", name);
     Ok(())
 }
 
@@ -124,13 +125,13 @@ where
         fs::File::open("/proc/self/ns/net").context("Failed to open current network namespace")?;
 
     // Enter the target namespace
-    setns(netns_fd.as_raw_fd(), CloneFlags::CLONE_NEWNET).context("Failed to enter namespace")?;
+    setns(&netns_fd, CloneFlags::CLONE_NEWNET).context("Failed to enter namespace")?;
 
     // Execute the function
     let result = f();
 
     // Return to original namespace
-    let _ = setns(current_ns.as_raw_fd(), CloneFlags::CLONE_NEWNET);
+    let _ = setns(&current_ns, CloneFlags::CLONE_NEWNET);
 
     result
 }
@@ -267,14 +268,14 @@ pub async fn get_handle_in_netns(name: &str) -> Result<Handle> {
         fs::File::open("/proc/self/ns/net").context("Failed to open current network namespace")?;
 
     // Enter the target namespace
-    setns(netns_fd.as_raw_fd(), CloneFlags::CLONE_NEWNET).context("Failed to enter namespace")?;
+    setns(&netns_fd, CloneFlags::CLONE_NEWNET).context("Failed to enter namespace")?;
 
     // Create connection in this namespace
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
     // Return to original namespace
-    let _ = setns(current_ns.as_raw_fd(), CloneFlags::CLONE_NEWNET);
+    let _ = setns(&current_ns, CloneFlags::CLONE_NEWNET);
 
     Ok(handle)
 }
@@ -298,6 +299,7 @@ pub fn execute_in_netns(
     let netns_path = PathBuf::from(NETNS_RUN_DIR).join(namespace_name);
     let netns_fd = std::fs::File::open(&netns_path)
         .with_context(|| format!("Failed to open namespace {:?}", netns_path))?;
+    let netns_raw_fd = netns_fd.as_raw_fd();
 
     // Fork and exec in the namespace
     unsafe {
@@ -305,8 +307,8 @@ pub fn execute_in_netns(
             -1 => anyhow::bail!("fork() failed: {}", std::io::Error::last_os_error()),
             0 => {
                 // Child process
-                // Enter the network namespace
-                if setns(netns_fd.as_raw_fd(), CloneFlags::CLONE_NEWNET).is_err() {
+                // Enter the network namespace using raw libc call
+                if libc::setns(netns_raw_fd, libc::CLONE_NEWNET) != 0 {
                     libc::_exit(127);
                 }
 
