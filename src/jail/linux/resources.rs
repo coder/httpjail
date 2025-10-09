@@ -101,7 +101,9 @@ impl SystemResource for VethPair {
         let ns_name = format!("vn_{}", jail_id);
 
         // Use netlink-based implementation
-        block_on(super::netlink::create_veth_pair(&host_name, &ns_name))
+        let host_clone = host_name.clone();
+        let ns_clone = ns_name.clone();
+        block_on(async move { super::netlink::create_veth_pair(&host_clone, &ns_clone).await })
             .context("Failed to create veth pair via netlink")?;
 
         debug!("Created veth pair: {} <-> {}", host_name, ns_name);
@@ -119,7 +121,7 @@ impl SystemResource for VethPair {
 
         // Deleting the host side will automatically delete both ends
         let host_name = self.host_name.clone();
-        let _ = block_on(super::netlink::delete_link(&host_name));
+        let _ = block_on(async move { super::netlink::delete_link(&host_name).await });
 
         self.created = false;
         Ok(())

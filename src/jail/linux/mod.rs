@@ -211,11 +211,10 @@ impl LinuxJail {
         );
 
         // Move veth_ns end into the namespace using netlink
-        block_on(netlink::move_link_to_netns(
-            &self.veth_ns(),
-            &self.namespace_name(),
-        ))
-        .context("Failed to move veth to namespace")?;
+        let veth_ns = self.veth_ns();
+        let ns_name = self.namespace_name();
+        block_on(async move { netlink::move_link_to_netns(&veth_ns, &ns_name).await })
+            .context("Failed to move veth to namespace")?;
 
         Ok(())
     }
@@ -230,7 +229,8 @@ impl LinuxJail {
         self.ensure_namespace_dns()?;
 
         // Get handle inside namespace
-        let handle = block_on(netlink::get_handle_in_netns(&namespace_name))?;
+        let ns_clone = namespace_name.clone();
+        let handle = block_on(async move { netlink::get_handle_in_netns(&ns_clone).await })?;
 
         // Parse guest CIDR to get IP and prefix
         let guest_parts: Vec<&str> = self.guest_cidr.split('/').collect();
