@@ -428,36 +428,31 @@ nameserver {}\n",
         Ok(())
     }
 
-    /// Ensure DNS works in the namespace by copying resolv.conf if needed
-    #[allow(clippy::collapsible_if)]
+    /// Ensure DNS works in the namespace by writing resolv.conf
     fn ensure_namespace_dns(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
+        let host_ip = format_ip(self.host_ip);
 
-        // Check if DNS is already working by testing /etc/resolv.conf in namespace
-        let check_cmd = Command::new("ip")
-            .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
-            .output();
+        // Check current DNS configuration
+        let check_result = netlink::execute_in_netns(
+            &namespace_name,
+            &["cat".to_string(), "/etc/resolv.conf".to_string()],
+            &[],
+            None,
+        );
 
-        let needs_fix = if let Ok(output) = check_cmd {
-            if !output.status.success() {
-                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
+        let needs_fix = if let Ok(status) = check_result {
+            if !status.success() {
+                debug!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
                 true
             } else {
-                let content = String::from_utf8_lossy(&output.stdout);
-                // Check if it's pointing to systemd-resolved or is empty
-                if content.is_empty() || content.contains("127.0.0.53") {
-                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
-                    true
-                } else if content.contains("nameserver") {
-                    info!("DNS already configured in namespace {}", namespace_name);
-                    false
-                } else {
-                    info!("No nameserver found in namespace resolv.conf, will fix");
-                    true
-                }
+                // We can't easily capture output from execute_in_netns, so just assume we need to fix
+                // if the namespace was just created
+                debug!("DNS configuration exists, will update it to point to our server");
+                true
             }
         } else {
-            info!("Failed to check DNS in namespace, will attempt fix");
+            debug!("Failed to check DNS in namespace, will attempt fix");
             true
         };
 
@@ -465,88 +460,28 @@ nameserver {}\n",
             return Ok(());
         }
 
-        // DNS not working, try to fix it by copying a working resolv.conf
-        info!(
-            "Fixing DNS in namespace {} by copying resolv.conf",
-            namespace_name
+        debug!(
+            "Configuring DNS in namespace {} to use {}",
+            namespace_name, host_ip
         );
 
-        // Setup DNS for the namespace
-        // Create a temporary resolv.conf before running the nsenter command
-        let temp_dir = crate::jail::get_temp_dir();
-        std::fs::create_dir_all(&temp_dir).ok();
-        let temp_resolv = temp_dir
-            .join(format!("httpjail_resolv_{}.conf", &namespace_name))
-            .to_string_lossy()
-            .to_string();
-        // Use the host veth IP where our dummy DNS server listens
-        let host_ip = format_ip(self.host_ip);
-        let dns_content = format!("nameserver {}\n", host_ip);
-        std::fs::write(&temp_resolv, &dns_content)
-            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
+        // Write nameserver directly using sh -c echo
+        let write_result = netlink::execute_in_netns(
+            &namespace_name,
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
+            ],
+            &[],
+            None,
+        );
 
-        // First, try to directly write to /etc/resolv.conf in the namespace using echo
-        let write_cmd = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "sh",
-                "-c",
-                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
-            ])
-            .output();
-
-        if let Ok(output) = write_cmd {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to write resolv.conf into namespace: {}", stderr);
-
-                // Try another approach - mount bind
-                let mount_cmd = Command::new("ip")
-                    .args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "mount",
-                        "--bind",
-                        &temp_resolv,
-                        "/etc/resolv.conf",
-                    ])
-                    .output();
-
-                if let Ok(mount_output) = mount_cmd {
-                    if mount_output.status.success() {
-                        info!("Successfully bind-mounted resolv.conf in namespace");
-                    } else {
-                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
-                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
-
-                        // Last resort - try copying the file content
-                        let cp_cmd = Command::new("cp")
-                            .args([
-                                &temp_resolv,
-                                &format!(
-                                    "/proc/self/root/etc/netns/{}/resolv.conf",
-                                    namespace_name
-                                ),
-                            ])
-                            .output();
-
-                        if let Ok(cp_output) = cp_cmd
-                            && cp_output.status.success()
-                        {
-                            info!("Successfully copied resolv.conf via /proc");
-                        }
-                    }
-                }
-            } else {
-                info!("Successfully wrote resolv.conf into namespace");
-            }
+        if write_result.is_ok() {
+            debug!("Successfully configured DNS in namespace");
+        } else {
+            debug!("Failed to write resolv.conf, DNS may not work in namespace");
         }
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_resolv);
 
         Ok(())
     }

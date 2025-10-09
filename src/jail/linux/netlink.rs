@@ -135,13 +135,10 @@ where
     result
 }
 
-/// Create a veth pair
-///
-/// This mimics `ip link add <name1> type veth peer name <name2>`
+/// Create a veth pair (mimics `ip link add <name1> type veth peer name <name2>`)
 pub async fn create_veth_pair(name1: &str, name2: &str) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-
     handle
         .link()
         .add()
@@ -149,14 +146,11 @@ pub async fn create_veth_pair(name1: &str, name2: &str) -> Result<()> {
         .execute()
         .await
         .with_context(|| format!("Failed to create veth pair {} <-> {}", name1, name2))?;
-
     debug!("Created veth pair: {} <-> {}", name1, name2);
     Ok(())
 }
 
-/// Move a network interface into a namespace
-///
-/// This mimics `ip link set <interface> netns <namespace>`
+/// Move a network interface into a namespace (mimics `ip link set <interface> netns <namespace>`)
 pub async fn move_link_to_netns(interface: &str, netns_name: &str) -> Result<()> {
     let netns_path = PathBuf::from(NETNS_RUN_DIR).join(netns_name);
     let netns_fd = fs::File::open(&netns_path)
@@ -164,90 +158,70 @@ pub async fn move_link_to_netns(interface: &str, netns_name: &str) -> Result<()>
 
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
+    let idx = get_link_index(&handle, interface).await?;
+    handle
+        .link()
+        .set(idx)
+        .setns_by_fd(netns_fd.as_raw_fd())
+        .execute()
+        .await
+        .with_context(|| format!("Failed to move {} to namespace {}", interface, netns_name))?;
+    debug!("Moved interface {} to namespace {}", interface, netns_name);
+    Ok(())
+}
 
-    // Get the link
+/// Get link index by name
+async fn get_link_index(handle: &Handle, interface: &str) -> Result<u32> {
     let mut links = handle
         .link()
         .get()
         .match_name(interface.to_string())
         .execute();
-    if let Some(link) = links.try_next().await? {
-        handle
-            .link()
-            .set(link.header.index)
-            .setns_by_fd(netns_fd.as_raw_fd())
-            .execute()
-            .await
-            .with_context(|| format!("Failed to move {} to namespace {}", interface, netns_name))?;
-
-        debug!("Moved interface {} to namespace {}", interface, netns_name);
-        Ok(())
-    } else {
-        anyhow::bail!("Interface {} not found", interface);
-    }
+    links
+        .try_next()
+        .await?
+        .map(|link| link.header.index)
+        .ok_or_else(|| anyhow::anyhow!("Interface {} not found", interface))
 }
 
-/// Set an interface up or down
-///
-/// This mimics `ip link set <interface> up/down`
+/// Set an interface up or down (mimics `ip link set <interface> up/down`)
 pub async fn set_link_up(handle: &Handle, interface: &str, up: bool) -> Result<()> {
-    let mut links = handle
-        .link()
-        .get()
-        .match_name(interface.to_string())
-        .execute();
-    if let Some(link) = links.try_next().await? {
-        let req = handle.link().set(link.header.index);
-        if up {
-            req.up().execute().await?;
-            debug!("Set interface {} up", interface);
-        } else {
-            req.down().execute().await?;
-            debug!("Set interface {} down", interface);
-        }
-        Ok(())
+    let idx = get_link_index(handle, interface).await?;
+    let req = handle.link().set(idx);
+    if up {
+        req.up().execute().await?;
+        debug!("Set interface {} up", interface);
     } else {
-        anyhow::bail!("Interface {} not found", interface);
+        req.down().execute().await?;
+        debug!("Set interface {} down", interface);
     }
+    Ok(())
 }
 
-/// Add an IP address to an interface
-///
-/// This mimics `ip addr add <addr>/<prefix> dev <interface>`
+/// Add an IP address to an interface (mimics `ip addr add <addr>/<prefix> dev <interface>`)
 pub async fn add_addr(
     handle: &Handle,
     interface: &str,
     addr: Ipv4Addr,
     prefix_len: u8,
 ) -> Result<()> {
-    let mut links = handle
-        .link()
-        .get()
-        .match_name(interface.to_string())
-        .execute();
-    if let Some(link) = links.try_next().await? {
-        handle
-            .address()
-            .add(link.header.index, addr.into(), prefix_len)
-            .execute()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to add address {}/{} to {}",
-                    addr, prefix_len, interface
-                )
-            })?;
-
-        debug!("Added address {}/{} to {}", addr, prefix_len, interface);
-        Ok(())
-    } else {
-        anyhow::bail!("Interface {} not found", interface);
-    }
+    let idx = get_link_index(handle, interface).await?;
+    handle
+        .address()
+        .add(idx, addr.into(), prefix_len)
+        .execute()
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to add address {}/{} to {}",
+                addr, prefix_len, interface
+            )
+        })?;
+    debug!("Added address {}/{} to {}", addr, prefix_len, interface);
+    Ok(())
 }
 
-/// Add a default route
-///
-/// This mimics `ip route add default via <gateway>`
+/// Add a default route (mimics `ip route add default via <gateway>`)
 pub async fn add_default_route(handle: &Handle, gateway: Ipv4Addr) -> Result<()> {
     handle
         .route()
@@ -257,32 +231,27 @@ pub async fn add_default_route(handle: &Handle, gateway: Ipv4Addr) -> Result<()>
         .execute()
         .await
         .context("Failed to add default route")?;
-
     debug!("Added default route via {}", gateway);
     Ok(())
 }
 
-/// Delete a link
-///
-/// This mimics `ip link del <interface>`
+/// Delete a link (mimics `ip link del <interface>`)
 pub async fn delete_link(interface: &str) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-
-    let mut links = handle
-        .link()
-        .get()
-        .match_name(interface.to_string())
-        .execute();
-    if let Some(link) = links.try_next().await? {
-        handle
-            .link()
-            .del(link.header.index)
-            .execute()
-            .await
-            .with_context(|| format!("Failed to delete interface {}", interface))?;
-
-        debug!("Deleted interface {}", interface);
+    match get_link_index(&handle, interface).await {
+        Ok(idx) => {
+            handle
+                .link()
+                .del(idx)
+                .execute()
+                .await
+                .with_context(|| format!("Failed to delete interface {}", interface))?;
+            debug!("Deleted interface {}", interface);
+        }
+        Err(_) => {
+            debug!("Interface {} not found, nothing to delete", interface);
+        }
     }
     Ok(())
 }
