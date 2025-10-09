@@ -1,4 +1,5 @@
 mod dns;
+mod netlink;
 mod nftables;
 mod resources;
 
@@ -183,24 +184,14 @@ impl LinuxJail {
             self.veth_ns()
         );
 
-        // Move veth_ns end into the namespace
-        let output = Command::new("ip")
-            .args([
-                "link",
-                "set",
+        // Move veth_ns end into the namespace using netlink
+        tokio::runtime::Runtime::new()
+            .context("Failed to create tokio runtime")?
+            .block_on(netlink::move_link_to_netns(
                 &self.veth_ns(),
-                "netns",
                 &self.namespace_name(),
-            ])
-            .output()
+            ))
             .context("Failed to move veth to namespace")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to move veth to namespace: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
 
         Ok(())
     }
@@ -214,58 +205,37 @@ impl LinuxJail {
         // This is a fallback in case the bind mount didn't work
         self.ensure_namespace_dns()?;
 
-        // Format the host IP once
-        let host_ip = format_ip(self.host_ip);
+        // Get handle inside namespace
+        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+        let handle = rt.block_on(netlink::get_handle_in_netns(&namespace_name))?;
 
-        // Commands to run inside the namespace
-        let commands = vec![
+        // Parse guest CIDR to get IP and prefix
+        let guest_parts: Vec<&str> = self.guest_cidr.split('/').collect();
+        let guest_ip: std::net::Ipv4Addr =
+            guest_parts[0].parse().context("Failed to parse guest IP")?;
+        let prefix_len: u8 = guest_parts[1]
+            .parse()
+            .context("Failed to parse prefix length")?;
+
+        // Parse host IP for gateway
+        let host_ip: std::net::Ipv4Addr = format_ip(self.host_ip)
+            .parse()
+            .context("Failed to parse host IP")?;
+
+        // Configure networking inside namespace
+        rt.block_on(async {
             // Bring up loopback
-            vec!["ip", "link", "set", "lo", "up"],
+            netlink::set_link_up(&handle, "lo", true).await?;
+
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
-            vec!["ip", "link", "set", &veth_ns, "up"],
+            netlink::add_addr(&handle, &veth_ns, guest_ip, prefix_len).await?;
+            netlink::set_link_up(&handle, &veth_ns, true).await?;
+
             // Add default route pointing to host
-            vec!["ip", "route", "add", "default", "via", &host_ip],
-        ];
+            netlink::add_default_route(&handle, host_ip).await?;
 
-        for cmd_args in commands {
-            let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &namespace_name]);
-            cmd.args(&cmd_args);
-
-            debug!("Executing in namespace: {:?}", cmd);
-            let output = cmd.output().context(format!(
-                "Failed to execute: ip netns exec {} {:?}",
-                namespace_name, cmd_args
-            ))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!(
-                    "Failed to configure namespace networking ({}): {}",
-                    cmd_args.join(" "),
-                    stderr
-                );
-            }
-        }
-
-        // Verify routes were added
-        let mut verify_cmd = Command::new("ip");
-        verify_cmd.args(["netns", "exec", &namespace_name, "ip", "route", "show"]);
-        if let Ok(output) = verify_cmd.output() {
-            let routes = String::from_utf8_lossy(&output.stdout);
-            info!(
-                "Routes in namespace {} after configuration:\n{}",
-                namespace_name, routes
-            );
-
-            if !routes.contains(&host_ip) && !routes.contains("default") {
-                warn!(
-                    "WARNING: No route to host {} found in namespace. Network may not work properly.",
-                    host_ip
-                );
-            }
-        }
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         debug!("Configured networking inside namespace {}", namespace_name);
         Ok(())
@@ -275,30 +245,25 @@ impl LinuxJail {
     fn configure_host_networking(&self) -> Result<()> {
         let veth_host = self.veth_host();
 
-        // Configure host side of veth
-        let commands = vec![
-            vec!["addr", "add", &self.host_cidr, "dev", &veth_host],
-            vec!["link", "set", &veth_host, "up"],
-        ];
+        // Parse host CIDR to get IP and prefix
+        let host_parts: Vec<&str> = self.host_cidr.split('/').collect();
+        let host_ip: std::net::Ipv4Addr =
+            host_parts[0].parse().context("Failed to parse host IP")?;
+        let prefix_len: u8 = host_parts[1]
+            .parse()
+            .context("Failed to parse prefix length")?;
 
-        for cmd_args in commands {
-            let output = Command::new("ip")
-                .args(&cmd_args)
-                .output()
-                .context(format!("Failed to execute: ip {:?}", cmd_args))?;
+        // Configure host side
+        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+        rt.block_on(async {
+            let (connection, handle, _) = rtnetlink::new_connection()?;
+            tokio::spawn(connection);
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "File exists" errors for IP addresses (might be from previous run)
-                if !stderr.contains("File exists") {
-                    anyhow::bail!(
-                        "Failed to configure host networking (ip {}): {}",
-                        cmd_args.join(" "),
-                        stderr
-                    );
-                }
-            }
-        }
+            netlink::add_addr(&handle, &veth_host, host_ip, prefix_len).await?;
+            netlink::set_link_up(&handle, &veth_host, true).await?;
+
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         // Enable IP forwarding for this interface
         let output = Command::new("sysctl")
@@ -679,12 +644,17 @@ impl Jail for LinuxJail {
         let drop_privs = if current_uid == 0 {
             // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
             match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
-                (Ok(uid), Ok(gid)) => {
-                    debug!(
-                        "Will drop privileges to uid={} gid={} after entering namespace",
-                        uid, gid
-                    );
-                    Some((uid, gid))
+                (Ok(uid_str), Ok(gid_str)) => {
+                    if let (Ok(uid), Ok(gid)) = (uid_str.parse::<u32>(), gid_str.parse::<u32>()) {
+                        debug!(
+                            "Will drop privileges to uid={} gid={} after entering namespace",
+                            uid, gid
+                        );
+                        Some((uid, gid))
+                    } else {
+                        debug!("Failed to parse SUDO_UID/SUDO_GID, continuing as root");
+                        None
+                    }
                 }
                 _ => {
                     debug!("Running as root but no SUDO_UID/SUDO_GID found, continuing as root");
@@ -696,56 +666,16 @@ impl Jail for LinuxJail {
             None
         };
 
-        // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with setpriv
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name()]);
-
-        // Handle privilege dropping and command execution
-        if let Some((uid, gid)) = drop_privs {
-            // Use setpriv to drop privileges to the original user
-            // setpriv is lighter than runuser - no PAM, direct execve()
-            cmd.arg("setpriv");
-            cmd.arg(format!("--reuid={}", uid)); // Set real and effective UID
-            cmd.arg(format!("--regid={}", gid)); // Set real and effective GID
-            cmd.arg("--init-groups"); // Initialize supplementary groups
-            cmd.arg("--"); // End of options
-            for arg in command {
-                cmd.arg(arg);
-            }
-        } else {
-            // No privilege dropping, execute directly
-            cmd.arg(&command[0]);
-            for arg in &command[1..] {
-                cmd.arg(arg);
-            }
-        }
-
-        // Set environment variables
-        for (key, value) in extra_env {
-            cmd.env(key, value);
-        }
-
-        // Preserve SUDO environment variables for consistency with macOS
-        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-            cmd.env("SUDO_USER", sudo_user);
-        }
-        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
-            cmd.env("SUDO_UID", sudo_uid);
-        }
-        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
-            cmd.env("SUDO_GID", sudo_gid);
-        }
-
-        debug!("Executing command: {:?}", cmd);
+        // Execute command in namespace using netlink (no dependency on `ip` binary)
+        debug!("Executing command in namespace: {:?}", command);
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
         // The jail uses nftables rules to transparently redirect traffic to the proxy,
         // making it work with applications that don't respect proxy environment variables.
 
-        let status = cmd
-            .status()
-            .context("Failed to execute command in namespace")?;
+        let status =
+            netlink::execute_in_netns(&self.namespace_name(), command, extra_env, drop_privs)
+                .context("Failed to execute command in namespace")?;
 
         Ok(status)
     }

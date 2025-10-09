@@ -20,24 +20,14 @@ impl SystemResource for NetworkNamespace {
     fn create(jail_id: &str) -> Result<Self> {
         let name = format!("httpjail_{}", jail_id);
 
-        let output = Command::new("ip")
-            .args(["netns", "add", &name])
-            .output()
-            .context("Failed to execute ip netns add")?;
+        // Use netlink-based implementation instead of `ip` command
+        super::netlink::create_netns(&name)
+            .context("Failed to create network namespace via netlink")?;
 
-        if output.status.success() {
-            info!("Created network namespace: {}", name);
-            Ok(Self {
-                name,
-                created: true,
-            })
-        } else {
-            anyhow::bail!(
-                "Failed to create namespace {}: {}",
-                name,
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
+        Ok(Self {
+            name,
+            created: true,
+        })
     }
 
     fn cleanup(&mut self) -> Result<()> {
@@ -45,25 +35,10 @@ impl SystemResource for NetworkNamespace {
             return Ok(());
         }
 
-        let output = Command::new("ip")
-            .args(["netns", "del", &self.name])
-            .output()
-            .context("Failed to execute ip netns del")?;
+        super::netlink::delete_netns(&self.name).context("Failed to delete network namespace")?;
 
-        if output.status.success() {
-            debug!("Deleted network namespace: {}", self.name);
-            self.created = false;
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such file") || stderr.contains("Cannot find") {
-                // Already deleted
-                self.created = false;
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!("Failed to delete namespace: {}", stderr))
-            }
-        }
+        self.created = false;
+        Ok(())
     }
 
     fn for_existing(jail_id: &str) -> Self {
@@ -100,26 +75,18 @@ impl SystemResource for VethPair {
         let host_name = format!("vh_{}", jail_id);
         let ns_name = format!("vn_{}", jail_id);
 
-        let output = Command::new("ip")
-            .args([
-                "link", "add", &host_name, "type", "veth", "peer", "name", &ns_name,
-            ])
-            .output()
-            .context("Failed to create veth pair")?;
+        // Use netlink-based implementation
+        tokio::runtime::Runtime::new()
+            .context("Failed to create tokio runtime")?
+            .block_on(super::netlink::create_veth_pair(&host_name, &ns_name))
+            .context("Failed to create veth pair via netlink")?;
 
-        if output.status.success() {
-            debug!("Created veth pair: {} <-> {}", host_name, ns_name);
-            Ok(Self {
-                host_name,
-                ns_name,
-                created: true,
-            })
-        } else {
-            anyhow::bail!(
-                "Failed to create veth pair: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
+        debug!("Created veth pair: {} <-> {}", host_name, ns_name);
+        Ok(Self {
+            host_name,
+            ns_name,
+            created: true,
+        })
     }
 
     fn cleanup(&mut self) -> Result<()> {
@@ -128,9 +95,9 @@ impl SystemResource for VethPair {
         }
 
         // Deleting the host side will automatically delete both ends
-        let _ = Command::new("ip")
-            .args(["link", "del", &self.host_name])
-            .output();
+        let host_name = self.host_name.clone();
+        let _ = tokio::runtime::Runtime::new()
+            .and_then(|rt| Ok(rt.block_on(super::netlink::delete_link(&host_name))));
 
         self.created = false;
         Ok(())
