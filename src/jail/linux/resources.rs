@@ -1,7 +1,32 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
-use std::process::Command;
-use tracing::{debug, info};
+use std::future::Future;
+use tracing::debug;
+
+/// Run async code, using current tokio runtime if available or creating a new one
+fn block_on<F: Future + Send + 'static>(future: F) -> F::Output
+where
+    F::Output: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're in a tokio runtime - use spawn_blocking to avoid nested runtime issues
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .expect("Failed to create tokio runtime")
+                    .block_on(future)
+            })
+            .join()
+            .expect("Thread panicked")
+        }
+        Err(_) => {
+            // No runtime, create a new one
+            tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime")
+                .block_on(future)
+        }
+    }
+}
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -76,9 +101,7 @@ impl SystemResource for VethPair {
         let ns_name = format!("vn_{}", jail_id);
 
         // Use netlink-based implementation
-        tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?
-            .block_on(super::netlink::create_veth_pair(&host_name, &ns_name))
+        block_on(super::netlink::create_veth_pair(&host_name, &ns_name))
             .context("Failed to create veth pair via netlink")?;
 
         debug!("Created veth pair: {} <-> {}", host_name, ns_name);
@@ -96,8 +119,7 @@ impl SystemResource for VethPair {
 
         // Deleting the host side will automatically delete both ends
         let host_name = self.host_name.clone();
-        let _ = tokio::runtime::Runtime::new()
-            .and_then(|rt| Ok(rt.block_on(super::netlink::delete_link(&host_name))));
+        let _ = block_on(super::netlink::delete_link(&host_name));
 
         self.created = false;
         Ok(())

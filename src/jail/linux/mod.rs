@@ -12,9 +12,35 @@ use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
+use std::future::Future;
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
+
+/// Run async code, using current tokio runtime if available or creating a new one
+fn block_on<F: Future + Send + 'static>(future: F) -> F::Output
+where
+    F::Output: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're in a tokio runtime - use spawn_blocking to avoid nested runtime issues
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .expect("Failed to create tokio runtime")
+                    .block_on(future)
+            })
+            .join()
+            .expect("Thread panicked")
+        }
+        Err(_) => {
+            // No runtime, create a new one
+            tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime")
+                .block_on(future)
+        }
+    }
+}
 
 // Linux namespace network configuration constants were previously fixed; the
 // implementation now computes unique per‑jail subnets dynamically.
@@ -185,13 +211,11 @@ impl LinuxJail {
         );
 
         // Move veth_ns end into the namespace using netlink
-        tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?
-            .block_on(netlink::move_link_to_netns(
-                &self.veth_ns(),
-                &self.namespace_name(),
-            ))
-            .context("Failed to move veth to namespace")?;
+        block_on(netlink::move_link_to_netns(
+            &self.veth_ns(),
+            &self.namespace_name(),
+        ))
+        .context("Failed to move veth to namespace")?;
 
         Ok(())
     }
@@ -206,8 +230,7 @@ impl LinuxJail {
         self.ensure_namespace_dns()?;
 
         // Get handle inside namespace
-        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-        let handle = rt.block_on(netlink::get_handle_in_netns(&namespace_name))?;
+        let handle = block_on(netlink::get_handle_in_netns(&namespace_name))?;
 
         // Parse guest CIDR to get IP and prefix
         let guest_parts: Vec<&str> = self.guest_cidr.split('/').collect();
@@ -223,7 +246,7 @@ impl LinuxJail {
             .context("Failed to parse host IP")?;
 
         // Configure networking inside namespace
-        rt.block_on(async {
+        block_on(async {
             // Bring up loopback
             netlink::set_link_up(&handle, "lo", true).await?;
 
@@ -254,8 +277,7 @@ impl LinuxJail {
             .context("Failed to parse prefix length")?;
 
         // Configure host side
-        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-        rt.block_on(async {
+        block_on(async {
             let (connection, handle, _) = rtnetlink::new_connection()?;
             tokio::spawn(connection);
 
