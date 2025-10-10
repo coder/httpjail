@@ -453,7 +453,7 @@ nameserver {}\n",
         );
 
         // Write nameserver directly using sh -c echo
-        let write_result = netlink::execute_in_netns(
+        match netlink::execute_in_netns(
             &namespace_name,
             &[
                 "sh".to_string(),
@@ -462,12 +462,22 @@ nameserver {}\n",
             ],
             &[],
             None,
-        );
-
-        if write_result.is_ok() {
-            debug!("Successfully configured DNS in namespace");
-        } else {
-            debug!("Failed to write resolv.conf, DNS may not work in namespace");
+        ) {
+            Ok(status) if status.success() => {
+                debug!("Successfully configured DNS in namespace");
+            }
+            Ok(status) => {
+                warn!(
+                    "Failed to write resolv.conf in namespace (exit: {}), DNS may not work",
+                    status.code().unwrap_or(-1)
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Error configuring DNS in namespace: {}. DNS may not work.",
+                    e
+                );
+            }
         }
 
         Ok(())
