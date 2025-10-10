@@ -235,7 +235,7 @@ impl LinuxJail {
             .context("Failed to parse host IP")?;
 
         // Configure networking inside namespace
-        block_on(async {
+        block_on(async move {
             // Bring up loopback
             netlink::set_link_up(&handle, "lo", true).await?;
 
