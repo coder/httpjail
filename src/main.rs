@@ -554,6 +554,11 @@ async fn main() -> Result<()> {
     jail_config.http_proxy_port = actual_http_port;
     jail_config.https_proxy_port = actual_https_port;
 
+    // Ensure a command was provided before doing any privileged setup
+    if args.run_args.exec_command.is_empty() {
+        anyhow::bail!("No command specified");
+    }
+
     // Create and setup jail
     let mut jail = create_jail(
         jail_config.clone(),

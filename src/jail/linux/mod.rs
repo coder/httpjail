@@ -1,4 +1,5 @@
 mod dns;
+mod netlink;
 mod nftables;
 mod resources;
 
@@ -11,9 +12,24 @@ use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
 use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
+use std::future::Future;
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
+
+/// Run async code, using the ambient tokio runtime when available
+fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime")
+            .block_on(future),
+    }
+}
 
 // Linux namespace network configuration constants were previously fixed; the
 // implementation now computes unique per‑jail subnets dynamically.
@@ -183,24 +199,11 @@ impl LinuxJail {
             self.veth_ns()
         );
 
-        // Move veth_ns end into the namespace
-        let output = Command::new("ip")
-            .args([
-                "link",
-                "set",
-                &self.veth_ns(),
-                "netns",
-                &self.namespace_name(),
-            ])
-            .output()
+        // Move veth_ns end into the namespace using netlink
+        let veth_ns = self.veth_ns();
+        let ns_name = self.namespace_name();
+        block_on(async move { netlink::move_link_to_netns(&veth_ns, &ns_name).await })
             .context("Failed to move veth to namespace")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to move veth to namespace: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
 
         Ok(())
     }
@@ -214,58 +217,37 @@ impl LinuxJail {
         // This is a fallback in case the bind mount didn't work
         self.ensure_namespace_dns()?;
 
-        // Format the host IP once
-        let host_ip = format_ip(self.host_ip);
+        // Get handle inside namespace
+        let ns_clone = namespace_name.clone();
+        let handle = block_on(async move { netlink::get_handle_in_netns(&ns_clone).await })?;
 
-        // Commands to run inside the namespace
-        let commands = vec![
+        // Parse guest CIDR to get IP and prefix
+        let guest_parts: Vec<&str> = self.guest_cidr.split('/').collect();
+        let guest_ip: std::net::Ipv4Addr =
+            guest_parts[0].parse().context("Failed to parse guest IP")?;
+        let prefix_len: u8 = guest_parts[1]
+            .parse()
+            .context("Failed to parse prefix length")?;
+
+        // Parse host IP for gateway
+        let host_ip: std::net::Ipv4Addr = format_ip(self.host_ip)
+            .parse()
+            .context("Failed to parse host IP")?;
+
+        // Configure networking inside namespace
+        block_on(async move {
             // Bring up loopback
-            vec!["ip", "link", "set", "lo", "up"],
+            netlink::set_link_up(&handle, "lo", true).await?;
+
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
-            vec!["ip", "link", "set", &veth_ns, "up"],
+            netlink::add_addr(&handle, &veth_ns, guest_ip, prefix_len).await?;
+            netlink::set_link_up(&handle, &veth_ns, true).await?;
+
             // Add default route pointing to host
-            vec!["ip", "route", "add", "default", "via", &host_ip],
-        ];
+            netlink::add_default_route(&handle, host_ip).await?;
 
-        for cmd_args in commands {
-            let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", &namespace_name]);
-            cmd.args(&cmd_args);
-
-            debug!("Executing in namespace: {:?}", cmd);
-            let output = cmd.output().context(format!(
-                "Failed to execute: ip netns exec {} {:?}",
-                namespace_name, cmd_args
-            ))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!(
-                    "Failed to configure namespace networking ({}): {}",
-                    cmd_args.join(" "),
-                    stderr
-                );
-            }
-        }
-
-        // Verify routes were added
-        let mut verify_cmd = Command::new("ip");
-        verify_cmd.args(["netns", "exec", &namespace_name, "ip", "route", "show"]);
-        if let Ok(output) = verify_cmd.output() {
-            let routes = String::from_utf8_lossy(&output.stdout);
-            info!(
-                "Routes in namespace {} after configuration:\n{}",
-                namespace_name, routes
-            );
-
-            if !routes.contains(&host_ip) && !routes.contains("default") {
-                warn!(
-                    "WARNING: No route to host {} found in namespace. Network may not work properly.",
-                    host_ip
-                );
-            }
-        }
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         debug!("Configured networking inside namespace {}", namespace_name);
         Ok(())
@@ -275,30 +257,27 @@ impl LinuxJail {
     fn configure_host_networking(&self) -> Result<()> {
         let veth_host = self.veth_host();
 
-        // Configure host side of veth
-        let commands = vec![
-            vec!["addr", "add", &self.host_cidr, "dev", &veth_host],
-            vec!["link", "set", &veth_host, "up"],
-        ];
+        // Parse host CIDR to get IP and prefix
+        let host_parts: Vec<&str> = self.host_cidr.split('/').collect();
+        let host_ip: std::net::Ipv4Addr =
+            host_parts[0].parse().context("Failed to parse host IP")?;
+        let prefix_len: u8 = host_parts[1]
+            .parse()
+            .context("Failed to parse prefix length")?;
 
-        for cmd_args in commands {
-            let output = Command::new("ip")
-                .args(&cmd_args)
-                .output()
-                .context(format!("Failed to execute: ip {:?}", cmd_args))?;
+        // Clone for debug after move
+        let veth_host_debug = veth_host.clone();
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "File exists" errors for IP addresses (might be from previous run)
-                if !stderr.contains("File exists") {
-                    anyhow::bail!(
-                        "Failed to configure host networking (ip {}): {}",
-                        cmd_args.join(" "),
-                        stderr
-                    );
-                }
-            }
-        }
+        // Configure host side
+        block_on(async move {
+            let (connection, handle, _) = rtnetlink::new_connection()?;
+            tokio::spawn(connection);
+
+            netlink::add_addr(&handle, &veth_host, host_ip, prefix_len).await?;
+            netlink::set_link_up(&handle, &veth_host, true).await?;
+
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         // Enable IP forwarding for this interface
         let output = Command::new("sysctl")
@@ -313,7 +292,7 @@ impl LinuxJail {
             );
         }
 
-        debug!("Configured host side networking for {}", veth_host);
+        debug!("Configured host side networking for {}", veth_host_debug);
         Ok(())
     }
 
@@ -463,125 +442,45 @@ nameserver {}\n",
         Ok(())
     }
 
-    /// Ensure DNS works in the namespace by copying resolv.conf if needed
-    #[allow(clippy::collapsible_if)]
+    /// Ensure DNS works in the namespace by bind-mounting resolv.conf
     fn ensure_namespace_dns(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
+        let source_resolv = format!("/etc/netns/{}/resolv.conf", namespace_name);
 
-        // Check if DNS is already working by testing /etc/resolv.conf in namespace
-        let check_cmd = Command::new("ip")
-            .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
-            .output();
-
-        let needs_fix = if let Ok(output) = check_cmd {
-            if !output.status.success() {
-                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
-                true
-            } else {
-                let content = String::from_utf8_lossy(&output.stdout);
-                // Check if it's pointing to systemd-resolved or is empty
-                if content.is_empty() || content.contains("127.0.0.53") {
-                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
-                    true
-                } else if content.contains("nameserver") {
-                    info!("DNS already configured in namespace {}", namespace_name);
-                    false
-                } else {
-                    info!("No nameserver found in namespace resolv.conf, will fix");
-                    true
-                }
-            }
-        } else {
-            info!("Failed to check DNS in namespace, will attempt fix");
-            true
-        };
-
-        if !needs_fix {
-            return Ok(());
-        }
-
-        // DNS not working, try to fix it by copying a working resolv.conf
-        info!(
-            "Fixing DNS in namespace {} by copying resolv.conf",
-            namespace_name
+        debug!(
+            "Bind-mounting {} to /etc/resolv.conf in namespace {}",
+            source_resolv, namespace_name
         );
 
-        // Setup DNS for the namespace
-        // Create a temporary resolv.conf before running the nsenter command
-        let temp_dir = crate::jail::get_temp_dir();
-        std::fs::create_dir_all(&temp_dir).ok();
-        let temp_resolv = temp_dir
-            .join(format!("httpjail_resolv_{}.conf", &namespace_name))
-            .to_string_lossy()
-            .to_string();
-        // Use the host veth IP where our dummy DNS server listens
-        let host_ip = format_ip(self.host_ip);
-        let dns_content = format!("nameserver {}\n", host_ip);
-        std::fs::write(&temp_resolv, &dns_content)
-            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
-
-        // First, try to directly write to /etc/resolv.conf in the namespace using echo
-        let write_cmd = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "sh",
-                "-c",
-                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
-            ])
-            .output();
-
-        if let Ok(output) = write_cmd {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to write resolv.conf into namespace: {}", stderr);
-
-                // Try another approach - mount bind
-                let mount_cmd = Command::new("ip")
-                    .args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "mount",
-                        "--bind",
-                        &temp_resolv,
-                        "/etc/resolv.conf",
-                    ])
-                    .output();
-
-                if let Ok(mount_output) = mount_cmd {
-                    if mount_output.status.success() {
-                        info!("Successfully bind-mounted resolv.conf in namespace");
-                    } else {
-                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
-                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
-
-                        // Last resort - try copying the file content
-                        let cp_cmd = Command::new("cp")
-                            .args([
-                                &temp_resolv,
-                                &format!(
-                                    "/proc/self/root/etc/netns/{}/resolv.conf",
-                                    namespace_name
-                                ),
-                            ])
-                            .output();
-
-                        if let Ok(cp_output) = cp_cmd
-                            && cp_output.status.success()
-                        {
-                            info!("Successfully copied resolv.conf via /proc");
-                        }
-                    }
-                }
-            } else {
-                info!("Successfully wrote resolv.conf into namespace");
+        // Use mount --bind to override /etc/resolv.conf inside the namespace
+        // This works even if /etc/resolv.conf is a symlink
+        match netlink::execute_in_netns(
+            &namespace_name,
+            &[
+                "mount".to_string(),
+                "--bind".to_string(),
+                source_resolv.clone(),
+                "/etc/resolv.conf".to_string(),
+            ],
+            &[],
+            None,
+        ) {
+            Ok(status) if status.success() => {
+                debug!("Successfully bind-mounted resolv.conf in namespace");
+            }
+            Ok(status) => {
+                warn!(
+                    "Failed to bind-mount resolv.conf in namespace (exit: {}), DNS may not work",
+                    status.code().unwrap_or(-1)
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Error bind-mounting resolv.conf in namespace: {}. DNS may not work.",
+                    e
+                );
             }
         }
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_resolv);
 
         Ok(())
     }
@@ -679,12 +578,17 @@ impl Jail for LinuxJail {
         let drop_privs = if current_uid == 0 {
             // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
             match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
-                (Ok(uid), Ok(gid)) => {
-                    debug!(
-                        "Will drop privileges to uid={} gid={} after entering namespace",
-                        uid, gid
-                    );
-                    Some((uid, gid))
+                (Ok(uid_str), Ok(gid_str)) => {
+                    if let (Ok(uid), Ok(gid)) = (uid_str.parse::<u32>(), gid_str.parse::<u32>()) {
+                        debug!(
+                            "Will drop privileges to uid={} gid={} after entering namespace",
+                            uid, gid
+                        );
+                        Some((uid, gid))
+                    } else {
+                        debug!("Failed to parse SUDO_UID/SUDO_GID, continuing as root");
+                        None
+                    }
                 }
                 _ => {
                     debug!("Running as root but no SUDO_UID/SUDO_GID found, continuing as root");
@@ -696,56 +600,16 @@ impl Jail for LinuxJail {
             None
         };
 
-        // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with setpriv
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name()]);
-
-        // Handle privilege dropping and command execution
-        if let Some((uid, gid)) = drop_privs {
-            // Use setpriv to drop privileges to the original user
-            // setpriv is lighter than runuser - no PAM, direct execve()
-            cmd.arg("setpriv");
-            cmd.arg(format!("--reuid={}", uid)); // Set real and effective UID
-            cmd.arg(format!("--regid={}", gid)); // Set real and effective GID
-            cmd.arg("--init-groups"); // Initialize supplementary groups
-            cmd.arg("--"); // End of options
-            for arg in command {
-                cmd.arg(arg);
-            }
-        } else {
-            // No privilege dropping, execute directly
-            cmd.arg(&command[0]);
-            for arg in &command[1..] {
-                cmd.arg(arg);
-            }
-        }
-
-        // Set environment variables
-        for (key, value) in extra_env {
-            cmd.env(key, value);
-        }
-
-        // Preserve SUDO environment variables for consistency with macOS
-        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-            cmd.env("SUDO_USER", sudo_user);
-        }
-        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
-            cmd.env("SUDO_UID", sudo_uid);
-        }
-        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
-            cmd.env("SUDO_GID", sudo_gid);
-        }
-
-        debug!("Executing command: {:?}", cmd);
+        // Execute command in namespace using netlink (no dependency on `ip` binary)
+        debug!("Executing command in namespace: {:?}", command);
 
         // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
         // The jail uses nftables rules to transparently redirect traffic to the proxy,
         // making it work with applications that don't respect proxy environment variables.
 
-        let status = cmd
-            .status()
-            .context("Failed to execute command in namespace")?;
+        let status =
+            netlink::execute_in_netns(&self.namespace_name(), command, extra_env, drop_privs)
+                .context("Failed to execute command in namespace")?;
 
         Ok(status)
     }
