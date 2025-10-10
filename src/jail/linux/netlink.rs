@@ -107,35 +107,6 @@ pub fn delete_netns(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Execute a function within a network namespace
-///
-/// This switches to the namespace, executes the function, then returns to the original namespace
-pub fn with_netns<F, R>(name: &str, f: F) -> Result<R>
-where
-    F: FnOnce() -> Result<R>,
-{
-    let netns_path = PathBuf::from(NETNS_RUN_DIR).join(name);
-
-    // Open the namespace file
-    let netns_fd = fs::File::open(&netns_path)
-        .with_context(|| format!("Failed to open namespace {:?}", netns_path))?;
-
-    // Open current namespace to restore later
-    let current_ns =
-        fs::File::open("/proc/self/ns/net").context("Failed to open current network namespace")?;
-
-    // Enter the target namespace
-    setns(&netns_fd, CloneFlags::CLONE_NEWNET).context("Failed to enter namespace")?;
-
-    // Execute the function
-    let result = f();
-
-    // Return to original namespace
-    let _ = setns(&current_ns, CloneFlags::CLONE_NEWNET);
-
-    result
-}
-
 /// Create a veth pair (mimics `ip link add <name1> type veth peer name <name2>`)
 pub async fn create_veth_pair(name1: &str, name2: &str) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
