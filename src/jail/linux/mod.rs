@@ -447,33 +447,6 @@ nameserver {}\n",
         let namespace_name = self.namespace_name();
         let host_ip = format_ip(self.host_ip);
 
-        // Check current DNS configuration
-        let check_result = netlink::execute_in_netns(
-            &namespace_name,
-            &["cat".to_string(), "/etc/resolv.conf".to_string()],
-            &[],
-            None,
-        );
-
-        let needs_fix = if let Ok(status) = check_result {
-            if !status.success() {
-                debug!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
-                true
-            } else {
-                // We can't easily capture output from execute_in_netns, so just assume we need to fix
-                // if the namespace was just created
-                debug!("DNS configuration exists, will update it to point to our server");
-                true
-            }
-        } else {
-            debug!("Failed to check DNS in namespace, will attempt fix");
-            true
-        };
-
-        if !needs_fix {
-            return Ok(());
-        }
-
         debug!(
             "Configuring DNS in namespace {} to use {}",
             namespace_name, host_ip
