@@ -442,39 +442,41 @@ nameserver {}\n",
         Ok(())
     }
 
-    /// Ensure DNS works in the namespace by writing resolv.conf
+    /// Ensure DNS works in the namespace by bind-mounting resolv.conf
     fn ensure_namespace_dns(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
-        let host_ip = format_ip(self.host_ip);
+        let source_resolv = format!("/etc/netns/{}/resolv.conf", namespace_name);
 
         debug!(
-            "Configuring DNS in namespace {} to use {}",
-            namespace_name, host_ip
+            "Bind-mounting {} to /etc/resolv.conf in namespace {}",
+            source_resolv, namespace_name
         );
 
-        // Write nameserver directly using sh -c echo
+        // Use mount --bind to override /etc/resolv.conf inside the namespace
+        // This works even if /etc/resolv.conf is a symlink
         match netlink::execute_in_netns(
             &namespace_name,
             &[
-                "sh".to_string(),
-                "-c".to_string(),
-                format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
+                "mount".to_string(),
+                "--bind".to_string(),
+                source_resolv.clone(),
+                "/etc/resolv.conf".to_string(),
             ],
             &[],
             None,
         ) {
             Ok(status) if status.success() => {
-                debug!("Successfully configured DNS in namespace");
+                debug!("Successfully bind-mounted resolv.conf in namespace");
             }
             Ok(status) => {
                 warn!(
-                    "Failed to write resolv.conf in namespace (exit: {}), DNS may not work",
+                    "Failed to bind-mount resolv.conf in namespace (exit: {}), DNS may not work",
                     status.code().unwrap_or(-1)
                 );
             }
             Err(e) => {
                 warn!(
-                    "Error configuring DNS in namespace: {}. DNS may not work.",
+                    "Error bind-mounting resolv.conf in namespace: {}. DNS may not work.",
                     e
                 );
             }
