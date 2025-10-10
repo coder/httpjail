@@ -266,7 +266,7 @@ impl LinuxJail {
             .context("Failed to parse prefix length")?;
 
         // Configure host side
-        block_on(async {
+        block_on(async move {
             let (connection, handle, _) = rtnetlink::new_connection()?;
             tokio::spawn(connection);
 
