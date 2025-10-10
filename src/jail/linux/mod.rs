@@ -265,6 +265,9 @@ impl LinuxJail {
             .parse()
             .context("Failed to parse prefix length")?;
 
+        // Clone for debug after move
+        let veth_host_debug = veth_host.clone();
+
         // Configure host side
         block_on(async move {
             let (connection, handle, _) = rtnetlink::new_connection()?;
@@ -289,7 +292,7 @@ impl LinuxJail {
             );
         }
 
-        debug!("Configured host side networking for {}", veth_host);
+        debug!("Configured host side networking for {}", veth_host_debug);
         Ok(())
     }
 
