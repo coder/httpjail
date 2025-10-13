@@ -33,7 +33,11 @@ impl NFTable {
         // Generate the ruleset for host-side NAT, forwarding, and input acceptance
         let ruleset = format!(
             r#"
-table ip {table_name} {{
+table ip {table_name} {
+    # IPv6 parity rules
+}}
+
+table ip6 {table_name} {{
     chain prerouting {{
         type filter hook prerouting priority -150; policy accept;
         iifname "{veth_host}" accept comment "httpjail_{jail_id} prerouting"
