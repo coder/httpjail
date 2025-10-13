@@ -237,9 +237,6 @@ fn validate_namespace_name(name: &str) -> Result<()> {
         return Err(anyhow::anyhow!("Invalid characters in namespace name"));
     }
 
-    Ok(())
-}
-
 /// Close excess file descriptors safely
 fn close_excess_fds() {
     // Try to use close_range syscall if available (Linux 5.9+)
@@ -248,16 +245,25 @@ fn close_excess_fds() {
         // Define close_range flags
         const CLOSE_RANGE_UNSHARE: libc::c_uint = 0x02;
 
-        // Try close_range syscall (syscall number 436 on x86_64)
-        let ret = libc::syscall(
-            436, // SYS_close_range
-            3 as libc::c_uint,
-            libc::c_uint::MAX,
-            CLOSE_RANGE_UNSHARE,
-        );
+        // Prefer libc-provided SYS_close_range constant for portability across arches
+        #[allow(non_upper_case_globals)]
+        let sys_close_range: libc::c_long = {
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64", target_arch = "powerpc64"))]
+            { libc::SYS_close_range as libc::c_long }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm", target_arch = "riscv64", target_arch = "powerpc64")))]
+            { -1 }
+        };
 
-        if ret == 0 {
-            return; // Success
+        if sys_close_range != -1 {
+            let ret = libc::syscall(
+                sys_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                CLOSE_RANGE_UNSHARE,
+            );
+            if ret == 0 {
+                return; // Success
+            }
         }
 
         // Fallback to manual closing if close_range is not available
@@ -280,34 +286,6 @@ fn close_excess_fds() {
         }
     }
 }
-
-/// Drop privileges to nobody user with proper error checking
-fn drop_privileges_to_nobody() -> Result<()> {
-    unsafe {
-        // Try to get nobody UID/GID dynamically
-        let (uid, gid) = get_nobody_ids();
-
-        // Drop supplementary groups
-        if libc::setgroups(0, std::ptr::null()) != 0 {
-            return Err(anyhow::anyhow!(
-                "Failed to drop supplementary groups: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-
-        // Set GID first (must be done before UID)
-        if libc::setgid(gid) != 0 {
-            return Err(anyhow::anyhow!(
-                "Failed to set GID to {}: {}",
-                gid,
-                std::io::Error::last_os_error()
-            ));
-        }
-
-        // Set UID (this drops all privileges)
-        if libc::setuid(uid) != 0 {
-            return Err(anyhow::anyhow!(
-                "Failed to set UID to {}: {}",
                 uid,
                 std::io::Error::last_os_error()
             ));
