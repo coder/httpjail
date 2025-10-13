@@ -71,10 +71,3 @@ opt-level = 1
 lto = false
 codegen-units = 16
 
-[profile.bench]
-inherits = "release"
-debug = true
-
-[[bench]]
-name = "rule_engines"
-harness = false
