@@ -1,6 +1,7 @@
 mod common;
 
 use common::{HttpjailCommand, test_https_allow, test_https_blocking};
+use serial_test::serial;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::thread;
@@ -287,6 +288,116 @@ fn test_server_mode() {
     // Cleanup
     let _ = server.kill();
     let _ = server.wait();
+}
+
+// Helper to start server with custom bind config
+fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::Child, u16) {
+    let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
+
+    let mut child = Command::new(httpjail_path)
+        .arg("--server")
+        .arg("--js")
+        .arg("true")
+        .env("HTTPJAIL_HTTP_BIND", http_bind)
+        .env("HTTPJAIL_HTTPS_BIND", https_bind)
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn server");
+
+    // Parse expected port from bind config (server mode uses defaults for unspecified)
+    let expected_port = if let Ok(port) = http_bind.parse::<u16>() {
+        port
+    } else if let Ok(addr) = http_bind.parse::<std::net::SocketAddr>() {
+        addr.port()
+    } else {
+        8080 // Default port for server mode
+    };
+
+    // Wait for server to bind
+    if !wait_for_server(expected_port, Duration::from_secs(3)) {
+        child.kill().ok();
+        panic!("Server failed to bind to port {}", expected_port);
+    }
+
+    (child, expected_port)
+}
+
+#[test]
+#[serial]
+fn test_server_bind_defaults() {
+    let (mut server, port) = start_server_with_bind("", "");
+    assert_eq!(port, 8080, "Server should default to port 8080");
+    server.kill().ok();
+}
+
+#[test]
+#[serial]
+fn test_server_bind_port_only() {
+    // Port-only should bind to all interfaces (0.0.0.0)
+    let (mut server, port) = start_server_with_bind("19882", "19883");
+    assert_eq!(port, 19882, "Server should bind to specified port on all interfaces");
+    server.kill().ok();
+}
+
+#[test]
+#[serial]
+fn test_server_bind_all_interfaces() {
+    let (mut server, port) = start_server_with_bind("0.0.0.0:19884", "0.0.0.0:19885");
+    assert_eq!(
+        port, 19884,
+        "Server should bind to specified port on 0.0.0.0"
+    );
+    server.kill().ok();
+}
+
+#[test]
+#[serial]
+fn test_server_bind_ip_without_port() {
+    let (mut server, port) = start_server_with_bind("127.0.0.1", "127.0.0.1");
+    assert_eq!(
+        port, 8080,
+        "Server should use default port 8080 when only IP specified"
+    );
+    server.kill().ok();
+}
+
+#[test]
+#[serial]
+fn test_server_bind_explicit_port_zero() {
+    // Explicit port 0 should be respected (OS auto-select), not overridden to 8080
+    let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
+
+    let mut child = Command::new(httpjail_path)
+        .arg("--server")
+        .arg("--js")
+        .arg("true")
+        .env("HTTPJAIL_HTTP_BIND", "0") // Explicit port 0
+        .env("HTTPJAIL_HTTPS_BIND", "0")
+        .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn server");
+
+    // Give server a moment to bind to an OS-selected port
+    thread::sleep(Duration::from_millis(500));
+
+    // Verify it's NOT bound to the default port 8080 (it should be random)
+    let not_on_default = std::net::TcpStream::connect("127.0.0.1:8080").is_err();
+    assert!(
+        not_on_default,
+        "Server should not bind to default port 8080 when explicit :0 provided"
+    );
+
+    // Server should still be running successfully
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "Server should be running"
+    );
+
+    child.kill().ok();
 }
 
 /// Test for Host header security (Issue #57)
