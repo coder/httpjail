@@ -520,63 +520,32 @@ nameserver {}\n",
         std::fs::write(&temp_resolv, &dns_content)
             .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
 
-        // First, try to directly write to /etc/resolv.conf in the namespace using echo
-        let write_cmd = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "sh",
-                "-c",
-                &format!("echo 'nameserver {}' > /etc/resolv.conf", host_ip),
-            ])
-            .output();
+        // SAFE FALLBACK: Update the /etc/netns/<name>/resolv.conf file
+        // This avoids dangerous operations inside the namespace that could escape isolation.
+        //
+        // IMPORTANT: We do NOT use bind mounts inside namespaces because:
+        // 1. `ip netns exec` only enters the network namespace, NOT the mount namespace
+        // 2. Bind mounting /etc/resolv.conf (which is a symlink) in the host mount namespace
+        //    will follow the symlink and corrupt /run/systemd/resolve/stub-resolv.conf on the HOST
+        // 3. This breaks DNS for the entire system, not just the namespace
+        //
+        // Instead, we update /etc/netns/<name>/resolv.conf which should have been automatically
+        // bind-mounted by the kernel when the namespace was created.
+        let netns_resolv_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
 
-        if let Ok(output) = write_cmd {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to write resolv.conf into namespace: {}", stderr);
-
-                // Try another approach - mount bind
-                let mount_cmd = Command::new("ip")
-                    .args([
-                        "netns",
-                        "exec",
-                        &namespace_name,
-                        "mount",
-                        "--bind",
-                        &temp_resolv,
-                        "/etc/resolv.conf",
-                    ])
-                    .output();
-
-                if let Ok(mount_output) = mount_cmd {
-                    if mount_output.status.success() {
-                        info!("Successfully bind-mounted resolv.conf in namespace");
-                    } else {
-                        let mount_stderr = String::from_utf8_lossy(&mount_output.stderr);
-                        warn!("Failed to bind mount resolv.conf: {}", mount_stderr);
-
-                        // Last resort - try copying the file content
-                        let cp_cmd = Command::new("cp")
-                            .args([
-                                &temp_resolv,
-                                &format!(
-                                    "/proc/self/root/etc/netns/{}/resolv.conf",
-                                    namespace_name
-                                ),
-                            ])
-                            .output();
-
-                        if let Ok(cp_output) = cp_cmd
-                            && cp_output.status.success()
-                        {
-                            info!("Successfully copied resolv.conf via /proc");
-                        }
-                    }
-                }
-            } else {
-                info!("Successfully wrote resolv.conf into namespace");
+        match std::fs::write(&netns_resolv_path, &dns_content) {
+            Ok(_) => {
+                info!(
+                    "Updated namespace-specific resolv.conf at {}",
+                    netns_resolv_path
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to update {}: {}. DNS may not work in namespace. \
+                     This is safe but the namespace will not have working DNS.",
+                    netns_resolv_path, e
+                );
             }
         }
 
