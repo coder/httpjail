@@ -396,8 +396,7 @@ impl ProxyServer {
             bind_listener(addr).await?
         } else {
             // No address specified, find available port in 8000-8999 range on localhost
-            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
-                .await?
+            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)).await?
         };
 
         let http_port = http_listener.local_addr()?.port();
@@ -438,8 +437,7 @@ impl ProxyServer {
             bind_listener(addr).await?
         } else {
             // No address specified, find available port in 8000-8999 range on localhost
-            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
-                .await?
+            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)).await?
         };
 
         let https_port = https_listener.local_addr()?.port();
