@@ -181,8 +181,8 @@ fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, 
         .arg("--js")
         .arg("true")
         .arg("-vv")
-        .env("HTTPJAIL_HTTP_BIND", http_port.to_string())
-        .env("HTTPJAIL_HTTPS_BIND", https_port.to_string())
+        .env("HTTPJAIL_HTTP_BIND", format!("127.0.0.1:{}", http_port))
+        .env("HTTPJAIL_HTTPS_BIND", format!("127.0.0.1:{}", https_port))
         .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1") // Skip automatic keychain installation during tests
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -337,7 +337,10 @@ fn test_server_bind_defaults() {
 fn test_server_bind_port_only() {
     // Port-only should bind to all interfaces (0.0.0.0)
     let (mut server, port) = start_server_with_bind("19882", "19883");
-    assert_eq!(port, 19882, "Server should bind to specified port on all interfaces");
+    assert_eq!(
+        port, 19882,
+        "Server should bind to specified port on all interfaces"
+    );
     server.kill().ok();
 }
 
