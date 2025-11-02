@@ -21,9 +21,9 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use socket2::{Domain, Protocol, Socket, Type};
 
-#[cfg(target_os = "linux")]
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -295,35 +295,44 @@ pub fn get_client() -> &'static Client<
 }
 
 /// Try to bind to an available port in the given range (up to 16 attempts)
-async fn bind_to_available_port(start: u16, end: u16, bind_addr: [u8; 4]) -> Result<TcpListener> {
+async fn bind_to_available_port(start: u16, end: u16, ip: std::net::IpAddr) -> Result<TcpListener> {
     let mut rng = rand::thread_rng();
 
     for _ in 0..16 {
         let port = rng.gen_range(start..=end);
-        match bind_ipv4_listener(bind_addr, port).await {
+        let addr = std::net::SocketAddr::new(ip, port);
+        match bind_listener(addr).await {
             Ok(listener) => {
-                debug!("Successfully bound to port {}", port);
+                debug!("Successfully bound to {}:{}", ip, port);
                 return Ok(listener);
             }
             Err(_) => continue,
         }
     }
     anyhow::bail!(
-        "No available port found after 16 attempts in range {}-{}",
+        "No available port found after 16 attempts in range {}-{} on {}",
         start,
-        end
+        end,
+        ip
     )
 }
 
-async fn bind_ipv4_listener(bind_addr: [u8; 4], port: u16) -> Result<TcpListener> {
+async fn bind_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
     #[cfg(target_os = "linux")]
     {
         // Setup a raw socket to set IP_FREEBIND for specific non-loopback addresses
-        let ip = Ipv4Addr::from(bind_addr);
-        let is_specific_non_loopback =
-            ip != Ipv4Addr::new(127, 0, 0, 1) && ip != Ipv4Addr::new(0, 0, 0, 0);
+        let is_specific_non_loopback = match addr.ip() {
+            std::net::IpAddr::V4(ip) => {
+                ip != Ipv4Addr::new(127, 0, 0, 1) && ip != Ipv4Addr::new(0, 0, 0, 0)
+            }
+            std::net::IpAddr::V6(ip) => ip != Ipv6Addr::LOCALHOST && ip != Ipv6Addr::UNSPECIFIED,
+        };
         if is_specific_non_loopback {
-            let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            let domain = match addr {
+                std::net::SocketAddr::V4(_) => Domain::IPV4,
+                std::net::SocketAddr::V6(_) => Domain::IPV6,
+            };
+            let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
             // Enabling FREEBIND for non-local address binding before interface configuration
             unsafe {
                 let yes: libc::c_int = 1;
@@ -341,35 +350,31 @@ async fn bind_ipv4_listener(bind_addr: [u8; 4], port: u16) -> Result<TcpListener
                     );
                 }
             }
-
+            sock.set_reuse_address(true)?;
             sock.set_nonblocking(true)?;
-            let addr = SocketAddr::from((ip, port));
             sock.bind(&addr.into())?;
-            sock.listen(1024)?; // OS default backlog
+            sock.listen(128)?;
             let std_listener: std::net::TcpListener = sock.into();
             std_listener.set_nonblocking(true)?;
             return Ok(TcpListener::from_std(std_listener)?);
         }
     }
-    // Fallback: normal async bind if the conditions aren't met
-    let listener = TcpListener::bind(SocketAddr::from((bind_addr, port))).await?;
-    Ok(listener)
+
+    TcpListener::bind(addr).await.map_err(Into::into)
 }
 
 pub struct ProxyServer {
-    http_port: Option<u16>,
-    https_port: Option<u16>,
+    http_bind: Option<std::net::SocketAddr>,
+    https_bind: Option<std::net::SocketAddr>,
     rule_engine: Arc<RuleEngine>,
     cert_manager: Arc<CertificateManager>,
-    bind_address: [u8; 4],
 }
 
 impl ProxyServer {
     pub fn new(
-        http_port: Option<u16>,
-        https_port: Option<u16>,
+        http_bind: Option<std::net::SocketAddr>,
+        https_bind: Option<std::net::SocketAddr>,
         rule_engine: RuleEngine,
-        bind_address: Option<[u8; 4]>,
     ) -> Self {
         let cert_manager = CertificateManager::new().expect("Failed to create certificate manager");
 
@@ -378,22 +383,21 @@ impl ProxyServer {
         init_client_with_ca(ca_cert_der);
 
         ProxyServer {
-            http_port,
-            https_port,
+            http_bind,
+            https_bind,
             rule_engine: Arc::new(rule_engine),
             cert_manager: Arc::new(cert_manager),
-            bind_address: bind_address.unwrap_or([127, 0, 0, 1]),
         }
     }
 
     pub async fn start(&mut self) -> Result<(u16, u16)> {
-        let http_listener = if let Some(port) = self.http_port {
-            bind_ipv4_listener(self.bind_address, port).await?
+        // Bind HTTP listener
+        let http_listener = if let Some(addr) = self.http_bind {
+            bind_listener(addr).await?
         } else {
-            // No port specified, find available port in 8000-8999 range
-            let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
-            self.http_port = Some(listener.local_addr()?.port());
-            listener
+            // No address specified, find available port in 8000-8999 range on localhost
+            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .await?
         };
 
         let http_port = http_listener.local_addr()?.port();
@@ -429,14 +433,13 @@ impl ProxyServer {
 
         // IPv6-specific listener not required; IPv4 listener suffices for jail routing
 
-        // Start HTTPS proxy
-        let https_listener = if let Some(port) = self.https_port {
-            bind_ipv4_listener(self.bind_address, port).await?
+        // Bind HTTPS listener
+        let https_listener = if let Some(addr) = self.https_bind {
+            bind_listener(addr).await?
         } else {
-            // No port specified, find available port in 8000-8999 range
-            let listener = bind_to_available_port(8000, 8999, self.bind_address).await?;
-            self.https_port = Some(listener.local_addr()?.port());
-            listener
+            // No address specified, find available port in 8000-8999 range on localhost
+            bind_to_available_port(8000, 8999, std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .await?
         };
 
         let https_port = https_listener.local_addr()?.port();
@@ -693,17 +696,19 @@ mod tests {
         let engine = V8JsRuleEngine::new(js.to_string()).unwrap();
         let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
 
-        let proxy = ProxyServer::new(Some(8080), Some(8443), rule_engine, None);
+        let http_bind = Some("127.0.0.1:8080".parse().unwrap());
+        let https_bind = Some("127.0.0.1:8443".parse().unwrap());
+        let proxy = ProxyServer::new(http_bind, https_bind, rule_engine);
 
-        assert_eq!(proxy.http_port, Some(8080));
-        assert_eq!(proxy.https_port, Some(8443));
+        assert_eq!(proxy.http_bind.map(|s| s.port()), Some(8080));
+        assert_eq!(proxy.https_bind.map(|s| s.port()), Some(8443));
     }
 
     #[tokio::test]
     async fn test_proxy_server_auto_port() {
         let engine = V8JsRuleEngine::new("true".to_string()).unwrap();
         let rule_engine = RuleEngine::from_trait(Box::new(engine), None);
-        let mut proxy = ProxyServer::new(None, None, rule_engine, None);
+        let mut proxy = ProxyServer::new(None, None, rule_engine);
 
         let (http_port, https_port) = proxy.start().await.unwrap();
 
