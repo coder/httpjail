@@ -21,9 +21,10 @@ use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use socket2::{Domain, Protocol, Socket, Type};
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
+
 #[cfg(target_os = "linux")]
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
