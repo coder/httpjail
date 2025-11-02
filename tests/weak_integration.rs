@@ -290,32 +290,36 @@ fn test_server_mode() {
 
 /// Test for Host header security (Issue #57)
 /// Verifies that httpjail corrects mismatched Host headers to prevent
-/// CloudFlare and other CDN routing bypasses.
+/// CDN routing bypasses and other Host header attacks.
+///
+/// This test uses httpbin.org/headers which echoes back the received headers,
+/// allowing us to verify that httpjail corrects the Host header to match the
+/// actual destination URL rather than relying on external service blocking behavior.
 #[test]
 fn test_host_header_security() {
     use std::process::Command;
 
-    // Test with Cloudflare's trace endpoint that clearly shows the Host header
-    let curl_args = vec![
-        "-s",
-        "-H",
-        "Host: evil.com",
-        "--max-time",
-        "3",
-        "http://www.cloudflare.com/cdn-cgi/trace",
-    ];
-
-    // Test 1: Direct curl execution (without httpjail) - Cloudflare blocks mismatched Host
+    // Test 1: Direct curl with mismatched Host header
+    // httpbin.org/headers echoes back all headers it receives
     let direct_result = Command::new("curl")
-        .args(&curl_args)
+        .args([
+            "-s",
+            "-H",
+            "Host: evil.com",
+            "--max-time",
+            "5",
+            "http://httpbin.org/headers",
+        ])
         .output()
         .expect("Failed to execute curl directly");
 
     let direct_stdout = String::from_utf8_lossy(&direct_result.stdout);
-    // Cloudflare returns an error code (1034) for mismatched Host headers
+
+    // Verify curl sends the mismatched Host header as-is
     assert!(
-        direct_stdout.contains("error code: 1034"),
-        "Direct curl with mismatched Host header should be blocked by Cloudflare with error 1034 (got: {})",
+        direct_stdout.contains("\"Host\": \"evil.com\"")
+            || direct_stdout.contains("\"Host\":\"evil.com\""),
+        "Direct curl should send mismatched Host header (got: {})",
         direct_stdout
     );
 
@@ -323,27 +327,37 @@ fn test_host_header_security() {
     let httpjail_result = HttpjailCommand::new()
         .weak()
         .js("true") // Allow all requests
-        .command(vec!["curl"].into_iter().chain(curl_args.clone()).collect())
+        .command(vec![
+            "curl",
+            "-s",
+            "-H",
+            "Host: evil.com",
+            "--max-time",
+            "5",
+            "http://httpbin.org/headers",
+        ])
         .execute();
 
     assert!(httpjail_result.is_ok(), "Httpjail request should complete");
     let (exit_code, stdout, _) = httpjail_result.unwrap();
     assert_eq!(exit_code, 0, "Httpjail request should succeed");
 
-    // Httpjail should have corrected the Host header, allowing the request to succeed
+    // Verify httpjail corrected the Host header to match the actual destination
     assert!(
-        stdout.contains("h=www.cloudflare.com"),
-        "Httpjail should correct the Host header to www.cloudflare.com, allowing the request (got: {})",
-        stdout
-    );
-    assert!(
-        !stdout.contains("error code: 1034"),
-        "Httpjail-corrected request should not be blocked by Cloudflare (got: {})",
+        stdout.contains("\"Host\": \"httpbin.org\"") || stdout.contains("\"Host\":\"httpbin.org\""),
+        "Httpjail should correct Host header to httpbin.org (got: {})",
         stdout
     );
 
-    // This demonstrates that httpjail prevents the Host header bypass attack
-    // that would otherwise be possible with direct curl execution
+    // Verify the mismatched header was NOT forwarded
+    assert!(
+        !stdout.contains("\"Host\": \"evil.com\"") && !stdout.contains("\"Host\":\"evil.com\""),
+        "Httpjail should not forward mismatched Host header evil.com (got: {})",
+        stdout
+    );
+
+    // This demonstrates that httpjail prevents Host header bypass attacks
+    // by correcting the Host header to match the actual destination URL
 }
 
 // The proc/JS parity tests have been moved to tests/json_parity.rs
