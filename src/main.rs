@@ -363,7 +363,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    setup_logging(args.run_args.verbose);
+    // Server mode defaults to INFO level logging for visibility
+    let verbosity = args
+        .run_args
+        .verbose
+        .max(if args.run_args.server { 1 } else { 0 });
+    setup_logging(verbosity);
 
     // Log the version at startup for easier diagnostics
     debug!("httpjail version: {}", env!("VERSION_WITH_GIT_HASH"));
@@ -487,64 +492,119 @@ async fn main() -> Result<()> {
     }
 
     // Parse bind configuration from env vars
-    // Supports both "port" and "ip:port" formats
-    fn parse_bind_config(env_var: &str) -> (Option<u16>, Option<std::net::IpAddr>) {
+    // Returns Some(addr) for "port", ":port", or "ip:port" formats (including explicit :0)
+    // Returns None for "ip" only or missing config
+    fn parse_bind_config(env_var: &str) -> Option<std::net::SocketAddr> {
         if let Ok(val) = std::env::var(env_var) {
-            if let Some(colon_pos) = val.rfind(':') {
-                // Try to parse as ip:port
-                let ip_str = &val[..colon_pos];
-                let port_str = &val[colon_pos + 1..];
-                match port_str.parse::<u16>() {
-                    Ok(port) => match ip_str.parse::<std::net::IpAddr>() {
-                        Ok(ip) => (Some(port), Some(ip)),
-                        Err(_) => (Some(port), None),
-                    },
-                    Err(_) => (None, None),
-                }
-            } else {
-                // Try to parse as port
-                match val.parse::<u16>() {
-                    Ok(port) => (Some(port), None),
-                    Err(_) => (None, None),
+            let val = val.trim();
+
+            // First try parsing as "ip:port" (respects explicit :0)
+            if let Ok(addr) = val.parse::<std::net::SocketAddr>() {
+                return Some(addr);
+            }
+
+            // Try parsing as ":port" (Go-style) - bind to all interfaces (0.0.0.0)
+            if let Some(port_str) = val.strip_prefix(':')
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+            }
+
+            // Try parsing as just a port number - bind to all interfaces (0.0.0.0)
+            if let Ok(port) = val.parse::<u16>() {
+                return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+            }
+        }
+        None
+    }
+
+    // Parse IP-only from env var (for default port handling)
+    fn parse_ip_from_env(env_var: &str) -> Option<std::net::IpAddr> {
+        std::env::var(env_var).ok()?.parse().ok()
+    }
+
+    // Resolve bind address with optional default port for IP-only configs
+    fn resolve_bind_with_default(
+        parsed: Option<std::net::SocketAddr>,
+        env_var: &str,
+        default_ip: std::net::IpAddr,
+        default_port: u16,
+    ) -> Option<std::net::SocketAddr> {
+        match parsed {
+            Some(addr) => Some(addr), // Respect explicit config including :0
+            None => {
+                // Check if user provided just IP without port
+                if let Some(ip) = parse_ip_from_env(env_var) {
+                    Some(std::net::SocketAddr::new(ip, default_port))
+                } else {
+                    Some(std::net::SocketAddr::new(default_ip, default_port))
                 }
             }
-        } else {
-            (None, None)
         }
     }
 
-    // Determine ports to bind
-    let (http_port, _http_ip) = parse_bind_config("HTTPJAIL_HTTP_BIND");
-    let (https_port, _https_ip) = parse_bind_config("HTTPJAIL_HTTPS_BIND");
+    // Determine bind addresses
+    let http_bind = parse_bind_config("HTTPJAIL_HTTP_BIND");
+    let https_bind = parse_bind_config("HTTPJAIL_HTTPS_BIND");
 
-    // For strong jail mode (not weak, not server), we need to bind to all interfaces (0.0.0.0)
+    // For strong jail mode (not weak, not server), we need to bind to a specific IP
     // so the proxy is accessible from the veth interface. For weak mode or server mode,
-    // localhost is fine.
+    // use the configured address or defaults.
     // TODO: This has security implications - see GitHub issue #31
-    let bind_address: Option<[u8; 4]> = if args.run_args.weak || args.run_args.server {
-        None
+    let (http_bind, https_bind) = if args.run_args.server {
+        // Server mode: default to localhost:8080/8443, respect explicit ports including :0
+        let localhost = std::net::IpAddr::from([127, 0, 0, 1]);
+        let http = resolve_bind_with_default(http_bind, "HTTPJAIL_HTTP_BIND", localhost, 8080);
+        let https = resolve_bind_with_default(https_bind, "HTTPJAIL_HTTPS_BIND", localhost, 8443);
+        (http, https)
+    } else if args.run_args.weak {
+        // Weak mode: If IP-only provided, use port 0 (OS auto-select), else None
+        let http = http_bind.or_else(|| {
+            parse_ip_from_env("HTTPJAIL_HTTP_BIND").map(|ip| std::net::SocketAddr::new(ip, 0))
+        });
+        let https = https_bind.or_else(|| {
+            parse_ip_from_env("HTTPJAIL_HTTPS_BIND").map(|ip| std::net::SocketAddr::new(ip, 0))
+        });
+        (http, https)
     } else {
         #[cfg(target_os = "linux")]
         {
-            Some(
-                httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(&jail_config.jail_id),
-            )
+            let jail_ip =
+                httpjail::jail::linux::LinuxJail::compute_host_ip_for_jail_id(&jail_config.jail_id);
+            // For strong jail mode, we need to bind to the jail IP.
+            // Use env var port if provided, otherwise use port 0 (auto-select) on jail IP.
+            let http_addr = match http_bind {
+                Some(addr) => std::net::SocketAddr::from((jail_ip, addr.port())),
+                None => std::net::SocketAddr::from((jail_ip, 0)), // Port 0 = auto-select
+            };
+            let https_addr = match https_bind {
+                Some(addr) => std::net::SocketAddr::from((jail_ip, addr.port())),
+                None => std::net::SocketAddr::from((jail_ip, 0)),
+            };
+            (Some(http_addr), Some(https_addr))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            None
+            (http_bind, https_bind)
         }
     };
 
-    let mut proxy = ProxyServer::new(http_port, https_port, rule_engine, bind_address);
+    let mut proxy = ProxyServer::new(http_bind, https_bind, rule_engine);
 
     // Start proxy in background if running as server; otherwise start with random ports
     let (actual_http_port, actual_https_port) = proxy.start().await?;
 
     if args.run_args.server {
+        let bind_str = |addr: Option<std::net::SocketAddr>| {
+            addr.map(|a| a.ip().to_string())
+                .unwrap_or_else(|| "localhost".to_string())
+        };
         info!(
-            "Proxy server running on http://localhost:{} and https://localhost:{}",
-            actual_http_port, actual_https_port
+            "Proxy server running on http://{}:{} and https://{}:{}",
+            bind_str(http_bind),
+            actual_http_port,
+            bind_str(https_bind),
+            actual_https_port
         );
         std::future::pending::<()>().await;
         unreachable!();
