@@ -497,30 +497,69 @@ impl Jail for LinuxJail {
             None
         };
 
-        // Build command: ip netns exec <namespace> <command>
-        // If we need to drop privileges, we wrap with setpriv
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name()]);
+        // SAFETY: Build command with mount namespace for safe /etc/resolv.conf handling
+        //
+        // We use unshare --mount to create an isolated mount namespace where we can
+        // safely replace /etc/resolv.conf (which is often a symlink) with a regular file.
+        // This is CRITICAL because:
+        // 1. Network namespaces share the host's filesystem by default
+        // 2. Without a mount namespace, modifying /etc/resolv.conf would affect the host
+        // 3. The kernel's /etc/netns/ auto-mount requires /etc/resolv.conf to be a regular file
+        //
+        // Command structure:
+        // unshare --mount sh -c 'rm -f /etc/resolv.conf && touch /etc/resolv.conf && exec ip netns exec <namespace> [setpriv ...] <command>'
+        //
+        // The mount namespace ensures we NEVER touch the host's /etc/resolv.conf.
 
-        // Handle privilege dropping and command execution
+        // Build the inner command (ip netns exec + optional setpriv + user command)
+        let mut inner_cmd_parts = vec![
+            "ip".to_string(),
+            "netns".to_string(),
+            "exec".to_string(),
+            self.namespace_name(),
+        ];
+
+        // Add setpriv for privilege dropping if needed
         if let Some((uid, gid)) = drop_privs {
-            // Use setpriv to drop privileges to the original user
-            // setpriv is lighter than runuser - no PAM, direct execve()
-            cmd.arg("setpriv");
-            cmd.arg(format!("--reuid={}", uid)); // Set real and effective UID
-            cmd.arg(format!("--regid={}", gid)); // Set real and effective GID
-            cmd.arg("--init-groups"); // Initialize supplementary groups
-            cmd.arg("--"); // End of options
-            for arg in command {
-                cmd.arg(arg);
-            }
-        } else {
-            // No privilege dropping, execute directly
-            cmd.arg(&command[0]);
-            for arg in &command[1..] {
-                cmd.arg(arg);
-            }
+            inner_cmd_parts.push("setpriv".to_string());
+            inner_cmd_parts.push(format!("--reuid={}", uid));
+            inner_cmd_parts.push(format!("--regid={}", gid));
+            inner_cmd_parts.push("--init-groups".to_string());
+            inner_cmd_parts.push("--".to_string());
         }
+
+        // Add user command
+        for arg in command {
+            inner_cmd_parts.push(arg.to_string());
+        }
+
+        // Shell-escape each argument by wrapping in single quotes and escaping existing single quotes
+        // This ensures arguments with spaces or special characters are handled safely
+        let escaped_parts: Vec<String> = inner_cmd_parts
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
+            .collect();
+
+        // Build the complete shell command that:
+        // 1. Creates an empty placeholder file
+        // 2. Bind-mounts it over /etc/resolv.conf (replacing symlink in mount namespace)
+        // 3. Execs into the network namespace where kernel auto-mounts /etc/netns/.../resolv.conf
+        //
+        // CRITICAL: We MUST use bind-mount instead of rm/touch because:
+        // - Mount namespaces only isolate the mount table, not the filesystem itself
+        // - Doing "rm /etc/resolv.conf" would delete the host's file even in a mount namespace!
+        // - Bind-mounting creates an overlay that only exists in our mount namespace
+        let shell_cmd = format!(
+            "touch /tmp/.httpjail-resolv && mount --bind /tmp/.httpjail-resolv /etc/resolv.conf && exec {}",
+            escaped_parts.join(" ")
+        );
+
+        // Create the top-level command with unshare --mount
+        let mut cmd = Command::new("unshare");
+        cmd.arg("--mount"); // Create new mount namespace (isolated filesystem view)
+        cmd.arg("sh");
+        cmd.arg("-c");
+        cmd.arg(&shell_cmd);
 
         // Set environment variables
         for (key, value) in extra_env {

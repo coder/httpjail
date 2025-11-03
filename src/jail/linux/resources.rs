@@ -226,27 +226,14 @@ impl NetnsResolv {
             nameserver_ip
         );
 
-        // Ensure /etc/resolv.conf exists as a regular file in the namespace
-        // If it's a symlink (common with systemd-resolved), the symlink target
-        // might not exist in the namespace's mount view, causing bind-mount to fail.
-        // We create a placeholder file that the kernel will bind-mount over.
-        let namespace_name = format!("httpjail_{}", jail_id);
-        let _output = Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                "sh",
-                "-c",
-                "rm -f /etc/resolv.conf && touch /etc/resolv.conf",
-            ])
-            .output()
-            .context("Failed to create /etc/resolv.conf in namespace")?;
-
-        debug!(
-            "Created placeholder /etc/resolv.conf in namespace {}",
-            namespace_name
-        );
+        // SAFETY: We do NOT modify /etc/resolv.conf here because:
+        // 1. Network namespaces share the host's filesystem by default
+        // 2. Modifying /etc/resolv.conf would affect the host system
+        // 3. The kernel's /etc/netns/ auto-mount mechanism will be triggered when
+        //    we launch the jailed process with unshare --mount, which gives us an
+        //    isolated filesystem view where we can safely create a placeholder file
+        //
+        // See LinuxJail::run() for the mount namespace setup that enables this.
 
         Ok(Self {
             netns_dir,
