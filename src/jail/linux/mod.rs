@@ -497,72 +497,40 @@ impl Jail for LinuxJail {
             None
         };
 
-        // CRITICAL DNS CONFIGURATION APPROACH:
+        // DNS CONFIGURATION: Use standard ip netns exec approach
         //
-        // We use nsenter + unshare instead of ip netns exec to manually control the bind-mount
-        // of our custom /etc/netns/.../resolv.conf. This is necessary because:
+        // ip netns exec automatically creates a mount namespace and bind-mounts
+        // /etc/netns/<namespace>/resolv.conf over /etc/resolv.conf when present.
         //
-        // 1. ip netns exec automatically bind-mounts /etc/netns/.../resolv.conf, but it fails when
-        //    /etc/resolv.conf is a symlink to a non-existent target (common with systemd-resolved)
+        // KNOWN LIMITATION: This may fail on systems where /etc/resolv.conf is a symlink
+        // to a target that doesn't exist in the mount namespace (e.g., systemd-resolved).
+        // In such cases, DNS queries will still reach our dummy DNS server via the nftables
+        // rules, but applications that directly check /etc/resolv.conf may see stale content.
         //
-        // 2. The order with ip netns exec is: create mount namespace -> bind-mount -> run command
-        //    So we can't create the symlink target before the bind-mount happens
+        // We cannot safely "fix" this because:
+        // - Mount namespaces only isolate mount tables, not filesystems
+        // - Any file operations (rm, cp, touch) affect the host
+        // - Bind-mounts over symlinks require the symlink target to exist
         //
-        // 3. Solution: Use nsenter to enter the network namespace, then unshare to create a mount
-        //    namespace, then manually bind-mount our resolv.conf
-        //
-        // Command structure:
-        // nsenter --net=/var/run/netns/<namespace> unshare --mount sh -c 'mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind /etc/netns/.../resolv.conf /etc/resolv.conf && exec <command>'
-        //
-        // Reference: https://unix.stackexchange.com/questions/443898
+        // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
 
-        let netns_path = format!("/var/run/netns/httpjail_{}", self.config.jail_id);
-        let resolv_path = format!("/etc/netns/httpjail_{}/resolv.conf", self.config.jail_id);
+        // Build command: ip netns exec <namespace> [setpriv ...] <command>
+        let mut cmd = Command::new("ip");
+        cmd.args(["netns", "exec", &self.namespace_name()]);
 
-        // Build the inner command parts
-        let mut inner_cmd_parts = Vec::new();
-
-        // Add setpriv if needed
+        // Add setpriv for privilege dropping if needed
         if let Some((uid, gid)) = drop_privs {
-            inner_cmd_parts.push("setpriv".to_string());
-            inner_cmd_parts.push(format!("--reuid={}", uid));
-            inner_cmd_parts.push(format!("--regid={}", gid));
-            inner_cmd_parts.push("--init-groups".to_string());
-            inner_cmd_parts.push("--".to_string());
+            cmd.arg("setpriv");
+            cmd.arg(format!("--reuid={}", uid));
+            cmd.arg(format!("--regid={}", gid));
+            cmd.arg("--init-groups");
+            cmd.arg("--");
         }
 
         // Add user command
         for arg in command {
-            inner_cmd_parts.push(arg.to_string());
+            cmd.arg(arg);
         }
-
-        // Shell-escape each argument
-        let escaped_parts: Vec<String> = inner_cmd_parts
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
-            .collect();
-
-        // Build wrapper shell command that:
-        // 1. Creates symlink target placeholder (if needed)
-        // 2. Bind-mounts our custom resolv.conf to the RESOLVED path (following symlinks)
-        // 3. Execs the user command
-        //
-        // CRITICAL: We mount to $(readlink -f /etc/resolv.conf) not /etc/resolv.conf directly,
-        // because mount follows symlinks and we need the actual target path.
-        let shell_cmd = format!(
-            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind {} $(readlink -f /etc/resolv.conf || echo /etc/resolv.conf) && exec {}",
-            resolv_path,
-            escaped_parts.join(" ")
-        );
-
-        // Build command: nsenter --net=<netns> unshare --mount sh -c '<wrapper>'
-        let mut cmd = Command::new("nsenter");
-        cmd.arg(format!("--net={}", netns_path));
-        cmd.arg("unshare");
-        cmd.arg("--mount");
-        cmd.arg("sh");
-        cmd.arg("-c");
-        cmd.arg(&shell_cmd);
 
         // Set environment variables
         for (key, value) in extra_env {
