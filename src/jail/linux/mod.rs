@@ -497,22 +497,27 @@ impl Jail for LinuxJail {
             None
         };
 
-        // CRITICAL: ip netns exec automatically creates a mount namespace and bind-mounts
-        // /etc/netns/<namespace>/resolv.conf over /etc/resolv.conf. This is THE STANDARD
-        // way to provide custom DNS configuration to network namespaces without touching
-        // the host's /etc/resolv.conf.
+        // CRITICAL DNS CONFIGURATION APPROACH:
         //
-        // HOWEVER: When /etc/resolv.conf is a symlink (common with systemd-resolved),
-        // the symlink target might not exist in the new mount namespace, causing the
-        // bind-mount to fail.  We must create the symlink target BEFORE ip netns exec
-        // attempts the bind-mount, and we must do it in the SAME ip netns exec invocation
-        // (since each invocation gets its own ephemeral mount namespace).
+        // We use nsenter + unshare instead of ip netns exec to manually control the bind-mount
+        // of our custom /etc/netns/.../resolv.conf. This is necessary because:
         //
-        // Solution: Wrap the user command in a shell that:
-        // 1. Creates /run/systemd/resolve/stub-resolv.conf placeholder
-        // 2. Execs the user command (with optional setpriv for privilege dropping)
+        // 1. ip netns exec automatically bind-mounts /etc/netns/.../resolv.conf, but it fails when
+        //    /etc/resolv.conf is a symlink to a non-existent target (common with systemd-resolved)
         //
-        // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
+        // 2. The order with ip netns exec is: create mount namespace -> bind-mount -> run command
+        //    So we can't create the symlink target before the bind-mount happens
+        //
+        // 3. Solution: Use nsenter to enter the network namespace, then unshare to create a mount
+        //    namespace, then manually bind-mount our resolv.conf
+        //
+        // Command structure:
+        // nsenter --net=/var/run/netns/<namespace> unshare --mount sh -c 'mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind /etc/netns/.../resolv.conf /etc/resolv.conf && exec <command>'
+        //
+        // Reference: https://unix.stackexchange.com/questions/443898
+
+        let netns_path = format!("/var/run/netns/httpjail_{}", self.config.jail_id);
+        let resolv_path = format!("/etc/netns/httpjail_{}/resolv.conf", self.config.jail_id);
 
         // Build the inner command parts
         let mut inner_cmd_parts = Vec::new();
@@ -537,22 +542,24 @@ impl Jail for LinuxJail {
             .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
             .collect();
 
-        // Build wrapper shell command that creates placeholder then execs user command
+        // Build wrapper shell command that:
+        // 1. Creates symlink target placeholder (if needed)
+        // 2. Bind-mounts our custom resolv.conf
+        // 3. Execs the user command
         let shell_cmd = format!(
-            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && exec {}",
+            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind {} /etc/resolv.conf && exec {}",
+            resolv_path,
             escaped_parts.join(" ")
         );
 
-        // Build command: ip netns exec <namespace> sh -c '<wrapper>'
-        let mut cmd = Command::new("ip");
-        cmd.args([
-            "netns",
-            "exec",
-            &self.namespace_name(),
-            "sh",
-            "-c",
-            &shell_cmd,
-        ]);
+        // Build command: nsenter --net=<netns> unshare --mount sh -c '<wrapper>'
+        let mut cmd = Command::new("nsenter");
+        cmd.arg(format!("--net={}", netns_path));
+        cmd.arg("unshare");
+        cmd.arg("--mount");
+        cmd.arg("sh");
+        cmd.arg("-c");
+        cmd.arg(&shell_cmd);
 
         // Set environment variables
         for (key, value) in extra_env {
