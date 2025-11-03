@@ -391,7 +391,7 @@ mod tests {
             .arg("alpine:latest")
             .arg("sh")
             .arg("-c")
-            .arg("wget -q -O- --timeout=2 http://httpbin.org/get 2>&1 || echo 'BLOCKED'");
+            .arg("wget -q -O- --timeout=2 https://httpbingo.org/get 2>&1 || echo 'BLOCKED'");
 
         let output = cmd
             .output()
