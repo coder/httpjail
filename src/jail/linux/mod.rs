@@ -427,8 +427,29 @@ impl LinuxJail {
 
         // Ensure /etc/netns/<namespace>/ directory exists
         let netns_namespace_dir = format!("/etc/netns/{}", namespace_name);
-        std::fs::create_dir_all(&netns_namespace_dir)
-            .with_context(|| format!("Failed to create directory: {}", netns_namespace_dir))?;
+
+        // Use mkdir -p to ensure directory exists (more robust than Rust's create_dir_all)
+        let mkdir_output = Command::new("mkdir")
+            .args(["-p", &netns_namespace_dir])
+            .output()
+            .context("Failed to execute mkdir")?;
+
+        if !mkdir_output.status.success() {
+            anyhow::bail!(
+                "Failed to create directory {}: {}",
+                netns_namespace_dir,
+                String::from_utf8_lossy(&mkdir_output.stderr)
+            );
+        }
+
+        // Verify directory exists
+        if !std::path::Path::new(&netns_namespace_dir).is_dir() {
+            anyhow::bail!(
+                "Directory {} does not exist after creation",
+                netns_namespace_dir
+            );
+        }
+
         debug!("Created directory: {}", netns_namespace_dir);
 
         // Write custom resolv.conf that will be bind-mounted into the namespace
