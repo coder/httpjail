@@ -504,10 +504,10 @@ async fn main() -> Result<()> {
             }
 
             // Try parsing as ":port" (Go-style) - bind to all interfaces (0.0.0.0)
-            if let Some(port_str) = val.strip_prefix(':') {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
-                }
+            if let Some(port_str) = val.strip_prefix(':')
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
             }
 
             // Try parsing as just a port number - bind to all interfaces (0.0.0.0)
