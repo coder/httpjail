@@ -1,7 +1,21 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
-use std::process::Command;
-use tracing::{debug, info};
+use std::future::Future;
+use tracing::debug;
+
+/// Run async code, using the ambient tokio runtime when available
+fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime")
+            .block_on(future),
+    }
+}
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -20,24 +34,14 @@ impl SystemResource for NetworkNamespace {
     fn create(jail_id: &str) -> Result<Self> {
         let name = format!("httpjail_{}", jail_id);
 
-        let output = Command::new("ip")
-            .args(["netns", "add", &name])
-            .output()
-            .context("Failed to execute ip netns add")?;
+        // Use netlink-based implementation instead of `ip` command
+        super::netlink::create_netns(&name)
+            .context("Failed to create network namespace via netlink")?;
 
-        if output.status.success() {
-            info!("Created network namespace: {}", name);
-            Ok(Self {
-                name,
-                created: true,
-            })
-        } else {
-            anyhow::bail!(
-                "Failed to create namespace {}: {}",
-                name,
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
+        Ok(Self {
+            name,
+            created: true,
+        })
     }
 
     fn cleanup(&mut self) -> Result<()> {
@@ -45,25 +49,10 @@ impl SystemResource for NetworkNamespace {
             return Ok(());
         }
 
-        let output = Command::new("ip")
-            .args(["netns", "del", &self.name])
-            .output()
-            .context("Failed to execute ip netns del")?;
+        super::netlink::delete_netns(&self.name).context("Failed to delete network namespace")?;
 
-        if output.status.success() {
-            debug!("Deleted network namespace: {}", self.name);
-            self.created = false;
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such file") || stderr.contains("Cannot find") {
-                // Already deleted
-                self.created = false;
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!("Failed to delete namespace: {}", stderr))
-            }
-        }
+        self.created = false;
+        Ok(())
     }
 
     fn for_existing(jail_id: &str) -> Self {
@@ -100,26 +89,18 @@ impl SystemResource for VethPair {
         let host_name = format!("vh_{}", jail_id);
         let ns_name = format!("vn_{}", jail_id);
 
-        let output = Command::new("ip")
-            .args([
-                "link", "add", &host_name, "type", "veth", "peer", "name", &ns_name,
-            ])
-            .output()
-            .context("Failed to create veth pair")?;
+        // Use netlink-based implementation
+        let host_clone = host_name.clone();
+        let ns_clone = ns_name.clone();
+        block_on(async move { super::netlink::create_veth_pair(&host_clone, &ns_clone).await })
+            .context("Failed to create veth pair via netlink")?;
 
-        if output.status.success() {
-            debug!("Created veth pair: {} <-> {}", host_name, ns_name);
-            Ok(Self {
-                host_name,
-                ns_name,
-                created: true,
-            })
-        } else {
-            anyhow::bail!(
-                "Failed to create veth pair: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        }
+        debug!("Created veth pair: {} <-> {}", host_name, ns_name);
+        Ok(Self {
+            host_name,
+            ns_name,
+            created: true,
+        })
     }
 
     fn cleanup(&mut self) -> Result<()> {
@@ -128,9 +109,8 @@ impl SystemResource for VethPair {
         }
 
         // Deleting the host side will automatically delete both ends
-        let _ = Command::new("ip")
-            .args(["link", "del", &self.host_name])
-            .output();
+        let host_name = self.host_name.clone();
+        let _ = block_on(async move { super::netlink::delete_link(&host_name).await });
 
         self.created = false;
         Ok(())
