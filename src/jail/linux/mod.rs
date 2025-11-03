@@ -65,6 +65,8 @@ pub struct LinuxJail {
     veth_pair: Option<ManagedResource<VethPair>>,
     nftables: Option<ManagedResource<NFTable>>,
     dns_server_child: Option<std::process::Child>,
+    // Host-side DNS server for DNAT redirection
+    host_dns_server: Option<dns::DummyDnsServer>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -82,6 +84,7 @@ impl LinuxJail {
             veth_pair: None,
             nftables: None,
             dns_server_child: None,
+            host_dns_server: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -362,17 +365,38 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Start the dummy DNS server in the namespace
+    /// Start DNS servers using a two-pronged approach to handle different /etc/resolv.conf configs
+    ///
+    /// ## DNS Strategy Overview
+    ///
+    /// We run TWO DNS servers to handle all cases robustly:
+    ///
+    /// 1. **Namespace DNS server** (separate process in namespace):
+    ///    - Binds to loopback addresses (127.0.0.53, 127.0.0.54)
+    ///    - Handles queries when /etc/resolv.conf points to loopback (e.g., systemd-resolved)
+    ///    - These queries never leave the namespace, so DNAT doesn't apply
+    ///
+    /// 2. **Host DNS server** (runs in this process on host side):
+    ///    - Binds to host_ip:53 on the host side of the veth pair
+    ///    - Handles queries to external nameservers (e.g., 8.8.8.8 in /etc/resolv.conf)
+    ///    - DNAT rules redirect outbound DNS queries to this server
+    ///    - This works because DNAT to localhost doesn't work for locally-generated packets
+    ///      in the OUTPUT chain, but DNAT to a routable IP (the host_ip) does work
+    ///
+    /// This two-pronged approach works regardless of /etc/resolv.conf configuration.
     fn start_dns_server(&mut self) -> Result<()> {
         let namespace_name = self.namespace_name();
+        let host_ip_str = format!(
+            "{}.{}.{}.{}",
+            self.host_ip[0], self.host_ip[1], self.host_ip[2], self.host_ip[3]
+        );
 
+        // 1. Start namespace DNS server for loopback queries
         info!(
-            "Starting dummy DNS server inside namespace {}",
+            "Starting namespace DNS server inside {} for loopback addresses",
             namespace_name
         );
 
-        // Spawn httpjail inside the namespace to run the DNS server
-        // This uses the --__internal-dns-server flag which calls run_dns_server_blocking()
         let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
 
         let child = std::process::Command::new("ip")
@@ -382,6 +406,7 @@ impl LinuxJail {
                 &namespace_name,
                 exe_path.to_str().context("Invalid executable path")?,
                 "--__internal-dns-server",
+                &host_ip_str,
             ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -389,20 +414,40 @@ impl LinuxJail {
             .spawn()
             .context("Failed to spawn in-namespace DNS server")?;
 
-        info!("Started in-namespace DNS server (pid {})", child.id());
-
+        info!("Started namespace DNS server (pid {})", child.id());
         self.dns_server_child = Some(child);
+
+        // 2. Start host DNS server for DNAT redirection
+        info!(
+            "Starting host DNS server on {} for DNAT redirection",
+            host_ip_str
+        );
+
+        let mut host_server = dns::DummyDnsServer::new();
+        let host_addr = format!("{}:53", host_ip_str);
+        host_server
+            .start(&host_addr)
+            .context("Failed to start host DNS server")?;
+
+        info!("Started host DNS server on {}", host_addr);
+        self.host_dns_server = Some(host_server);
 
         Ok(())
     }
 
-    /// Stop the DNS server
+    /// Stop the DNS servers
     fn stop_dns_server(&mut self) {
+        // Stop namespace DNS server process
         if let Some(mut child) = self.dns_server_child.take() {
-            debug!("Stopping in-namespace DNS server (pid {})", child.id());
+            debug!("Stopping namespace DNS server (pid {})", child.id());
             let _ = child.kill();
             let _ = child.wait();
-            debug!("Stopped in-namespace DNS server");
+            debug!("Stopped namespace DNS server");
+        }
+
+        // Stop host DNS server (runs in threads, cleanup on drop)
+        if let Some(_server) = self.host_dns_server.take() {
+            debug!("Stopping host DNS server (cleanup on drop)");
         }
     }
 }
@@ -580,6 +625,7 @@ impl Clone for LinuxJail {
             veth_pair: None,
             nftables: None,
             dns_server_child: None,
+            host_dns_server: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),

@@ -129,7 +129,9 @@ table ip {table_name} {{
 
         # Redirect all DNS queries to our dummy DNS server running in namespace
         # This works regardless of what nameserver is in /etc/resolv.conf
-        udp dport 53 dnat to 127.0.0.1:53
+        # We redirect to host_ip instead of 127.0.0.1 because DNAT to localhost
+        # doesn't work reliably in the OUTPUT chain for locally-generated packets
+        udp dport 53 dnat to {host_ip}:53
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -145,8 +147,13 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic to localhost (after DNAT redirection)
-        ip daddr 127.0.0.1 udp dport 53 accept
+        # Allow DNS traffic to host IP (after DNAT redirection for external nameservers)
+        ip daddr {host_ip} udp dport 53 accept
+
+        # Allow DNS traffic to loopback addresses (systemd-resolved, etc.)
+        # These are handled by the namespace DNS server and don't need DNAT
+        ip daddr 127.0.0.53 udp dport 53 accept
+        ip daddr 127.0.0.54 udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
@@ -154,7 +161,7 @@ table ip {table_name} {{
         # Explicitly block all other UDP (e.g., QUIC on 443)
         # This must come AFTER allowing DNS traffic
         ip protocol udp drop
-        
+
         # Explicitly block all other TCP traffic
         # This must come AFTER allowing HTTP/HTTPS traffic
         ip protocol tcp drop
