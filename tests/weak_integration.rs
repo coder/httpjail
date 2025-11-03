@@ -293,7 +293,7 @@ fn test_server_mode() {
 /// Verifies that httpjail corrects mismatched Host headers to prevent
 /// CDN routing bypasses and other Host header attacks.
 ///
-/// This test uses httpbin.org/headers which echoes back the received headers,
+/// This test uses httpbingo.org/headers which echoes back the received headers,
 /// allowing us to verify that httpjail corrects the Host header to match the
 /// actual destination URL rather than relying on external service blocking behavior.
 #[test]
@@ -301,7 +301,7 @@ fn test_host_header_security() {
     use std::process::Command;
 
     // Test 1: Direct curl with mismatched Host header
-    // httpbin.org/headers echoes back all headers it receives
+    // httpbingo.org/headers echoes back all headers it receives
     let direct_result = Command::new("curl")
         .args([
             "-s",
@@ -309,7 +309,7 @@ fn test_host_header_security() {
             "Host: evil.com",
             "--max-time",
             "5",
-            "http://httpbin.org/headers",
+            "https://httpbingo.org/headers",
         ])
         .output()
         .expect("Failed to execute curl directly");
@@ -318,8 +318,7 @@ fn test_host_header_security() {
 
     // Verify curl sends the mismatched Host header as-is
     assert!(
-        direct_stdout.contains("\"Host\": \"evil.com\"")
-            || direct_stdout.contains("\"Host\":\"evil.com\""),
+        direct_stdout.contains("\"Host\"") && direct_stdout.contains("evil.com"),
         "Direct curl should send mismatched Host header (got: {})",
         direct_stdout
     );
@@ -335,7 +334,7 @@ fn test_host_header_security() {
             "Host: evil.com",
             "--max-time",
             "5",
-            "http://httpbin.org/headers",
+            "https://httpbingo.org/headers",
         ])
         .execute();
 
@@ -345,14 +344,14 @@ fn test_host_header_security() {
 
     // Verify httpjail corrected the Host header to match the actual destination
     assert!(
-        stdout.contains("\"Host\": \"httpbin.org\"") || stdout.contains("\"Host\":\"httpbin.org\""),
-        "Httpjail should correct Host header to httpbin.org (got: {})",
+        stdout.contains("\"Host\"") && stdout.contains("httpbingo.org"),
+        "Httpjail should correct Host header to httpbingo.org (got: {})",
         stdout
     );
 
     // Verify the mismatched header was NOT forwarded
     assert!(
-        !stdout.contains("\"Host\": \"evil.com\"") && !stdout.contains("\"Host\":\"evil.com\""),
+        !stdout.contains("evil.com"),
         "Httpjail should not forward mismatched Host header evil.com (got: {})",
         stdout
     );
