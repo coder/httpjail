@@ -541,22 +541,27 @@ impl Jail for LinuxJail {
             .collect();
 
         // Build the complete shell command that:
-        // 1. Creates an empty placeholder file
-        // 2. Bind-mounts it over /etc/resolv.conf (replacing symlink in mount namespace)
-        // 3. Execs into the network namespace where kernel auto-mounts /etc/netns/.../resolv.conf
+        // 1. Bind-mount our custom resolv.conf directly over /etc/resolv.conf
+        // 2. Exec into network namespace
         //
-        // CRITICAL: We MUST use bind-mount instead of rm/touch because:
-        // - Mount namespaces only isolate the mount table, not the filesystem itself
-        // - Doing "rm /etc/resolv.conf" would delete the host's file even in a mount namespace!
-        // - Bind-mounting creates an overlay that only exists in our mount namespace
+        // CRITICAL SAFETY: Instead of relying on kernel's /etc/netns/ auto-mount (which requires
+        // /etc/resolv.conf to be a regular file), we directly bind-mount our prepared resolv.conf
+        // from /etc/netns/httpjail_<id>/resolv.conf over /etc/resolv.conf in the mount namespace.
+        //
+        // This is safe because:
+        // - Bind mounts only affect the mount namespace, not the host filesystem
+        // - The host's /etc/resolv.conf (symlink or regular file) is never modified
+        // - Works regardless of whether host uses symlinked (systemd-resolved) or regular file DNS config
+        let netns_resolv_path = format!("/etc/netns/httpjail_{}/resolv.conf", self.config.jail_id);
         let shell_cmd = format!(
-            "touch /tmp/.httpjail-resolv && mount --bind /tmp/.httpjail-resolv /etc/resolv.conf && exec {}",
+            "mount --bind {} /etc/resolv.conf && exec {}",
+            netns_resolv_path,
             escaped_parts.join(" ")
         );
 
         // Create the top-level command with unshare --mount
         let mut cmd = Command::new("unshare");
-        cmd.arg("--mount"); // Create new mount namespace (isolated filesystem view)
+        cmd.arg("--mount"); // Create new mount namespace (isolated mount table)
         cmd.arg("sh");
         cmd.arg("-c");
         cmd.arg(&shell_cmd);
