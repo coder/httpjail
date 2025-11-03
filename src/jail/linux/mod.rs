@@ -61,10 +61,17 @@ pub fn format_ip(ip: [u8; 4]) -> String {
 /// Provides complete network isolation without persistent system state
 pub struct LinuxJail {
     config: JailConfig,
-    namespace: Option<ManagedResource<NetworkNamespace>>,
-    veth_pair: Option<ManagedResource<VethPair>>,
-    nftables: Option<ManagedResource<NFTable>>,
+    // IMPORTANT: Field order matters! Rust drops fields in declaration order (top to bottom).
+    // We want cleanup to happen in reverse order of creation:
+    // 1. DNS server stopped (explicit in Drop::drop)
+    // 2. netns_resolv cleaned (unmount bind-mount, remove /etc/netns dir)
+    // 3. nftables cleaned (remove firewall rules)
+    // 4. veth_pair cleaned (delete veth pair)
+    // 5. namespace cleaned (delete network namespace)
     netns_resolv: Option<ManagedResource<NetnsResolv>>,
+    nftables: Option<ManagedResource<NFTable>>,
+    veth_pair: Option<ManagedResource<VethPair>>,
+    namespace: Option<ManagedResource<NetworkNamespace>>,
     // Host-side DNS server for DNAT redirection
     host_dns_server: Option<dns::DummyDnsServer>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
@@ -80,10 +87,10 @@ impl LinuxJail {
             Self::compute_subnet_for_jail(&config.jail_id);
         Ok(Self {
             config,
-            namespace: None,
-            veth_pair: None,
-            nftables: None,
             netns_resolv: None,
+            nftables: None,
+            veth_pair: None,
+            namespace: None,
             host_dns_server: None,
             host_ip,
             host_cidr,
@@ -602,10 +609,10 @@ impl Clone for LinuxJail {
         // system resources that shouldn't be duplicated
         Self {
             config: self.config.clone(),
-            namespace: None,
-            veth_pair: None,
-            nftables: None,
             netns_resolv: None,
+            nftables: None,
+            veth_pair: None,
+            namespace: None,
             host_dns_server: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
