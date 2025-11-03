@@ -10,7 +10,7 @@ use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
 use dns::DummyDnsServer;
-use resources::{NFTable, NamespaceConfig, NetworkNamespace, VethPair};
+use resources::{NFTable, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
@@ -65,7 +65,6 @@ pub struct LinuxJail {
     config: JailConfig,
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
-    namespace_config: Option<ManagedResource<NamespaceConfig>>,
     nftables: Option<ManagedResource<NFTable>>,
     dns_server: Option<Arc<Mutex<DummyDnsServer>>>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
@@ -83,7 +82,6 @@ impl LinuxJail {
             config,
             namespace: None,
             veth_pair: None,
-            namespace_config: None,
             nftables: None,
             dns_server: None,
             host_ip,
@@ -209,10 +207,6 @@ impl LinuxJail {
     fn configure_namespace_networking(&self) -> Result<()> {
         let namespace_name = self.namespace_name();
         let veth_ns = self.veth_ns();
-
-        // Ensure DNS is properly configured in the namespace
-        // This is a fallback in case the bind mount didn't work
-        self.ensure_namespace_dns()?;
 
         // Format the host IP once
         let host_ip = format_ip(self.host_ip);
@@ -370,212 +364,6 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Fix DNS resolution in network namespaces
-    ///
-    /// ## The DNS Problem
-    ///
-    /// Network namespaces have isolated network stacks, including their own loopback.
-    /// When we create a namespace, it gets a copy of /etc/resolv.conf from the host.
-    ///
-    /// Common issues:
-    /// 1. **systemd-resolved**: Points to 127.0.0.53 which doesn't exist in the namespace
-    /// 2. **Local DNS**: Any local DNS resolver (127.0.0.1, etc.) won't be accessible
-    /// 3. **Corporate DNS**: Internal DNS servers might not be reachable from the namespace
-    /// 4. **CI environments**: Often have minimal or no DNS configuration
-    ///
-    /// ## Why We Can't Route Loopback Traffic to the Host
-    ///
-    /// You might think: "Just route 127.0.0.0/8 from the namespace to the host!"
-    /// This doesn't work due to Linux kernel security:
-    ///
-    /// 1. **Martian Packet Protection**: The kernel considers packets with 127.x.x.x
-    ///    addresses coming from non-loopback interfaces as "martian" (impossible/spoofed)
-    /// 2. **Source Address Validation**: Even with rp_filter=0, the kernel won't accept
-    ///    127.x.x.x packets from external interfaces
-    /// 3. **Built-in Security**: This is hardcoded in the kernel's IP stack for security -
-    ///    loopback addresses should NEVER appear on the network
-    ///
-    /// Even if we tried:
-    /// - `ip route add 127.0.0.53/32 via 10.99.X.1` - packets get dropped
-    /// - `nftables DNAT` to rewrite 127.0.0.53 -> host IP - happens too late
-    /// - Disabling rp_filter - doesn't help with loopback addresses
-    ///
-    /// ## Our Solution
-    ///
-    /// Instead of fighting the kernel's security measures, we:
-    /// 1. Always create a custom resolv.conf for the namespace
-    /// 2. Use public DNS servers (Google's 8.8.8.8 and 8.8.4.4)
-    /// 3. These DNS queries go out through our veth pair and work normally
-    ///
-    /// **IMPORTANT**: `ip netns add` automatically bind-mounts files from
-    /// /etc/netns/<namespace-name>/ to /etc/ inside the namespace when the namespace
-    /// is created. We MUST create /etc/netns/<namespace-name>/resolv.conf BEFORE
-    /// creating the namespace for this to work. This overrides /etc/resolv.conf
-    /// ONLY for processes running in the namespace. The host's /etc/resolv.conf
-    /// remains completely untouched.
-    ///
-    /// This is simpler, more reliable, and doesn't compromise security.
-    fn fix_systemd_resolved_dns(&mut self) -> Result<()> {
-        let namespace_name = self.namespace_name();
-
-        // Always create namespace config resource and custom resolv.conf
-        // This ensures DNS works in all environments, not just systemd-resolved
-        info!(
-            "Setting up DNS for namespace {} with custom resolv.conf",
-            namespace_name
-        );
-
-        // Ensure /etc/netns/<namespace>/ directory exists
-        let netns_namespace_dir = format!("/etc/netns/{}", namespace_name);
-
-        // Use mkdir -p to ensure directory exists (more robust than Rust's create_dir_all)
-        let mkdir_output = Command::new("mkdir")
-            .args(["-p", &netns_namespace_dir])
-            .output()
-            .context("Failed to execute mkdir")?;
-
-        if !mkdir_output.status.success() {
-            anyhow::bail!(
-                "Failed to create directory {}: {}",
-                netns_namespace_dir,
-                String::from_utf8_lossy(&mkdir_output.stderr)
-            );
-        }
-
-        // Verify directory exists
-        if !std::path::Path::new(&netns_namespace_dir).is_dir() {
-            anyhow::bail!(
-                "Directory {} does not exist after creation",
-                netns_namespace_dir
-            );
-        }
-
-        debug!("Created directory: {}", netns_namespace_dir);
-
-        // Write custom resolv.conf that will be bind-mounted into the namespace
-        // Point directly to the host's veth IP where our DNS server listens
-        let resolv_conf_path = format!("{}/resolv.conf", netns_namespace_dir);
-        let host_ip = format_ip(self.host_ip);
-        let resolv_conf_content = format!(
-            "# Custom DNS for httpjail namespace\n\
-# Points to dummy DNS server on host to prevent exfiltration\n\
-nameserver {}\n",
-            host_ip
-        );
-        std::fs::write(&resolv_conf_path, &resolv_conf_content)
-            .context("Failed to write namespace-specific resolv.conf")?;
-
-        info!(
-            "Created namespace-specific resolv.conf at {} pointing to local DNS server",
-            resolv_conf_path
-        );
-
-        // Verify the file was created
-        if !std::path::Path::new(&resolv_conf_path).exists() {
-            anyhow::bail!("Failed to create resolv.conf at {}", resolv_conf_path);
-        }
-
-        // Create namespace config resource for cleanup tracking
-        // IMPORTANT: Create this AFTER writing resolv.conf to ensure the file exists
-        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
-            &self.config.jail_id,
-        )?);
-
-        Ok(())
-    }
-
-    /// Ensure DNS works in the namespace by copying resolv.conf if needed
-    #[allow(clippy::collapsible_if)]
-    fn ensure_namespace_dns(&self) -> Result<()> {
-        let namespace_name = self.namespace_name();
-
-        // Check if DNS is already working by testing /etc/resolv.conf in namespace
-        let check_cmd = Command::new("ip")
-            .args(["netns", "exec", &namespace_name, "cat", "/etc/resolv.conf"])
-            .output();
-
-        let needs_fix = if let Ok(output) = check_cmd {
-            if !output.status.success() {
-                info!("Cannot read /etc/resolv.conf in namespace, will fix DNS");
-                true
-            } else {
-                let content = String::from_utf8_lossy(&output.stdout);
-                // Check if it's pointing to systemd-resolved or is empty
-                if content.is_empty() || content.contains("127.0.0.53") {
-                    info!("DNS points to systemd-resolved or is empty in namespace, will fix");
-                    true
-                } else if content.contains("nameserver") {
-                    info!("DNS already configured in namespace {}", namespace_name);
-                    false
-                } else {
-                    info!("No nameserver found in namespace resolv.conf, will fix");
-                    true
-                }
-            }
-        } else {
-            info!("Failed to check DNS in namespace, will attempt fix");
-            true
-        };
-
-        if !needs_fix {
-            return Ok(());
-        }
-
-        // DNS not working, try to fix it by copying a working resolv.conf
-        info!(
-            "Fixing DNS in namespace {} by copying resolv.conf",
-            namespace_name
-        );
-
-        // Setup DNS for the namespace
-        // Create a temporary resolv.conf before running the nsenter command
-        let temp_dir = crate::jail::get_temp_dir();
-        std::fs::create_dir_all(&temp_dir).ok();
-        let temp_resolv = temp_dir
-            .join(format!("httpjail_resolv_{}.conf", &namespace_name))
-            .to_string_lossy()
-            .to_string();
-        // Use the host veth IP where our dummy DNS server listens
-        let host_ip = format_ip(self.host_ip);
-        let dns_content = format!("nameserver {}\n", host_ip);
-        std::fs::write(&temp_resolv, &dns_content)
-            .with_context(|| format!("Failed to create temp resolv.conf: {}", temp_resolv))?;
-
-        // SAFE FALLBACK: Update the /etc/netns/<name>/resolv.conf file
-        // This avoids dangerous operations inside the namespace that could escape isolation.
-        //
-        // IMPORTANT: We do NOT use bind mounts inside namespaces because:
-        // 1. `ip netns exec` only enters the network namespace, NOT the mount namespace
-        // 2. Bind mounting /etc/resolv.conf (which is a symlink) in the host mount namespace
-        //    will follow the symlink and corrupt /run/systemd/resolve/stub-resolv.conf on the HOST
-        // 3. This breaks DNS for the entire system, not just the namespace
-        //
-        // Instead, we update /etc/netns/<name>/resolv.conf which should have been automatically
-        // bind-mounted by the kernel when the namespace was created.
-        let netns_resolv_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
-
-        match std::fs::write(&netns_resolv_path, &dns_content) {
-            Ok(_) => {
-                info!(
-                    "Updated namespace-specific resolv.conf at {}",
-                    netns_resolv_path
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to update {}: {}. DNS may not work in namespace. \
-                     This is safe but the namespace will not have working DNS.",
-                    netns_resolv_path, e
-                );
-            }
-        }
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_resolv);
-
-        Ok(())
-    }
-
     /// Start the dummy DNS server in the namespace
     fn start_dns_server(&mut self) -> Result<()> {
         let namespace_name = self.namespace_name();
@@ -618,10 +406,6 @@ impl Jail for LinuxJail {
     fn setup(&mut self, _proxy_port: u16) -> Result<()> {
         // Check for root access
         Self::check_root()?;
-
-        // Fix DNS BEFORE creating namespace so bind mount works
-        // The /etc/netns/<namespace>/ directory must exist before namespace creation
-        self.fix_systemd_resolved_dns()?;
 
         // Create network namespace
         self.create_namespace()?;
@@ -768,7 +552,6 @@ impl Jail for LinuxJail {
         // When these go out of scope, they will clean themselves up
         let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
         let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
-        let _config = ManagedResource::<NamespaceConfig>::for_existing(jail_id);
         let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
 
         Ok(())
@@ -783,7 +566,6 @@ impl Clone for LinuxJail {
             config: self.config.clone(),
             namespace: None,
             veth_pair: None,
-            namespace_config: None,
             nftables: None,
             dns_server: None,
             host_ip: self.host_ip,

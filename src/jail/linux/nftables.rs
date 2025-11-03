@@ -123,9 +123,13 @@ table ip {table_name} {{
         let ruleset = format!(
             r#"
 table ip {table_name} {{
-    # NAT output chain: redirect HTTP/HTTPS to host proxy
+    # NAT output chain: redirect HTTP/HTTPS/DNS to host
     chain output {{
         type nat hook output priority -100; policy accept;
+
+        # Redirect all DNS queries to our dummy DNS server on host
+        # This works regardless of what nameserver is in /etc/resolv.conf
+        udp dport 53 dnat to {host_ip}
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -141,7 +145,7 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic directly to the host (UDP only)
+        # Allow DNS traffic to the host (after DNAT redirection)
         ip daddr {host_ip} udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT

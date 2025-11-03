@@ -145,57 +145,6 @@ impl SystemResource for VethPair {
     }
 }
 
-/// Namespace configuration directory (/etc/netns/<namespace>)
-pub struct NamespaceConfig {
-    path: String,
-    created: bool,
-}
-
-impl SystemResource for NamespaceConfig {
-    fn create(jail_id: &str) -> Result<Self> {
-        let namespace_name = format!("httpjail_{}", jail_id);
-        let path = format!("/etc/netns/{}", namespace_name);
-
-        // Create directory if needed
-        if !std::path::Path::new(&path).exists() {
-            std::fs::create_dir_all(&path)
-                .context("Failed to create namespace config directory")?;
-            debug!("Created namespace config directory: {}", path);
-        }
-
-        Ok(Self {
-            path,
-            created: true,
-        })
-    }
-
-    fn cleanup(&mut self) -> Result<()> {
-        if !self.created {
-            return Ok(());
-        }
-
-        if std::path::Path::new(&self.path).exists() {
-            if let Err(e) = std::fs::remove_dir_all(&self.path) {
-                // Log but don't fail
-                debug!("Failed to remove namespace config directory: {}", e);
-            } else {
-                debug!("Removed namespace config directory: {}", self.path);
-            }
-        }
-
-        self.created = false;
-        Ok(())
-    }
-
-    fn for_existing(jail_id: &str) -> Self {
-        let namespace_name = format!("httpjail_{}", jail_id);
-        Self {
-            path: format!("/etc/netns/{}", namespace_name),
-            created: true,
-        }
-    }
-}
-
 /// NFTable resource wrapper for a jail
 pub struct NFTable {
     #[allow(dead_code)]
