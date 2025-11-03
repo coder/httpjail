@@ -544,10 +544,13 @@ impl Jail for LinuxJail {
 
         // Build wrapper shell command that:
         // 1. Creates symlink target placeholder (if needed)
-        // 2. Bind-mounts our custom resolv.conf
+        // 2. Bind-mounts our custom resolv.conf to the RESOLVED path (following symlinks)
         // 3. Execs the user command
+        //
+        // CRITICAL: We mount to $(readlink -f /etc/resolv.conf) not /etc/resolv.conf directly,
+        // because mount follows symlinks and we need the actual target path.
         let shell_cmd = format!(
-            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind {} /etc/resolv.conf && exec {}",
+            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && mount --bind {} $(readlink -f /etc/resolv.conf || echo /etc/resolv.conf) && exec {}",
             resolv_path,
             escaped_parts.join(" ")
         );
