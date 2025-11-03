@@ -127,9 +127,9 @@ table ip {table_name} {{
     chain output {{
         type nat hook output priority -100; policy accept;
 
-        # Redirect all DNS queries to our dummy DNS server on host
+        # Redirect all DNS queries to our dummy DNS server running in namespace
         # This works regardless of what nameserver is in /etc/resolv.conf
-        udp dport 53 dnat to {host_ip}
+        udp dport 53 dnat to 127.0.0.1:53
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
@@ -145,8 +145,8 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic to the host (after DNAT redirection)
-        ip daddr {host_ip} udp dport 53 accept
+        # Allow DNS traffic to localhost (after DNAT redirection)
+        ip daddr 127.0.0.1 udp dport 53 accept
 
         # Allow traffic to the host proxy ports after DNAT
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept

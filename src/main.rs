@@ -306,6 +306,22 @@ fn cleanup_orphans() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Handle internal DNS server flag (must be first, before clap parsing)
+    // This is called by LinuxJail when spawning DNS server inside namespace
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|arg| arg == "--__internal-dns-server") {
+        use httpjail::jail::linux::dns::run_dns_server_blocking;
+
+        // Bring up loopback interface in the namespace
+        std::process::Command::new("ip")
+            .args(["link", "set", "lo", "up"])
+            .output()
+            .context("Failed to bring up loopback interface")?;
+
+        // Run the DNS server (blocks forever)
+        return run_dns_server_blocking();
+    }
+
     let args = Args::parse();
 
     // Handle trust subcommand (takes precedence)

@@ -1,4 +1,4 @@
-mod dns;
+pub mod dns;
 mod nftables;
 mod resources;
 
@@ -9,10 +9,8 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use dns::DummyDnsServer;
 use resources::{NFTable, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
-use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 // Linux namespace network configuration constants were previously fixed; the
@@ -66,7 +64,7 @@ pub struct LinuxJail {
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
     nftables: Option<ManagedResource<NFTable>>,
-    dns_server: Option<Arc<Mutex<DummyDnsServer>>>,
+    dns_server_child: Option<std::process::Child>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
     host_ip: [u8; 4],
     host_cidr: String,
@@ -83,7 +81,7 @@ impl LinuxJail {
             namespace: None,
             veth_pair: None,
             nftables: None,
-            dns_server: None,
+            dns_server_child: None,
             host_ip,
             host_cidr,
             guest_cidr,
@@ -368,29 +366,43 @@ impl LinuxJail {
     fn start_dns_server(&mut self) -> Result<()> {
         let namespace_name = self.namespace_name();
 
-        info!("Starting dummy DNS server in namespace {}", namespace_name);
+        info!(
+            "Starting dummy DNS server inside namespace {}",
+            namespace_name
+        );
 
-        // Start the DNS server on the host side
-        let mut dns_server = DummyDnsServer::new();
+        // Spawn httpjail inside the namespace to run the DNS server
+        // This uses the --__internal-dns-server flag which calls run_dns_server_blocking()
+        let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
 
-        // Bind directly to port 53 on the host IP - no redirection needed
-        let dns_bind_addr = format!("{}:53", format_ip(self.host_ip));
-        dns_server.start(&dns_bind_addr)?;
+        let child = std::process::Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                &namespace_name,
+                exe_path.to_str().context("Invalid executable path")?,
+                "--__internal-dns-server",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to spawn in-namespace DNS server")?;
 
-        info!("Started dummy DNS server on {}", dns_bind_addr);
+        info!("Started in-namespace DNS server (pid {})", child.id());
 
-        self.dns_server = Some(Arc::new(Mutex::new(dns_server)));
+        self.dns_server_child = Some(child);
 
         Ok(())
     }
 
     /// Stop the DNS server
     fn stop_dns_server(&mut self) {
-        if let Some(dns_server_arc) = self.dns_server.take() {
-            if let Ok(mut dns_server) = dns_server_arc.lock() {
-                dns_server.stop();
-                info!("Stopped dummy DNS server");
-            }
+        if let Some(mut child) = self.dns_server_child.take() {
+            debug!("Stopping in-namespace DNS server (pid {})", child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            debug!("Stopped in-namespace DNS server");
         }
     }
 }
@@ -567,7 +579,7 @@ impl Clone for LinuxJail {
             namespace: None,
             veth_pair: None,
             nftables: None,
-            dns_server: None,
+            dns_server_child: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
             guest_cidr: self.guest_cidr.clone(),

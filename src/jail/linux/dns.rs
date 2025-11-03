@@ -17,6 +17,12 @@ pub struct DummyDnsServer {
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
+impl Default for DummyDnsServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DummyDnsServer {
     pub fn new() -> Self {
         Self {
@@ -139,6 +145,47 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
     response
         .build_bytes_vec()
         .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
+}
+
+/// Run DNS server synchronously (blocks forever). Used when spawned inside namespace.
+pub fn run_dns_server_blocking() -> Result<()> {
+    info!("Starting blocking DNS server on 0.0.0.0:53");
+
+    let socket =
+        UdpSocket::bind("0.0.0.0:53").context("Failed to bind DNS server to 0.0.0.0:53")?;
+
+    socket.set_read_timeout(Some(Duration::from_millis(500)))?;
+
+    let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((size, src)) => {
+                debug!("Received DNS query from {}: {} bytes", src, size);
+
+                match Packet::parse(&buf[..size]) {
+                    Ok(query) => {
+                        if let Ok(response) = build_dummy_response(query) {
+                            if let Err(e) = socket.send_to(&response, src) {
+                                warn!("Failed to send DNS response to {}: {}", src, e);
+                            } else {
+                                debug!("Sent dummy DNS response to {}", src);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to parse DNS query: {}", e);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                error!("DNS server receive error: {}", e);
+                return Err(e.into());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
