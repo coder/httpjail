@@ -425,12 +425,11 @@ impl LinuxJail {
             namespace_name
         );
 
-        // Ensure /etc/netns directory exists
-        let netns_dir = "/etc/netns";
-        if !std::path::Path::new(netns_dir).exists() {
-            std::fs::create_dir_all(netns_dir).context("Failed to create /etc/netns directory")?;
-            debug!("Created /etc/netns directory");
-        }
+        // Ensure /etc/netns/<namespace>/ directory exists
+        let netns_namespace_dir = format!("/etc/netns/{}", namespace_name);
+        std::fs::create_dir_all(&netns_namespace_dir)
+            .with_context(|| format!("Failed to create directory: {}", netns_namespace_dir))?;
+        debug!("Created directory: {}", netns_namespace_dir);
 
         // Create namespace config resource
         self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
@@ -439,7 +438,7 @@ impl LinuxJail {
 
         // Write custom resolv.conf that will be bind-mounted into the namespace
         // Point directly to the host's veth IP where our DNS server listens
-        let resolv_conf_path = format!("/etc/netns/{}/resolv.conf", namespace_name);
+        let resolv_conf_path = format!("{}/resolv.conf", netns_namespace_dir);
         let host_ip = format_ip(self.host_ip);
         let resolv_conf_content = format!(
             "# Custom DNS for httpjail namespace\n\
