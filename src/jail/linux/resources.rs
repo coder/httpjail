@@ -226,10 +226,26 @@ impl NetnsResolv {
             nameserver_ip
         );
 
-        // Note: We do NOT pre-create the symlink target here because each ip netns exec
-        // invocation creates its own ephemeral mount namespace. Instead, we'll create
-        // the placeholder in the same ip netns exec invocation that runs the user command.
-        // See LinuxJail::run() for the actual placeholder creation.
+        // CRITICAL FALLBACK: Create placeholder for symlink target on the HOST
+        //
+        // When /etc/resolv.conf is a symlink (e.g., to /run/systemd/resolve/stub-resolv.conf),
+        // ip netns exec needs the symlink target to exist for bind-mounting to work.
+        //
+        // We create an empty placeholder file on the HOST at /run/systemd/resolve/stub-resolv.conf.
+        // This is safe because:
+        // 1. /run is a tmpfs (RAM-based, cleared on reboot)
+        // 2. systemd-resolved manages this file and will overwrite it if needed
+        // 3. Our file is empty (0 bytes), won't affect anything
+        // 4. This is only a fallback for systems where the file doesn't already exist
+        //
+        // We silently ignore errors if the directory doesn't exist or we don't have permissions.
+        let _ = std::fs::create_dir_all("/run/systemd/resolve");
+        let _ = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open("/run/systemd/resolve/stub-resolv.conf");
+
+        debug!("Created placeholder /run/systemd/resolve/stub-resolv.conf if needed");
 
         Ok(Self {
             netns_dir,
@@ -248,6 +264,37 @@ impl SystemResource for NetnsResolv {
     fn cleanup(&mut self) -> Result<()> {
         if !self.created {
             return Ok(());
+        }
+
+        // CRITICAL: Unmount bind-mount created by ip netns exec
+        //
+        // When /etc/resolv.conf is a symlink (e.g., to /run/systemd/resolve/stub-resolv.conf),
+        // ip netns exec bind-mounts our custom resolv.conf onto the symlink target.
+        // This creates a bind-mount on the HOST that must be explicitly unmounted.
+        //
+        // We try to resolve /etc/resolv.conf and unmount it if it's a symlink target.
+        // This is safe because:
+        // - We only unmount if the file exists (best-effort)
+        // - Failed unmounts are logged but don't fail cleanup
+        // - Multiple unmounts are idempotent (second unmount will fail silently)
+        if let Ok(resolved_path) = fs::read_link("/etc/resolv.conf") {
+            // resolved_path might be relative like "../run/systemd/resolve/stub-resolv.conf"
+            // Convert to absolute path
+            let absolute_path = if resolved_path.is_absolute() {
+                resolved_path
+            } else {
+                PathBuf::from("/etc").join(&resolved_path)
+            };
+
+            // Canonicalize to get the real path
+            if let Ok(canonical_path) = fs::canonicalize(&absolute_path) {
+                // Try to unmount the bind-mount (best effort)
+                let _ = Command::new("umount").arg(&canonical_path).output();
+                debug!(
+                    "Attempted to unmount bind-mount at {}",
+                    canonical_path.display()
+                );
+            }
         }
 
         // Remove /etc/netns/<namespace>/ directory and all contents
