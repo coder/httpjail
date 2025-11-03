@@ -492,14 +492,24 @@ async fn main() -> Result<()> {
     }
 
     // Parse bind configuration from env vars
-    // Returns Some(addr) for "port" or "ip:port" formats (including explicit :0)
+    // Returns Some(addr) for "port", ":port", or "ip:port" formats (including explicit :0)
     // Returns None for "ip" only or missing config
     fn parse_bind_config(env_var: &str) -> Option<std::net::SocketAddr> {
         if let Ok(val) = std::env::var(env_var) {
+            let val = val.trim();
+
             // First try parsing as "ip:port" (respects explicit :0)
             if let Ok(addr) = val.parse::<std::net::SocketAddr>() {
                 return Some(addr);
             }
+
+            // Try parsing as ":port" (Go-style) - bind to all interfaces (0.0.0.0)
+            if let Some(port_str) = val.strip_prefix(':') {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+                }
+            }
+
             // Try parsing as just a port number - bind to all interfaces (0.0.0.0)
             if let Ok(port) = val.parse::<u16>() {
                 return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));

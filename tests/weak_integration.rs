@@ -309,6 +309,9 @@ fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::C
     // Parse expected port from bind config (server mode uses defaults for unspecified)
     let expected_port = if let Ok(port) = http_bind.parse::<u16>() {
         port
+    } else if let Some(port_str) = http_bind.strip_prefix(':') {
+        // Handle :port format
+        port_str.parse::<u16>().unwrap_or(8080)
     } else if let Ok(addr) = http_bind.parse::<std::net::SocketAddr>() {
         addr.port()
     } else {
@@ -340,6 +343,18 @@ fn test_server_bind_port_only() {
     assert_eq!(
         port, 19882,
         "Server should bind to specified port on all interfaces"
+    );
+    server.kill().ok();
+}
+
+#[test]
+#[serial]
+fn test_server_bind_colon_prefix_port() {
+    // :port (Go-style) should bind to all interfaces (0.0.0.0)
+    let (mut server, port) = start_server_with_bind(":19892", ":19893");
+    assert_eq!(
+        port, 19892,
+        "Server should bind to specified port on all interfaces with :port format"
     );
     server.kill().ok();
 }
