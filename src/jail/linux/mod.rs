@@ -502,37 +502,57 @@ impl Jail for LinuxJail {
         // way to provide custom DNS configuration to network namespaces without touching
         // the host's /etc/resolv.conf.
         //
-        // We previously tried creating our own mount namespace with unshare --mount, but
-        // that interfered with ip netns exec's own mount namespace creation, causing
-        // the automatic bind-mount to fail.
+        // HOWEVER: When /etc/resolv.conf is a symlink (common with systemd-resolved),
+        // the symlink target might not exist in the new mount namespace, causing the
+        // bind-mount to fail.  We must create the symlink target BEFORE ip netns exec
+        // attempts the bind-mount, and we must do it in the SAME ip netns exec invocation
+        // (since each invocation gets its own ephemeral mount namespace).
         //
-        // The correct approach: Let ip netns exec handle everything. We've already created
-        // /etc/netns/httpjail_<id>/resolv.conf in NetnsResolv, and ip netns exec will
-        // automatically mount it for us.
+        // Solution: Wrap the user command in a shell that:
+        // 1. Creates /run/systemd/resolve/stub-resolv.conf placeholder
+        // 2. Execs the user command (with optional setpriv for privilege dropping)
         //
         // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
-        // "ip netns exec automates handling of this configuration file convention for
-        // network namespace unaware applications by creating a mount namespace and bind
-        // mounting all of the per network namespace configure files into their traditional
-        // location in /etc/"
 
-        // Build command: ip netns exec <namespace> [setpriv ...] <command>
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name()]);
+        // Build the inner command parts
+        let mut inner_cmd_parts = Vec::new();
 
-        // Add setpriv for privilege dropping if needed
+        // Add setpriv if needed
         if let Some((uid, gid)) = drop_privs {
-            cmd.arg("setpriv");
-            cmd.arg(format!("--reuid={}", uid));
-            cmd.arg(format!("--regid={}", gid));
-            cmd.arg("--init-groups");
-            cmd.arg("--");
+            inner_cmd_parts.push("setpriv".to_string());
+            inner_cmd_parts.push(format!("--reuid={}", uid));
+            inner_cmd_parts.push(format!("--regid={}", gid));
+            inner_cmd_parts.push("--init-groups".to_string());
+            inner_cmd_parts.push("--".to_string());
         }
 
         // Add user command
         for arg in command {
-            cmd.arg(arg);
+            inner_cmd_parts.push(arg.to_string());
         }
+
+        // Shell-escape each argument
+        let escaped_parts: Vec<String> = inner_cmd_parts
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
+            .collect();
+
+        // Build wrapper shell command that creates placeholder then execs user command
+        let shell_cmd = format!(
+            "mkdir -p /run/systemd/resolve && touch /run/systemd/resolve/stub-resolv.conf && exec {}",
+            escaped_parts.join(" ")
+        );
+
+        // Build command: ip netns exec <namespace> sh -c '<wrapper>'
+        let mut cmd = Command::new("ip");
+        cmd.args([
+            "netns",
+            "exec",
+            &self.namespace_name(),
+            "sh",
+            "-c",
+            &shell_cmd,
+        ]);
 
         // Set environment variables
         for (key, value) in extra_env {

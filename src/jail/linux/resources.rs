@@ -226,14 +226,10 @@ impl NetnsResolv {
             nameserver_ip
         );
 
-        // SAFETY: We do NOT modify /etc/resolv.conf here because:
-        // 1. Network namespaces share the host's filesystem by default
-        // 2. Modifying /etc/resolv.conf would affect the host system
-        // 3. The kernel's /etc/netns/ auto-mount mechanism will be triggered when
-        //    we launch the jailed process with unshare --mount, which gives us an
-        //    isolated filesystem view where we can safely create a placeholder file
-        //
-        // See LinuxJail::run() for the mount namespace setup that enables this.
+        // Note: We do NOT pre-create the symlink target here because each ip netns exec
+        // invocation creates its own ephemeral mount namespace. Instead, we'll create
+        // the placeholder in the same ip netns exec invocation that runs the user command.
+        // See LinuxJail::run() for the actual placeholder creation.
 
         Ok(Self {
             netns_dir,
