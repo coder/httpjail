@@ -497,74 +497,42 @@ impl Jail for LinuxJail {
             None
         };
 
-        // SAFETY: Build command with mount namespace for safe /etc/resolv.conf handling
+        // CRITICAL: ip netns exec automatically creates a mount namespace and bind-mounts
+        // /etc/netns/<namespace>/resolv.conf over /etc/resolv.conf. This is THE STANDARD
+        // way to provide custom DNS configuration to network namespaces without touching
+        // the host's /etc/resolv.conf.
         //
-        // We use unshare --mount to create an isolated mount namespace where we can
-        // safely replace /etc/resolv.conf (which is often a symlink) with a regular file.
-        // This is CRITICAL because:
-        // 1. Network namespaces share the host's filesystem by default
-        // 2. Without a mount namespace, modifying /etc/resolv.conf would affect the host
-        // 3. The kernel's /etc/netns/ auto-mount requires /etc/resolv.conf to be a regular file
+        // We previously tried creating our own mount namespace with unshare --mount, but
+        // that interfered with ip netns exec's own mount namespace creation, causing
+        // the automatic bind-mount to fail.
         //
-        // Command structure:
-        // unshare --mount sh -c 'rm -f /etc/resolv.conf && touch /etc/resolv.conf && exec ip netns exec <namespace> [setpriv ...] <command>'
+        // The correct approach: Let ip netns exec handle everything. We've already created
+        // /etc/netns/httpjail_<id>/resolv.conf in NetnsResolv, and ip netns exec will
+        // automatically mount it for us.
         //
-        // The mount namespace ensures we NEVER touch the host's /etc/resolv.conf.
+        // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
+        // "ip netns exec automates handling of this configuration file convention for
+        // network namespace unaware applications by creating a mount namespace and bind
+        // mounting all of the per network namespace configure files into their traditional
+        // location in /etc/"
 
-        // Build the inner command (ip netns exec + optional setpriv + user command)
-        let mut inner_cmd_parts = vec![
-            "ip".to_string(),
-            "netns".to_string(),
-            "exec".to_string(),
-            self.namespace_name(),
-        ];
+        // Build command: ip netns exec <namespace> [setpriv ...] <command>
+        let mut cmd = Command::new("ip");
+        cmd.args(["netns", "exec", &self.namespace_name()]);
 
         // Add setpriv for privilege dropping if needed
         if let Some((uid, gid)) = drop_privs {
-            inner_cmd_parts.push("setpriv".to_string());
-            inner_cmd_parts.push(format!("--reuid={}", uid));
-            inner_cmd_parts.push(format!("--regid={}", gid));
-            inner_cmd_parts.push("--init-groups".to_string());
-            inner_cmd_parts.push("--".to_string());
+            cmd.arg("setpriv");
+            cmd.arg(format!("--reuid={}", uid));
+            cmd.arg(format!("--regid={}", gid));
+            cmd.arg("--init-groups");
+            cmd.arg("--");
         }
 
         // Add user command
         for arg in command {
-            inner_cmd_parts.push(arg.to_string());
+            cmd.arg(arg);
         }
-
-        // Shell-escape each argument by wrapping in single quotes and escaping existing single quotes
-        // This ensures arguments with spaces or special characters are handled safely
-        let escaped_parts: Vec<String> = inner_cmd_parts
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
-            .collect();
-
-        // Build the complete shell command that:
-        // 1. Bind-mount our custom resolv.conf directly over /etc/resolv.conf
-        // 2. Exec into network namespace
-        //
-        // CRITICAL SAFETY: Instead of relying on kernel's /etc/netns/ auto-mount (which requires
-        // /etc/resolv.conf to be a regular file), we directly bind-mount our prepared resolv.conf
-        // from /etc/netns/httpjail_<id>/resolv.conf over /etc/resolv.conf in the mount namespace.
-        //
-        // This is safe because:
-        // - Bind mounts only affect the mount namespace, not the host filesystem
-        // - The host's /etc/resolv.conf (symlink or regular file) is never modified
-        // - Works regardless of whether host uses symlinked (systemd-resolved) or regular file DNS config
-        let netns_resolv_path = format!("/etc/netns/httpjail_{}/resolv.conf", self.config.jail_id);
-        let shell_cmd = format!(
-            "mount --bind {} /etc/resolv.conf && exec {}",
-            netns_resolv_path,
-            escaped_parts.join(" ")
-        );
-
-        // Create the top-level command with unshare --mount
-        let mut cmd = Command::new("unshare");
-        cmd.arg("--mount"); // Create new mount namespace (isolated mount table)
-        cmd.arg("sh");
-        cmd.arg("-c");
-        cmd.arg(&shell_cmd);
 
         // Set environment variables
         for (key, value) in extra_env {
