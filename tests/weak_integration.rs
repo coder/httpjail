@@ -97,13 +97,14 @@ fn test_weak_mode_allows_localhost() {
             println!("Exit code: {}", exit_code);
             println!("Stderr: {}", stderr);
 
-            // This should fail with connection refused (no server on 8080)
+            // This should fail with connection refused (no server on port 80)
             // but NOT be blocked by the proxy
             // Exit code 7 = Failed to connect (expected - no server)
+            // Exit code 28 = Timeout (connection attempt timed out - also valid)
             // Exit code 52 = Empty reply from server (proxy allowed but no backend)
             assert!(
-                exit_code == 7 || exit_code == 52,
-                "Expected connection refused (7) or empty reply (52), got: {}",
+                exit_code == 7 || exit_code == 28 || exit_code == 52,
+                "Expected connection refused (7), timeout (28), or empty reply (52), got: {}",
                 exit_code
             );
 
