@@ -306,29 +306,9 @@ fn cleanup_orphans() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Handle internal DNS server flag (must be first, before clap parsing)
-    // This is called by LinuxJail when spawning DNS server inside namespace
-    #[cfg(target_os = "linux")]
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if let Some(pos) = args.iter().position(|arg| arg == "--__internal-dns-server") {
-            use httpjail::jail::linux::dns::run_dns_server_blocking;
-
-            // Get host IP from next argument
-            let host_ip = args
-                .get(pos + 1)
-                .context("Missing host IP argument after --__internal-dns-server")?;
-
-            // Bring up loopback interface in the namespace
-            std::process::Command::new("ip")
-                .args(["link", "set", "lo", "up"])
-                .output()
-                .context("Failed to bring up loopback interface")?;
-
-            // Run the DNS server (blocks forever)
-            return run_dns_server_blocking(host_ip);
-        }
-    }
+    // Note: The internal DNS server functionality has been removed in favor of
+    // mounting a custom /etc/resolv.conf. All DNS queries now go directly to the
+    // host-side DNS server bound to host_ip.
 
     let args = Args::parse();
 

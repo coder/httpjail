@@ -1,7 +1,9 @@
 use crate::sys_resource::SystemResource;
 use anyhow::{Context, Result};
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -180,6 +182,86 @@ impl SystemResource for NFTable {
         Self {
             jail_id: jail_id.to_string(),
             table: Some(table),
+        }
+    }
+}
+
+/// /etc/netns/ resolv.conf resource
+///
+/// Uses Linux kernel's built-in /etc/netns/ mechanism. When a process enters
+/// a network namespace, the kernel automatically bind-mounts files from
+/// /etc/netns/<namespace>/ over their corresponding paths.
+///
+/// This approach:
+/// - Leverages standard Linux kernel feature
+/// - No manual mount commands needed
+/// - Works with symlinked /etc/resolv.conf
+/// - Simple and robust
+pub struct NetnsResolv {
+    netns_dir: PathBuf,
+    created: bool,
+}
+
+impl NetnsResolv {
+    /// Create /etc/netns/httpjail_<id>/resolv.conf with specified nameserver
+    ///
+    /// The kernel will automatically bind-mount this over /etc/resolv.conf
+    /// when entering the namespace.
+    pub fn create_with_nameserver(jail_id: &str, nameserver_ip: &str) -> Result<Self> {
+        let netns_dir = PathBuf::from(format!("/etc/netns/httpjail_{}", jail_id));
+
+        // Create /etc/netns/<namespace>/ directory
+        fs::create_dir_all(&netns_dir)
+            .with_context(|| format!("Failed to create {}", netns_dir.display()))?;
+
+        // Write resolv.conf as a regular file (not symlink)
+        let resolv_path = netns_dir.join("resolv.conf");
+        let content = format!("# httpjail managed\nnameserver {}\n", nameserver_ip);
+        fs::write(&resolv_path, content)
+            .with_context(|| format!("Failed to write {}", resolv_path.display()))?;
+
+        info!(
+            "Created {} with nameserver {}",
+            resolv_path.display(),
+            nameserver_ip
+        );
+
+        Ok(Self {
+            netns_dir,
+            created: true,
+        })
+    }
+}
+
+impl SystemResource for NetnsResolv {
+    fn create(_jail_id: &str) -> Result<Self> {
+        // NetnsResolv requires a nameserver IP parameter
+        // Use create_with_nameserver instead
+        anyhow::bail!("Use create_with_nameserver instead of create")
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        if !self.created {
+            return Ok(());
+        }
+
+        // Remove /etc/netns/<namespace>/ directory and all contents
+        if let Err(e) = fs::remove_dir_all(&self.netns_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!("Failed to remove {}: {}", self.netns_dir.display(), e);
+            }
+        } else {
+            debug!("Removed {}", self.netns_dir.display());
+        }
+
+        self.created = false;
+        Ok(())
+    }
+
+    fn for_existing(jail_id: &str) -> Self {
+        Self {
+            netns_dir: PathBuf::from(format!("/etc/netns/httpjail_{}", jail_id)),
+            created: true, // Assume it exists for cleanup
         }
     }
 }

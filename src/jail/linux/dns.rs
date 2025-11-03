@@ -147,49 +147,9 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
 }
 
-/// Run DNS server synchronously (blocks forever). Used when spawned inside namespace.
-///
-/// This handles DNS queries when /etc/resolv.conf points to loopback addresses
-/// (e.g., 127.0.0.53 used by systemd-resolved). These queries don't leave the namespace
-/// and aren't subject to DNAT rules, so we bind directly to those loopback addresses.
-///
-/// For queries to external nameservers (e.g., 8.8.8.8), those are handled by a separate
-/// DNS server running in the host process (see start_dns_server in mod.rs), which binds
-/// to the host_ip. DNAT redirects outbound DNS queries to that host_ip:53 server.
-///
-/// We intentionally DO NOT modify /etc/resolv.conf to avoid side effects and maintain
-/// robustness across different system configurations.
-pub fn run_dns_server_blocking(_host_ip: &str) -> Result<()> {
-    // Bind to loopback addresses for direct queries (systemd-resolved, etc.)
-    // These handle the case where /etc/resolv.conf points to 127.0.0.x
-    let addresses = vec!["127.0.0.53:53".to_string(), "127.0.0.54:53".to_string()];
-
-    let mut servers = Vec::new();
-    for addr in &addresses {
-        let mut server = DummyDnsServer::new();
-        match server.start(addr) {
-            Ok(()) => {
-                info!("Started DNS server on {}", addr);
-                servers.push(server);
-            }
-            Err(e) => {
-                // Log but don't fail - some addresses may not be available
-                debug!("Could not start DNS server on {}: {}", addr, e);
-            }
-        }
-    }
-
-    if servers.is_empty() {
-        anyhow::bail!("Failed to start DNS server on any address");
-    }
-
-    info!("DNS servers running on {} address(es)", servers.len());
-
-    // Block forever - servers will run in their own threads
-    loop {
-        thread::sleep(Duration::from_secs(3600));
-    }
-}
+// Note: The run_dns_server_blocking function has been removed as we no longer spawn
+// separate DNS server processes inside the namespace. Instead, we mount a custom
+// /etc/resolv.conf that points to the host DNS server, which is simpler and more robust.
 
 #[cfg(test)]
 mod tests {

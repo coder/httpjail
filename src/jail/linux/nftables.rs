@@ -123,21 +123,18 @@ table ip {table_name} {{
         let ruleset = format!(
             r#"
 table ip {table_name} {{
-    # NAT output chain: redirect HTTP/HTTPS/DNS to host
+    # NAT output chain: redirect HTTP/HTTPS to host proxy
     chain output {{
         type nat hook output priority -100; policy accept;
-
-        # Redirect all DNS queries to our dummy DNS server running in namespace
-        # This works regardless of what nameserver is in /etc/resolv.conf
-        # We redirect to host_ip instead of 127.0.0.1 because DNAT to localhost
-        # doesn't work reliably in the OUTPUT chain for locally-generated packets
-        udp dport 53 dnat to {host_ip}:53
 
         # Redirect HTTP to proxy running on host
         tcp dport 80 dnat to {host_ip}:{http_port}
 
         # Redirect HTTPS to proxy running on host
         tcp dport 443 dnat to {host_ip}:{https_port}
+
+        # Note: DNS does not need DNAT - /etc/resolv.conf is mounted with nameserver={host_ip}
+        # so all DNS queries naturally go directly to the host DNS server
     }}
 
     # FILTER output chain: block non-HTTP/HTTPS egress
@@ -147,15 +144,10 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic to host IP (after DNAT redirection for external nameservers)
+        # Allow DNS traffic to host IP (resolv.conf points directly to host_ip)
         ip daddr {host_ip} udp dport 53 accept
 
-        # Allow DNS traffic to loopback addresses (systemd-resolved, etc.)
-        # These are handled by the namespace DNS server and don't need DNAT
-        ip daddr 127.0.0.53 udp dport 53 accept
-        ip daddr 127.0.0.54 udp dport 53 accept
-
-        # Allow traffic to the host proxy ports after DNAT
+        # Allow traffic to the host proxy ports (after DNAT)
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
 
         # Explicitly block all other UDP (e.g., QUIC on 443)

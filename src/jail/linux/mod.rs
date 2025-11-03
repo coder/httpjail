@@ -9,7 +9,7 @@ use super::Jail;
 use super::JailConfig;
 use crate::sys_resource::ManagedResource;
 use anyhow::{Context, Result};
-use resources::{NFTable, NetworkNamespace, VethPair};
+use resources::{NFTable, NetnsResolv, NetworkNamespace, VethPair};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
@@ -64,7 +64,7 @@ pub struct LinuxJail {
     namespace: Option<ManagedResource<NetworkNamespace>>,
     veth_pair: Option<ManagedResource<VethPair>>,
     nftables: Option<ManagedResource<NFTable>>,
-    dns_server_child: Option<std::process::Child>,
+    netns_resolv: Option<ManagedResource<NetnsResolv>>,
     // Host-side DNS server for DNAT redirection
     host_dns_server: Option<dns::DummyDnsServer>,
     // Per-jail computed networking (unique /30 inside 10.99/16)
@@ -83,7 +83,7 @@ impl LinuxJail {
             namespace: None,
             veth_pair: None,
             nftables: None,
-            dns_server_child: None,
+            netns_resolv: None,
             host_dns_server: None,
             host_ip,
             host_cidr,
@@ -365,63 +365,41 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Start DNS servers using a two-pronged approach to handle different /etc/resolv.conf configs
+    /// Start DNS server using /etc/netns/ mechanism
     ///
     /// ## DNS Strategy Overview
     ///
-    /// We run TWO DNS servers to handle all cases robustly:
+    /// Uses Linux kernel's built-in /etc/netns/ feature:
     ///
-    /// 1. **Namespace DNS server** (separate process in namespace):
-    ///    - Binds to loopback addresses (127.0.0.53, 127.0.0.54)
-    ///    - Handles queries when /etc/resolv.conf points to loopback (e.g., systemd-resolved)
-    ///    - These queries never leave the namespace, so DNAT doesn't apply
+    /// 1. **Create /etc/netns/httpjail_<id>/resolv.conf** pointing to host_ip
+    ///    - Kernel automatically bind-mounts it when entering namespace
+    ///    - All DNS queries from namespace go to host_ip
+    ///    - Works with symlinked /etc/resolv.conf
+    ///    - Standard Linux mechanism, simple and robust
     ///
     /// 2. **Host DNS server** (runs in this process on host side):
     ///    - Binds to host_ip:53 on the host side of the veth pair
-    ///    - Handles queries to external nameservers (e.g., 8.8.8.8 in /etc/resolv.conf)
-    ///    - DNAT rules redirect outbound DNS queries to this server
-    ///    - This works because DNAT to localhost doesn't work for locally-generated packets
-    ///      in the OUTPUT chain, but DNAT to a routable IP (the host_ip) does work
-    ///
-    /// This two-pronged approach works regardless of /etc/resolv.conf configuration.
+    ///    - Handles all DNS queries from the namespace
+    ///    - Returns dummy IP 6.6.6.6 to prevent data exfiltration
     fn start_dns_server(&mut self) -> Result<()> {
-        let namespace_name = self.namespace_name();
         let host_ip_str = format!(
             "{}.{}.{}.{}",
             self.host_ip[0], self.host_ip[1], self.host_ip[2], self.host_ip[3]
         );
 
-        // 1. Start namespace DNS server for loopback queries
+        // 1. Create /etc/netns/httpjail_<id>/resolv.conf (kernel auto-mounts it)
         info!(
-            "Starting namespace DNS server inside {} for loopback addresses",
-            namespace_name
-        );
-
-        let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
-
-        let child = std::process::Command::new("ip")
-            .args([
-                "netns",
-                "exec",
-                &namespace_name,
-                exe_path.to_str().context("Invalid executable path")?,
-                "--__internal-dns-server",
-                &host_ip_str,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .context("Failed to spawn in-namespace DNS server")?;
-
-        info!("Started namespace DNS server (pid {})", child.id());
-        self.dns_server_child = Some(child);
-
-        // 2. Start host DNS server for DNAT redirection
-        info!(
-            "Starting host DNS server on {} for DNAT redirection",
+            "Creating /etc/netns resolv.conf with nameserver {}",
             host_ip_str
         );
+
+        let netns_resolv = NetnsResolv::create_with_nameserver(&self.config.jail_id, &host_ip_str)
+            .context("Failed to create /etc/netns resolv.conf")?;
+
+        self.netns_resolv = Some(ManagedResource::from_resource(netns_resolv));
+
+        // 2. Start host DNS server
+        info!("Starting host DNS server on {}", host_ip_str);
 
         let mut host_server = dns::DummyDnsServer::new();
         let host_addr = format!("{}:53", host_ip_str);
@@ -435,16 +413,8 @@ impl LinuxJail {
         Ok(())
     }
 
-    /// Stop the DNS servers
+    /// Stop the DNS server
     fn stop_dns_server(&mut self) {
-        // Stop namespace DNS server process
-        if let Some(mut child) = self.dns_server_child.take() {
-            debug!("Stopping namespace DNS server (pid {})", child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-            debug!("Stopped namespace DNS server");
-        }
-
         // Stop host DNS server (runs in threads, cleanup on drop)
         if let Some(_server) = self.host_dns_server.take() {
             debug!("Stopping host DNS server (cleanup on drop)");
@@ -610,6 +580,7 @@ impl Jail for LinuxJail {
         let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
         let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
         let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
+        let _netns_resolv = ManagedResource::<NetnsResolv>::for_existing(jail_id);
 
         Ok(())
     }
@@ -624,7 +595,7 @@ impl Clone for LinuxJail {
             namespace: None,
             veth_pair: None,
             nftables: None,
-            dns_server_child: None,
+            netns_resolv: None,
             host_dns_server: None,
             host_ip: self.host_ip,
             host_cidr: self.host_cidr.clone(),
