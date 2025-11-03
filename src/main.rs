@@ -306,6 +306,10 @@ fn cleanup_orphans() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Note: The internal DNS server functionality has been removed in favor of
+    // mounting a custom /etc/resolv.conf. All DNS queries now go directly to the
+    // host-side DNS server bound to host_ip.
+
     let args = Args::parse();
 
     // Handle trust subcommand (takes precedence)

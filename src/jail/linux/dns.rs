@@ -17,6 +17,12 @@ pub struct DummyDnsServer {
     thread_handle: Option<thread::JoinHandle<()>>,
 }
 
+impl Default for DummyDnsServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DummyDnsServer {
     pub fn new() -> Self {
         Self {
@@ -140,6 +146,10 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
         .build_bytes_vec()
         .map_err(|e| anyhow::anyhow!("Failed to build DNS response: {}", e))
 }
+
+// Note: The run_dns_server_blocking function has been removed as we no longer spawn
+// separate DNS server processes inside the namespace. Instead, we mount a custom
+// /etc/resolv.conf that points to the host DNS server, which is simpler and more robust.
 
 #[cfg(test)]
 mod tests {

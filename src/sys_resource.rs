@@ -48,6 +48,13 @@ impl<T: SystemResource> ManagedResource<T> {
         }
     }
 
+    /// Wrap an already-created resource (for resources that need custom creation logic)
+    pub fn from_resource(resource: T) -> Self {
+        Self {
+            resource: Some(resource),
+        }
+    }
+
     /// Get a reference to the inner resource
     pub fn inner(&self) -> Option<&T> {
         self.resource.as_ref()

@@ -132,6 +132,9 @@ table ip {table_name} {{
 
         # Redirect HTTPS to proxy running on host
         tcp dport 443 dnat to {host_ip}:{https_port}
+
+        # Note: DNS does not need DNAT - /etc/resolv.conf is mounted with nameserver={host_ip}
+        # so all DNS queries naturally go directly to the host DNS server
     }}
 
     # FILTER output chain: block non-HTTP/HTTPS egress
@@ -141,16 +144,16 @@ table ip {table_name} {{
         # Always allow established/related traffic
         ct state established,related accept
 
-        # Allow DNS traffic directly to the host (UDP only)
+        # Allow DNS traffic to host IP (resolv.conf points directly to host_ip)
         ip daddr {host_ip} udp dport 53 accept
 
-        # Allow traffic to the host proxy ports after DNAT
+        # Allow traffic to the host proxy ports (after DNAT)
         ip daddr {host_ip} tcp dport {{ {http_port}, {https_port} }} accept
 
         # Explicitly block all other UDP (e.g., QUIC on 443)
         # This must come AFTER allowing DNS traffic
         ip protocol udp drop
-        
+
         # Explicitly block all other TCP traffic
         # This must come AFTER allowing HTTP/HTTPS traffic
         ip protocol tcp drop
