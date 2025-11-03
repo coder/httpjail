@@ -431,11 +431,6 @@ impl LinuxJail {
             .with_context(|| format!("Failed to create directory: {}", netns_namespace_dir))?;
         debug!("Created directory: {}", netns_namespace_dir);
 
-        // Create namespace config resource
-        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
-            &self.config.jail_id,
-        )?);
-
         // Write custom resolv.conf that will be bind-mounted into the namespace
         // Point directly to the host's veth IP where our DNS server listens
         let resolv_conf_path = format!("{}/resolv.conf", netns_namespace_dir);
@@ -458,6 +453,12 @@ nameserver {}\n",
         if !std::path::Path::new(&resolv_conf_path).exists() {
             anyhow::bail!("Failed to create resolv.conf at {}", resolv_conf_path);
         }
+
+        // Create namespace config resource for cleanup tracking
+        // IMPORTANT: Create this AFTER writing resolv.conf to ensure the file exists
+        self.namespace_config = Some(ManagedResource::<NamespaceConfig>::create(
+            &self.config.jail_id,
+        )?);
 
         Ok(())
     }
