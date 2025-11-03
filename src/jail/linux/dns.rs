@@ -148,43 +148,42 @@ fn build_dummy_response(query: Packet<'_>) -> Result<Vec<u8>> {
 }
 
 /// Run DNS server synchronously (blocks forever). Used when spawned inside namespace.
+///
+/// We bind to multiple addresses to handle different /etc/resolv.conf configurations:
+/// - 0.0.0.0:53 - Catches most queries via DNAT rules
+/// - 127.0.0.53:53 - Used by systemd-resolved on Ubuntu/Debian
+/// - 127.0.0.54:53 - Alternative systemd-resolved address
+///
+/// We intentionally DO NOT modify /etc/resolv.conf to avoid side effects and maintain
+/// robustness across different system configurations.
 pub fn run_dns_server_blocking() -> Result<()> {
-    info!("Starting blocking DNS server on 0.0.0.0:53");
+    // Bind to multiple addresses to handle different nameserver configurations
+    let addresses = vec!["0.0.0.0:53", "127.0.0.53:53", "127.0.0.54:53"];
 
-    let socket =
-        UdpSocket::bind("0.0.0.0:53").context("Failed to bind DNS server to 0.0.0.0:53")?;
-
-    socket.set_read_timeout(Some(Duration::from_millis(500)))?;
-
-    let mut buf = [0u8; MAX_DNS_PACKET_SIZE];
-    loop {
-        match socket.recv_from(&mut buf) {
-            Ok((size, src)) => {
-                debug!("Received DNS query from {}: {} bytes", src, size);
-
-                match Packet::parse(&buf[..size]) {
-                    Ok(query) => {
-                        if let Ok(response) = build_dummy_response(query) {
-                            if let Err(e) = socket.send_to(&response, src) {
-                                warn!("Failed to send DNS response to {}: {}", src, e);
-                            } else {
-                                debug!("Sent dummy DNS response to {}", src);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to parse DNS query: {}", e);
-                    }
-                }
+    let mut servers = Vec::new();
+    for addr in &addresses {
+        let mut server = DummyDnsServer::new();
+        match server.start(addr) {
+            Ok(()) => {
+                info!("Started DNS server on {}", addr);
+                servers.push(server);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
-                error!("DNS server receive error: {}", e);
-                return Err(e.into());
+                // Log but don't fail - some addresses may not be available
+                debug!("Could not start DNS server on {}: {}", addr, e);
             }
         }
+    }
+
+    if servers.is_empty() {
+        anyhow::bail!("Failed to start DNS server on any address");
+    }
+
+    info!("DNS servers running on {} address(es)", servers.len());
+
+    // Block forever - servers will run in their own threads
+    loop {
+        thread::sleep(Duration::from_secs(3600));
     }
 }
 
