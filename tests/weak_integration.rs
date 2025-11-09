@@ -173,7 +173,7 @@ fn test_weak_mode_appends_no_proxy() {
 }
 
 // Simple server start function - we know the ports we're setting
-fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
+async fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, String> {
     let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
 
     let mut cmd = Command::new(httpjail_path);
@@ -192,24 +192,11 @@ fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, 
         .map_err(|e| format!("Failed to start server: {}", e))?;
 
     // Wait for the server to start listening
-    if !wait_for_server(http_port, Duration::from_secs(5)) {
+    if !common::wait_for_server(http_port, Duration::from_secs(5)).await {
         return Err(format!("Server failed to start on port {}", http_port));
     }
 
     Ok(child)
-}
-
-fn wait_for_server(port: u16, max_wait: Duration) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < max_wait {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-            // Give the server a bit more time to fully initialize
-            thread::sleep(Duration::from_millis(500));
-            return true;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
 }
 
 fn test_curl_through_proxy(http_port: u16, _https_port: u16) -> Result<String, String> {
@@ -263,13 +250,15 @@ fn verify_bind_address(port: u16, expected_ip: &str) -> bool {
     std::net::TcpStream::connect(format!("{}:{}", expected_ip, port)).is_ok()
 }
 
-#[test]
-fn test_server_mode() {
+#[tokio::test]
+async fn test_server_mode() {
     // Test server mode with specific ports
     let http_port = 19876;
     let https_port = 19877;
 
-    let mut server = start_server(http_port, https_port).expect("Failed to start server");
+    let mut server = start_server(http_port, https_port)
+        .await
+        .expect("Failed to start server");
 
     // Test HTTP proxy works
     match test_curl_through_proxy(http_port, https_port) {
@@ -291,7 +280,7 @@ fn test_server_mode() {
 }
 
 // Helper to start server with custom bind config
-fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::Child, u16) {
+async fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::Child, u16) {
     let httpjail_path: &str = env!("CARGO_BIN_EXE_httpjail");
 
     let mut child = Command::new(httpjail_path)
@@ -319,7 +308,7 @@ fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::C
     };
 
     // Wait for server to bind
-    if !wait_for_server(expected_port, Duration::from_secs(3)) {
+    if !common::wait_for_server(expected_port, Duration::from_secs(3)).await {
         child.kill().ok();
         panic!("Server failed to bind to port {}", expected_port);
     }
@@ -327,19 +316,19 @@ fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::C
     (child, expected_port)
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_server_bind_defaults() {
-    let (mut server, port) = start_server_with_bind("", "");
+async fn test_server_bind_defaults() {
+    let (mut server, port) = start_server_with_bind("", "").await;
     assert_eq!(port, 8080, "Server should default to port 8080");
     server.kill().ok();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_server_bind_port_only() {
+async fn test_server_bind_port_only() {
     // Port-only should bind to all interfaces (0.0.0.0)
-    let (mut server, port) = start_server_with_bind("19882", "19883");
+    let (mut server, port) = start_server_with_bind("19882", "19883").await;
     assert_eq!(
         port, 19882,
         "Server should bind to specified port on all interfaces"
@@ -347,11 +336,11 @@ fn test_server_bind_port_only() {
     server.kill().ok();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_server_bind_colon_prefix_port() {
+async fn test_server_bind_colon_prefix_port() {
     // :port (Go-style) should bind to all interfaces (0.0.0.0)
-    let (mut server, port) = start_server_with_bind(":19892", ":19893");
+    let (mut server, port) = start_server_with_bind(":19892", ":19893").await;
     assert_eq!(
         port, 19892,
         "Server should bind to specified port on all interfaces with :port format"
@@ -359,10 +348,10 @@ fn test_server_bind_colon_prefix_port() {
     server.kill().ok();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_server_bind_all_interfaces() {
-    let (mut server, port) = start_server_with_bind("0.0.0.0:19884", "0.0.0.0:19885");
+async fn test_server_bind_all_interfaces() {
+    let (mut server, port) = start_server_with_bind("0.0.0.0:19884", "0.0.0.0:19885").await;
     assert_eq!(
         port, 19884,
         "Server should bind to specified port on 0.0.0.0"
@@ -370,10 +359,10 @@ fn test_server_bind_all_interfaces() {
     server.kill().ok();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn test_server_bind_ip_without_port() {
-    let (mut server, port) = start_server_with_bind("127.0.0.1", "127.0.0.1");
+async fn test_server_bind_ip_without_port() {
+    let (mut server, port) = start_server_with_bind("127.0.0.1", "127.0.0.1").await;
     assert_eq!(
         port, 8080,
         "Server should use default port 8080 when only IP specified"
