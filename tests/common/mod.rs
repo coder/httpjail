@@ -254,15 +254,21 @@ pub fn test_https_allow(use_sudo: bool) {
 
 // Wait until a TCP port on localhost is accepting connections
 // Returns true if the port became ready before max_wait elapsed
-pub fn wait_for_server(port: u16, max_wait: std::time::Duration) -> bool {
-    let start = std::time::Instant::now();
+pub async fn wait_for_server(port: u16, max_wait: std::time::Duration) -> bool {
+    let start = tokio::time::Instant::now();
+    let poll_interval = tokio::time::Duration::from_millis(75);
+    let settle_time = tokio::time::Duration::from_millis(200);
+
     while start.elapsed() < max_wait {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .is_ok()
+        {
             // Give the server a brief moment to finish initialization
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            tokio::time::sleep(settle_time).await;
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(75));
+        tokio::time::sleep(poll_interval).await;
     }
     false
 }
