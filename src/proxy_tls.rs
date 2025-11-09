@@ -3,6 +3,8 @@ use crate::proxy::{
     create_connect_403_response_with_context, create_forbidden_response,
 };
 use crate::rules::Action;
+#[cfg(target_os = "macos")]
+use crate::tls::CertificateManager;
 use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, combinators::BoxBody};
