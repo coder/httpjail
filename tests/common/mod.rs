@@ -251,3 +251,18 @@ pub fn test_https_allow(use_sudo: bool) {
         }
     }
 }
+
+// Wait until a TCP port on localhost is accepting connections
+// Returns true if the port became ready before max_wait elapsed
+pub fn wait_for_server(port: u16, max_wait: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < max_wait {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            // Give the server a brief moment to finish initialization
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(75));
+    }
+    false
+}

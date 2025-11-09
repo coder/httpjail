@@ -35,6 +35,11 @@ pub const HTTPJAIL_HEADER: &str = "HTTPJAIL";
 pub const HTTPJAIL_HEADER_VALUE: &str = "true";
 pub const BLOCKED_MESSAGE: &str = "Request blocked by httpjail";
 
+/// Header added to outgoing requests to detect loops (Issue #84)
+/// Contains comma-separated nonces of all httpjail instances in the proxy chain.
+/// If we see our own nonce in an incoming request, we're in a loop.
+pub const HTTPJAIL_LOOP_DETECTION_HEADER: &str = "Httpjail-Loop-Prevention";
+
 /// Create a raw HTTP/1.1 403 Forbidden response for CONNECT tunnels
 pub fn create_connect_403_response() -> &'static [u8] {
     b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nRequest blocked by httpjail"
@@ -166,6 +171,7 @@ static HTTPS_CLIENT: OnceLock<
 pub fn prepare_upstream_request(
     req: Request<Incoming>,
     target_uri: Uri,
+    loop_nonce: &str,
 ) -> Request<BoxBody<Bytes, HyperError>> {
     let (mut parts, incoming_body) = req.into_parts();
 
@@ -177,6 +183,16 @@ pub fn prepare_upstream_request(
     parts.headers.remove("proxy-connection");
     parts.headers.remove("proxy-authorization");
     parts.headers.remove("proxy-authenticate");
+
+    // SECURITY: Add our nonce to the loop detection header (Issue #84)
+    // HTTP natively supports multiple values for the same header name (via append).
+    // This allows chaining multiple httpjail instances while still detecting self-loops.
+    // Each instance appends its nonce; if we see our own nonce in an incoming request, it's a loop.
+    parts.headers.append(
+        HTTPJAIL_LOOP_DETECTION_HEADER,
+        hyper::header::HeaderValue::from_str(loop_nonce)
+            .unwrap_or_else(|_| hyper::header::HeaderValue::from_static("invalid")),
+    );
 
     // SECURITY: Ensure the Host header matches the URI to prevent routing bypasses (Issue #57)
     // This prevents attacks where an attacker sends a request to one domain but sets
@@ -364,11 +380,19 @@ async fn bind_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
     TcpListener::bind(addr).await.map_err(Into::into)
 }
 
+/// Context passed to all proxy handlers - reduces argument duplication
+#[derive(Clone)]
+pub struct ProxyContext {
+    pub rule_engine: Arc<RuleEngine>,
+    pub cert_manager: Arc<CertificateManager>,
+    /// Unique nonce for this proxy instance, used for loop detection (Issue #84)
+    pub loop_nonce: Arc<String>,
+}
+
 pub struct ProxyServer {
     http_bind: Option<std::net::SocketAddr>,
     https_bind: Option<std::net::SocketAddr>,
-    rule_engine: Arc<RuleEngine>,
-    cert_manager: Arc<CertificateManager>,
+    context: ProxyContext,
 }
 
 impl ProxyServer {
@@ -383,11 +407,23 @@ impl ProxyServer {
         let ca_cert_der = cert_manager.get_ca_cert_der();
         init_client_with_ca(ca_cert_der);
 
+        // Generate a unique nonce for loop detection (Issue #84)
+        // Use 16 random hex characters for a reasonably short but collision-resistant ID
+        let loop_nonce = {
+            let random_u64: u64 = rand::random();
+            format!("{:x}", random_u64)
+        };
+
+        let context = ProxyContext {
+            rule_engine: Arc::new(rule_engine),
+            cert_manager: Arc::new(cert_manager),
+            loop_nonce: Arc::new(loop_nonce),
+        };
+
         ProxyServer {
             http_bind,
             https_bind,
-            rule_engine: Arc::new(rule_engine),
-            cert_manager: Arc::new(cert_manager),
+            context,
         }
     }
 
@@ -403,35 +439,13 @@ impl ProxyServer {
         let http_port = http_listener.local_addr()?.port();
         info!("Starting HTTP proxy on port {}", http_port);
 
-        let rule_engine = Arc::clone(&self.rule_engine);
-        let cert_manager = Arc::clone(&self.cert_manager);
-
         // Start HTTP proxy task
-        tokio::spawn(async move {
-            loop {
-                match http_listener.accept().await {
-                    Ok((stream, addr)) => {
-                        debug!("New HTTP connection from {}", addr);
-                        let rule_engine = Arc::clone(&rule_engine);
-                        let cert_manager = Arc::clone(&cert_manager);
-
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                handle_http_connection(stream, rule_engine, cert_manager, addr)
-                                    .await
-                            {
-                                error!("Error handling HTTP connection: {:?}", e);
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        error!("Failed to accept HTTP connection: {}", e);
-                    }
-                }
-            }
-        });
-
-        // IPv6-specific listener not required; IPv4 listener suffices for jail routing
+        spawn_listener_task(
+            http_listener,
+            self.context.clone(),
+            "HTTP",
+            handle_http_connection,
+        );
 
         // Bind HTTPS listener
         let https_listener = if let Some(addr) = self.https_bind {
@@ -444,35 +458,13 @@ impl ProxyServer {
         let https_port = https_listener.local_addr()?.port();
         info!("Starting HTTPS proxy on port {}", https_port);
 
-        let rule_engine = Arc::clone(&self.rule_engine);
-        let cert_manager = Arc::clone(&self.cert_manager);
-
         // Start HTTPS proxy task
-        tokio::spawn(async move {
-            loop {
-                match https_listener.accept().await {
-                    Ok((stream, addr)) => {
-                        debug!("New HTTPS connection from {}", addr);
-                        let rule_engine = Arc::clone(&rule_engine);
-                        let cert_manager = Arc::clone(&cert_manager);
-
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                handle_https_connection(stream, rule_engine, cert_manager, addr)
-                                    .await
-                            {
-                                error!("Error handling HTTPS connection: {:?}", e);
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        error!("Failed to accept HTTPS connection: {}", e);
-                    }
-                }
-            }
-        });
-
-        // IPv6-specific listener not required; IPv4 listener suffices for jail routing
+        spawn_listener_task(
+            https_listener,
+            self.context.clone(),
+            "HTTPS",
+            handle_https_connection,
+        );
 
         Ok((http_port, https_port))
     }
@@ -480,25 +472,50 @@ impl ProxyServer {
     /// Get the CA certificate for client trust
     #[allow(dead_code)]
     pub fn get_ca_cert_pem(&self) -> String {
-        self.cert_manager.get_ca_cert_pem()
+        self.context.cert_manager.get_ca_cert_pem()
     }
+}
+
+/// Generic listener task spawner to avoid code duplication between HTTP and HTTPS
+fn spawn_listener_task<F, Fut>(
+    listener: TcpListener,
+    context: ProxyContext,
+    protocol: &'static str,
+    handler: F,
+) where
+    F: Fn(TcpStream, ProxyContext, SocketAddr) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+{
+    let handler = Arc::new(handler);
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    debug!("New {} connection from {}", protocol, addr);
+                    let context = context.clone();
+                    let handler = Arc::clone(&handler);
+
+                    tokio::spawn(async move {
+                        if let Err(e) = handler(stream, context, addr).await {
+                            error!("Error handling {} connection: {:?}", protocol, e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to accept {} connection: {}", protocol, e);
+                }
+            }
+        }
+    });
 }
 
 async fn handle_http_connection(
     stream: TcpStream,
-    rule_engine: Arc<RuleEngine>,
-    cert_manager: Arc<CertificateManager>,
+    context: ProxyContext,
     remote_addr: SocketAddr,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
-    let service = service_fn(move |req| {
-        handle_http_request(
-            req,
-            Arc::clone(&rule_engine),
-            Arc::clone(&cert_manager),
-            remote_addr,
-        )
-    });
+    let service = service_fn(move |req| handle_http_request(req, context.clone(), remote_addr));
 
     http1::Builder::new()
         .preserve_header_case(true)
@@ -511,23 +528,40 @@ async fn handle_http_connection(
 
 async fn handle_https_connection(
     stream: TcpStream,
-    rule_engine: Arc<RuleEngine>,
-    cert_manager: Arc<CertificateManager>,
+    context: ProxyContext,
     remote_addr: SocketAddr,
 ) -> Result<()> {
     // Delegate to the TLS-specific module
-    crate::proxy_tls::handle_https_connection(stream, rule_engine, cert_manager, remote_addr).await
+    crate::proxy_tls::handle_https_connection(stream, context, remote_addr).await
 }
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
-    rule_engine: Arc<RuleEngine>,
-    _cert_manager: Arc<CertificateManager>,
+    context: ProxyContext,
     remote_addr: SocketAddr,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
     let headers = req.headers().clone();
+
+    // SECURITY: Check for loop detection header (Issue #84)
+    // HTTP supports multiple values for the same header name.
+    // Each httpjail instance adds its nonce; if we see our own, it's a loop.
+    let our_nonce = context.loop_nonce.as_str();
+    for value in headers.get_all(HTTPJAIL_LOOP_DETECTION_HEADER).iter() {
+        if let Ok(nonce) = value.to_str() {
+            if nonce == our_nonce {
+                debug!(
+                    "Loop detected: our nonce '{}' found in request to {}",
+                    nonce, uri
+                );
+                return create_forbidden_response(Some(
+                    "Loop detected: request already processed by this httpjail instance"
+                        .to_string(),
+                ));
+            }
+        }
+    }
 
     // Check if the URI already contains the full URL (proxy request)
     let full_url = if uri.scheme().is_some() && uri.authority().is_some() {
@@ -551,7 +585,8 @@ pub async fn handle_http_request(
 
     // Evaluate rules with method and requester IP
     let requester_ip = remote_addr.ip().to_string();
-    let evaluation = rule_engine
+    let evaluation = context
+        .rule_engine
         .evaluate_with_context_and_ip(method, &full_url, &requester_ip)
         .await;
     match evaluation.action {
@@ -560,7 +595,8 @@ pub async fn handle_http_request(
                 "Request allowed: {} (max_tx_bytes: {:?})",
                 full_url, evaluation.max_tx_bytes
             );
-            match proxy_request(req, &full_url, evaluation.max_tx_bytes).await {
+            match proxy_request(req, &full_url, evaluation.max_tx_bytes, &context.loop_nonce).await
+            {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
                     error!("Proxy error: {}", e);
@@ -579,12 +615,13 @@ async fn proxy_request(
     req: Request<Incoming>,
     full_url: &str,
     max_tx_bytes: Option<u64>,
+    loop_nonce: &str,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Parse the target URL
     let target_uri = full_url.parse::<Uri>()?;
 
     // Prepare request for upstream
-    let prepared_req = prepare_upstream_request(req, target_uri.clone());
+    let prepared_req = prepare_upstream_request(req, target_uri.clone(), loop_nonce);
 
     // Apply byte limit to outgoing request if specified, converting to BoxBody
     let new_req = if let Some(max_bytes) = max_tx_bytes {

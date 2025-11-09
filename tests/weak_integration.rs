@@ -192,24 +192,11 @@ fn start_server(http_port: u16, https_port: u16) -> Result<std::process::Child, 
         .map_err(|e| format!("Failed to start server: {}", e))?;
 
     // Wait for the server to start listening
-    if !wait_for_server(http_port, Duration::from_secs(5)) {
+    if !common::wait_for_server(http_port, Duration::from_secs(5)) {
         return Err(format!("Server failed to start on port {}", http_port));
     }
 
     Ok(child)
-}
-
-fn wait_for_server(port: u16, max_wait: Duration) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < max_wait {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-            // Give the server a bit more time to fully initialize
-            thread::sleep(Duration::from_millis(500));
-            return true;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
 }
 
 fn test_curl_through_proxy(http_port: u16, _https_port: u16) -> Result<String, String> {
@@ -319,7 +306,7 @@ fn start_server_with_bind(http_bind: &str, https_bind: &str) -> (std::process::C
     };
 
     // Wait for server to bind
-    if !wait_for_server(expected_port, Duration::from_secs(3)) {
+    if !common::wait_for_server(expected_port, Duration::from_secs(3)) {
         child.kill().ok();
         panic!("Server failed to bind to port {}", expected_port);
     }
