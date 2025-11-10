@@ -69,11 +69,42 @@ httpjail can run as a standalone proxy server in a Docker container, perfect for
 
 ### Building the Image
 
+The Dockerfile downloads httpjail v0.5.1 from GitHub releases and runs as a non-root user (UID 1000). Multi-arch builds are supported for `linux/amd64` and `linux/arm64`.
+
+**Build for your current platform:**
+
 ```bash
 docker build -t httpjail:latest .
 ```
 
-The Dockerfile downloads httpjail v0.5.1 from GitHub releases and runs as a non-root user (UID 1000).
+**Build for a specific platform:**
+
+```bash
+# For amd64 (x86_64)
+docker build --platform linux/amd64 -t httpjail:amd64 .
+
+# For arm64 (aarch64)
+docker build --platform linux/arm64 -t httpjail:arm64 .
+```
+
+**Build and push multi-arch image to a registry:**
+
+```bash
+# Create and use a new buildx builder (one-time setup)
+docker buildx create --name multiarch --use
+
+# Build and push for both architectures
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t your-registry/httpjail:latest \
+  --push .
+
+# Or build and load locally (single platform only)
+docker buildx build --platform linux/amd64 \
+  -t httpjail:latest \
+  --load .
+```
+
+Note: Multi-arch builds require [Docker Buildx](https://docs.docker.com/build/buildx/). The `--load` flag only works with single-platform builds; use `--push` for multi-platform images.
 
 ### Running the Container
 
@@ -221,7 +252,7 @@ See the [JavaScript rule engine docs](https://coder.github.io/httpjail/guide/rul
 - The container runs as non-root user (UID 1000)
 - Server mode does NOT provide network isolation (no namespaces)
 - Applications must be configured to use the proxy (HTTP_PROXY/HTTPS_PROXY)
-- The Docker image is built for x86_64 architecture only
+- The Docker image supports both `linux/amd64` (x86_64) and `linux/arm64` (aarch64) architectures
 - Certificates are auto-generated on first run if not provided via volume mount
 
 ## Documentation

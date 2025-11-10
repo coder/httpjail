@@ -15,11 +15,19 @@ RUN apt-get update && \
 RUN useradd -u 1000 -m -s /bin/bash httpjail
 
 # Download and install httpjail binary from GitHub releases
-RUN wget -q https://github.com/coder/httpjail/releases/download/v0.5.1/httpjail-0.5.1-linux-x86_64.tar.gz && \
-    tar -xzf httpjail-0.5.1-linux-x86_64.tar.gz && \
-    mv httpjail-0.5.1-linux-x86_64/httpjail /usr/local/bin/httpjail && \
+# Supports multi-arch builds (amd64 and arm64)
+ARG TARGETARCH
+RUN set -ex; \
+    case "${TARGETARCH}" in \
+        amd64) HTTPJAIL_ARCH="x86_64" ;; \
+        arm64) HTTPJAIL_ARCH="aarch64" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    wget -q https://github.com/coder/httpjail/releases/download/v0.5.1/httpjail-0.5.1-linux-${HTTPJAIL_ARCH}.tar.gz && \
+    tar -xzf httpjail-0.5.1-linux-${HTTPJAIL_ARCH}.tar.gz && \
+    mv httpjail-0.5.1-linux-${HTTPJAIL_ARCH}/httpjail /usr/local/bin/httpjail && \
     chmod +x /usr/local/bin/httpjail && \
-    rm -rf httpjail-0.5.1-linux-x86_64.tar.gz httpjail-0.5.1-linux-x86_64
+    rm -rf httpjail-0.5.1-linux-${HTTPJAIL_ARCH}.tar.gz httpjail-0.5.1-linux-${HTTPJAIL_ARCH}
 
 # Create directory for rules
 RUN mkdir -p /rules && \
