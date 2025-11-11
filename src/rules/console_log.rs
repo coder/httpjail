@@ -42,75 +42,38 @@ fn format_console_args(scope: &mut v8::HandleScope, args: v8::FunctionCallbackAr
     log_parts.join(" ")
 }
 
-/// Log level for console methods
-#[derive(Debug, Clone, Copy)]
-enum ConsoleLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
+/// Generic console callback that logs at a specific level
+fn console_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _retval: v8::ReturnValue,
+    log_fn: fn(&str),
+) {
+    let message = format_console_args(scope, args);
+    log_fn(&message);
 }
 
-impl ConsoleLevel {
-    fn log(&self, message: &str) {
-        match self {
-            ConsoleLevel::Debug => debug!(target: "httpjail::rules::js", "{}", message),
-            ConsoleLevel::Info => info!(target: "httpjail::rules::js", "{}", message),
-            ConsoleLevel::Warn => warn!(target: "httpjail::rules::js", "{}", message),
-            ConsoleLevel::Error => tracing::error!(target: "httpjail::rules::js", "{}", message),
+/// Macro to generate console method callbacks for each log level
+macro_rules! console_method {
+    ($name:ident, $log_macro:path) => {
+        fn $name(
+            scope: &mut v8::HandleScope,
+            args: v8::FunctionCallbackArguments,
+            retval: v8::ReturnValue,
+        ) {
+            console_callback(scope, args, retval, |msg| {
+                $log_macro!(target: "httpjail::rules::js", "{}", msg)
+            });
         }
-    }
+    };
 }
 
-/// console.debug() callback
-fn console_debug(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let message = format_console_args(scope, args);
-    ConsoleLevel::Debug.log(&message);
-}
-
-/// console.log() callback
-fn console_log(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let message = format_console_args(scope, args);
-    ConsoleLevel::Info.log(&message);
-}
-
-/// console.info() callback
-fn console_info(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let message = format_console_args(scope, args);
-    ConsoleLevel::Info.log(&message);
-}
-
-/// console.warn() callback
-fn console_warn(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let message = format_console_args(scope, args);
-    ConsoleLevel::Warn.log(&message);
-}
-
-/// console.error() callback
-fn console_error(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _retval: v8::ReturnValue,
-) {
-    let message = format_console_args(scope, args);
-    ConsoleLevel::Error.log(&message);
-}
+// Generate console.debug, console.log, console.info, console.warn, console.error
+console_method!(console_debug, debug);
+console_method!(console_log, info);
+console_method!(console_info, info);
+console_method!(console_warn, warn);
+console_method!(console_error, tracing::error);
 
 /// Set up console object with debug, log, info, warn, error methods
 pub fn setup_console(context_scope: &mut v8::ContextScope<v8::HandleScope>) {
