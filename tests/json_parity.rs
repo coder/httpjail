@@ -116,24 +116,21 @@ async fn test_response_parity() {
 
 #[tokio::test]
 async fn test_console_api() {
-    // Test that all console methods work in JavaScript rules
-    // The output should appear in appropriate log levels
+    use common::tracing_capture;
+    use tracing::Level;
+
+    // Set up tracing capture before running the test
+    let captured_logs = tracing_capture::setup_capture();
+
     let js_engine = V8JsRuleEngine::new(
         r#"
-        console.debug("Testing console.debug");
-        console.log("Testing console.log");
-        console.info("Testing console.info");
-        console.warn("Testing console.warn");
-        console.error("Testing console.error");
-        
-        // Test with various types
-        console.log("String:", "hello");
-        console.log("Number:", 42);
-        console.log("Boolean:", true);
-        console.log("Object:", {foo: "bar", count: 123});
+        console.debug("Test debug");
+        console.log("Test log");
+        console.info("Test info");
+        console.warn("Test warn");
+        console.error("Test error");
+        console.log("Object:", {foo: "bar"});
         console.log("Array:", [1, 2, 3]);
-        console.log("Multiple", "arguments", "test");
-        
         true
         "#
         .to_string(),
@@ -147,9 +144,68 @@ async fn test_console_api() {
     // Should allow since the expression returns true
     assert!(matches!(result.action, Action::Allow));
 
-    // The console output should be visible in logs at appropriate levels:
-    // RUST_LOG=debug: shows debug, log, info, warn, error
-    // RUST_LOG=info: shows info, warn, error
-    // RUST_LOG=warn: shows warn, error
-    // To verify manually: RUST_LOG=debug cargo test test_console_api -- --nocapture
+    // Check that console methods logged at appropriate levels
+    let logs = captured_logs.lock().unwrap();
+    let js_logs: Vec<_> = logs
+        .iter()
+        .filter(|log| log.target == "httpjail::rules::js")
+        .collect();
+
+    // Verify we got console output
+    assert!(!js_logs.is_empty(), "Should have captured console output");
+
+    // Check specific log levels
+    let debug_logs =
+        tracing_capture::find_logs_by_target_level(&logs, "httpjail::rules::js", Level::DEBUG);
+    assert!(
+        debug_logs
+            .iter()
+            .any(|log| log.message.contains("Test debug")),
+        "Should have debug log"
+    );
+    assert!(
+        debug_logs
+            .iter()
+            .any(|log| log.message.contains("Test log")),
+        "Should have log output"
+    );
+
+    let info_logs =
+        tracing_capture::find_logs_by_target_level(&logs, "httpjail::rules::js", Level::INFO);
+    assert!(
+        info_logs
+            .iter()
+            .any(|log| log.message.contains("Test info")),
+        "Should have info log"
+    );
+
+    let warn_logs =
+        tracing_capture::find_logs_by_target_level(&logs, "httpjail::rules::js", Level::WARN);
+    assert!(
+        warn_logs
+            .iter()
+            .any(|log| log.message.contains("Test warn")),
+        "Should have warn log"
+    );
+
+    let error_logs =
+        tracing_capture::find_logs_by_target_level(&logs, "httpjail::rules::js", Level::ERROR);
+    assert!(
+        error_logs
+            .iter()
+            .any(|log| log.message.contains("Test error")),
+        "Should have error log"
+    );
+
+    // Verify objects are JSON-stringified
+    assert!(
+        debug_logs
+            .iter()
+            .any(|log| log.message.contains(r#"{"foo":"bar"}"#)),
+        "Objects should be JSON-stringified"
+    );
+    assert!(
+        debug_logs.iter().any(|log| log.message.contains("[1,2,3]")),
+        "Arrays should be JSON-stringified"
+    );
 }

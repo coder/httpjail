@@ -1,4 +1,5 @@
 pub mod common;
+mod console_log;
 pub mod proc;
 pub mod shell;
 pub mod v8_js;

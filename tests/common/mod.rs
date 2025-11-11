@@ -2,6 +2,8 @@
 
 pub mod logging; // Automatic test logging setup
 
+pub mod tracing_capture; // Capture tracing logs for testing
+
 use std::process::Command;
 
 /// Construct httpjail command with standard test settings
