@@ -151,6 +151,72 @@ const requestString = `${r.method} ${r.host}${r.path}`;
 patterns.some(pattern => pattern.test(requestString))
 ```
 
+## Debugging with Console API
+
+JavaScript rules support the full console API for debugging. Each method maps to a corresponding tracing level:
+
+| Console Method | Tracing Level | Use Case |
+|----------------|---------------|----------|
+| `console.debug()` | DEBUG | Detailed troubleshooting information |
+| `console.log()` | INFO | General informational messages |
+| `console.info()` | INFO | Informational messages (e.g., allowed requests) |
+| `console.warn()` | WARN | Warning messages (e.g., suspicious patterns) |
+| `console.error()` | ERROR | Error messages (e.g., blocked threats) |
+
+### Example
+
+```javascript
+// Debug: detailed information
+console.debug("Evaluating request:", r.method, r.url);
+console.debug("Full request:", r);
+
+// Info: general messages
+console.info("Allowing trusted domain:", r.host);
+
+// Warn: suspicious patterns
+console.warn("Suspicious path detected:", r.path);
+
+// Error: security issues
+console.error("Blocked malicious request:", r.url);
+```
+
+### Viewing Console Output
+
+Set `RUST_LOG` to control which messages appear:
+
+```bash
+# Show debug and above (debug, info, warn, error) - all console output
+RUST_LOG=debug httpjail --js-file rules.js -- command
+
+# Show info and above (info, warn, error) - recommended for production
+# Includes console.log(), console.info(), console.warn(), console.error()
+RUST_LOG=info httpjail --js-file rules.js -- command
+
+# Show only warnings and errors
+RUST_LOG=warn httpjail --js-file rules.js -- command
+```
+
+Example output with color coding:
+
+```
+DEBUG httpjail::rules::js: Evaluating request: GET https://api.github.com/users
+INFO  httpjail::rules::js: Allowing trusted domain: api.github.com
+WARN  httpjail::rules::js: Suspicious path detected: /admin
+ERROR httpjail::rules::js: Blocked malicious request: https://evil.com/exploit
+```
+
+### Objects and Arrays
+
+Objects and arrays are automatically JSON-stringified:
+
+```javascript
+console.log("Request:", r);
+// Output: Request: {"url":"https://...","method":"GET",...}
+
+console.log("Complex:", {hosts: ["a.com", "b.com"], count: 42});
+// Output: Complex: {"hosts":["a.com","b.com"],"count":42}
+```
+
 ## When to Use
 
 Best for:

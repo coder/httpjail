@@ -1,4 +1,5 @@
 use crate::rules::common::{RequestInfo, RuleResponse};
+use crate::rules::console_log;
 use crate::rules::{EvaluationResult, RuleEngineTrait};
 use async_trait::async_trait;
 use hyper::Method;
@@ -124,6 +125,9 @@ impl V8JsRuleEngine {
         let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
         let context_scope = &mut v8::ContextScope::new(handle_scope, context);
+
+        // Set up console object with debug, log, info, warn, error methods
+        console_log::setup_console(context_scope);
 
         let global = context.global(context_scope);
 
