@@ -140,7 +140,7 @@ JavaScript rules support the full console API for debugging. Each method maps to
 | Console Method | Tracing Level | Use Case |
 |----------------|---------------|----------|
 | `console.debug()` | DEBUG | Detailed troubleshooting information |
-| `console.log()` | DEBUG | General debugging messages |
+| `console.log()` | INFO | General informational messages |
 | `console.info()` | INFO | Informational messages (e.g., allowed requests) |
 | `console.warn()` | WARN | Warning messages (e.g., suspicious patterns) |
 | `console.error()` | ERROR | Error messages (e.g., blocked threats) |
@@ -167,10 +167,11 @@ console.error("Blocked malicious request:", r.url);
 Set `RUST_LOG` to control which messages appear:
 
 ```bash
-# Show debug and above (debug, info, warn, error)
+# Show debug and above (debug, info, warn, error) - all console output
 RUST_LOG=debug httpjail --js-file rules.js -- command
 
 # Show info and above (info, warn, error) - recommended for production
+# Includes console.log(), console.info(), console.warn(), console.error()
 RUST_LOG=info httpjail --js-file rules.js -- command
 
 # Show only warnings and errors

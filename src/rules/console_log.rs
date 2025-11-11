@@ -79,7 +79,7 @@ fn console_log(
     _retval: v8::ReturnValue,
 ) {
     let message = format_console_args(scope, args);
-    ConsoleLevel::Debug.log(&message);
+    ConsoleLevel::Info.log(&message);
 }
 
 /// console.info() callback

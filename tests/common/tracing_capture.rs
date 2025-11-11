@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use tracing::{Level, Subscriber};
-use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::{Context, SubscriberExt};
 
 /// Captured log record
 #[derive(Debug, Clone)]
@@ -49,8 +49,11 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = Some(format!("{:?}", value));
             // Remove surrounding quotes from debug output
-            if let Some(ref mut msg) = self.message &&
-                msg.starts_with('"') && msg.ends_with('"') && msg.len() >= 2 {
+            if let Some(ref mut msg) = self.message
+                && msg.starts_with('"')
+                && msg.ends_with('"')
+                && msg.len() >= 2
+            {
                 *msg = msg[1..msg.len() - 1].to_string();
             }
         }

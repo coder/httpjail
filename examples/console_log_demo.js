@@ -8,7 +8,7 @@
 
 // Different console methods map to tracing levels:
 // console.debug() -> DEBUG
-// console.log()   -> DEBUG  
+// console.log()   -> INFO
 // console.info()  -> INFO
 // console.warn()  -> WARN
 // console.error() -> ERROR

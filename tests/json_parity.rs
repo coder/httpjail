@@ -163,20 +163,17 @@ async fn test_console_api() {
             .any(|log| log.message.contains("Test debug")),
         "Should have debug log"
     );
-    assert!(
-        debug_logs
-            .iter()
-            .any(|log| log.message.contains("Test log")),
-        "Should have log output"
-    );
-
     let info_logs =
         tracing_capture::find_logs_by_target_level(&logs, "httpjail::rules::js", Level::INFO);
+    assert!(
+        info_logs.iter().any(|log| log.message.contains("Test log")),
+        "console.log should map to INFO level"
+    );
     assert!(
         info_logs
             .iter()
             .any(|log| log.message.contains("Test info")),
-        "Should have info log"
+        "console.info should map to INFO level"
     );
 
     let warn_logs =
@@ -197,15 +194,15 @@ async fn test_console_api() {
         "Should have error log"
     );
 
-    // Verify objects are JSON-stringified
+    // Verify objects are JSON-stringified (console.log outputs at INFO level)
     assert!(
-        debug_logs
+        info_logs
             .iter()
             .any(|log| log.message.contains(r#"{"foo":"bar"}"#)),
         "Objects should be JSON-stringified"
     );
     assert!(
-        debug_logs.iter().any(|log| log.message.contains("[1,2,3]")),
+        info_logs.iter().any(|log| log.message.contains("[1,2,3]")),
         "Arrays should be JSON-stringified"
     );
 }
