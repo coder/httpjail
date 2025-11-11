@@ -429,7 +429,8 @@ async fn main() -> Result<()> {
         info!("Using V8 JavaScript rule evaluation from file: {}", js_file);
         let code = std::fs::read_to_string(js_file)
             .with_context(|| format!("Failed to read JS file: {}", js_file))?;
-        let js_engine = match V8JsRuleEngine::new(code) {
+        let js_file_path = std::path::PathBuf::from(js_file);
+        let js_engine = match V8JsRuleEngine::new_with_file(code, Some(js_file_path)) {
             Ok(engine) => Box::new(engine),
             Err(e) => {
                 eprintln!("Failed to create V8 JavaScript engine: {}", e);

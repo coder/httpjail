@@ -41,6 +41,28 @@ allowedHosts.includes(r.host);
 httpjail --js-file rules.js -- command
 ```
 
+#### Automatic File Reloading
+
+When using `--js-file`, httpjail automatically detects and reloads the file when it changes. This is especially useful during development and debugging:
+
+```bash
+# Start with initial rules
+echo "r.host === 'example.com'" > rules.js
+httpjail --js-file rules.js -- your-app
+
+# In another terminal, update the rules (reloads automatically on next request)
+echo "r.host === 'github.com'" > rules.js
+```
+
+**How it works:**
+- File modification time (mtime) is checked on each request
+- If the file has changed, it's reloaded and validated
+- Invalid JavaScript is rejected and existing rules are kept
+- Reload happens atomically without interrupting request processing
+- Zero overhead when the file hasn't changed
+
+**Note:** File watching is only active when using `--js-file`. Inline rules (`--js`) do not reload.
+
 ## Response Format
 
 {{#include ../../includes/response-format-table.md}}
