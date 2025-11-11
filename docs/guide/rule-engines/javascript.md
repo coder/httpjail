@@ -62,6 +62,24 @@ r.host === 'facebook.com' ? {deny_message: 'Social media blocked'} : true
 ({allow: {max_tx_bytes: 1024}})
 ```
 
+## Using Return Statements
+
+JavaScript rules don't allow naked `return` statements. To use returns, wrap your code in an IIFE:
+
+```javascript
+(function() {
+  if (r.host === 'github.com') {
+    return true;
+  }
+  
+  if (r.host.match(/facebook|twitter/)) {
+    return {deny_message: "Blocked"};
+  }
+  
+  return false;
+})();
+```
+
 ## Common Patterns
 
 ### Domain Allowlisting
