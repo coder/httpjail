@@ -1,20 +1,43 @@
+//! V8 JavaScript rule engine implementation.
+//!
+//! This module provides a rule engine that evaluates HTTP requests using JavaScript
+//! code executed via the V8 engine. It supports automatic file reloading when rules
+//! are loaded from a file path.
+
 use crate::rules::common::{RequestInfo, RuleResponse};
 use crate::rules::console_log;
 use crate::rules::{EvaluationResult, RuleEngineTrait};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use hyper::Method;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+/// V8-based JavaScript rule engine with automatic file reloading support.
+///
+/// The engine uses a lock-free ArcSwap for reading JavaScript code on every request,
+/// and employs a singleflight pattern (via Mutex) to prevent concurrent file reloads.
 pub struct V8JsRuleEngine {
-    js_code: String,
-    #[allow(dead_code)]
-    runtime: Arc<Mutex<()>>, // Placeholder for V8 runtime management
+    /// JavaScript code and its last modified time (lock-free atomic updates)
+    js_code: ArcSwap<(String, Option<SystemTime>)>,
+    /// Optional file path for automatic reloading
+    js_file_path: Option<PathBuf>,
+    /// Lock to prevent concurrent file reloads (singleflight pattern)
+    reload_lock: Arc<Mutex<()>>,
 }
 
 impl V8JsRuleEngine {
     pub fn new(js_code: String) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_file(js_code, None)
+    }
+
+    pub fn new_with_file(
+        js_code: String,
+        js_file_path: Option<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize V8 platform once and keep it alive for the lifetime of the program
         use std::sync::OnceLock;
         static V8_PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
@@ -27,27 +50,45 @@ impl V8JsRuleEngine {
         });
 
         // Compile the JavaScript to check for syntax errors
-        {
-            let mut isolate = v8::Isolate::new(v8::CreateParams::default());
-            let handle_scope = &mut v8::HandleScope::new(&mut isolate);
-            let context = v8::Context::new(handle_scope, Default::default());
-            let context_scope = &mut v8::ContextScope::new(handle_scope, context);
+        Self::validate_js_code(&js_code)?;
 
-            let source =
-                v8::String::new(context_scope, &js_code).ok_or("Failed to create V8 string")?;
+        // Get initial mtime if file path is provided
+        let initial_mtime = js_file_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok().and_then(|m| m.modified().ok()));
 
-            v8::Script::compile(context_scope, source, None)
-                .ok_or("Failed to compile JavaScript expression")?;
+        let js_code_swap = ArcSwap::from(Arc::new((js_code, initial_mtime)));
+
+        if js_file_path.is_some() {
+            info!("File watching enabled for JS rules - will check for changes on each request");
         }
 
         info!("V8 JavaScript rule engine initialized");
         Ok(Self {
-            js_code,
-            runtime: Arc::new(Mutex::new(())),
+            js_code: js_code_swap,
+            js_file_path,
+            reload_lock: Arc::new(Mutex::new(())),
         })
     }
 
-    pub fn execute(
+    /// Validate JavaScript code by compiling it with V8
+    fn validate_js_code(js_code: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut isolate = v8::Isolate::new(v8::CreateParams::default());
+        let handle_scope = &mut v8::HandleScope::new(&mut isolate);
+        let context = v8::Context::new(handle_scope, Default::default());
+        let context_scope = &mut v8::ContextScope::new(handle_scope, context);
+
+        let source = v8::String::new(context_scope, js_code).ok_or("Failed to create V8 string")?;
+
+        v8::Script::compile(context_scope, source, None)
+            .ok_or("Failed to compile JavaScript expression")?;
+
+        Ok(())
+    }
+
+    /// Execute JavaScript rules against a request (public API).
+    /// For internal use, prefer calling `evaluate()` via the RuleEngineTrait.
+    pub async fn execute(
         &self,
         method: &Method,
         url: &str,
@@ -61,7 +102,11 @@ impl V8JsRuleEngine {
             }
         };
 
-        match self.create_and_execute(&request_info) {
+        // Load the current JS code (lock-free)
+        let code_and_mtime = self.js_code.load();
+        let (js_code, _) = &**code_and_mtime;
+
+        match Self::execute_with_code(js_code, &request_info) {
             Ok(result) => result,
             Err(e) => {
                 warn!("JavaScript execution failed: {}", e);
@@ -196,57 +241,152 @@ impl V8JsRuleEngine {
         Ok((allowed, message, max_tx_bytes))
     }
 
+    /// Execute JavaScript code with a given code string (can be called from blocking context)
     #[allow(clippy::type_complexity)]
-    fn create_and_execute(
-        &self,
+    fn execute_with_code(
+        js_code: &str,
         request_info: &RequestInfo,
     ) -> Result<(bool, Option<String>, Option<u64>), Box<dyn std::error::Error>> {
         // Create a new isolate for each execution (simpler approach)
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
-        Self::execute_with_isolate(&mut isolate, &self.js_code, request_info)
+        Self::execute_with_isolate(&mut isolate, js_code, request_info)
+    }
+
+    /// Check if the JS file has changed and reload if necessary.
+    /// Uses double-check locking pattern to prevent concurrent reloads.
+    async fn check_and_reload_file(&self) {
+        let Some(ref path) = self.js_file_path else {
+            return;
+        };
+
+        let current_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+
+        // Fast path: check if reload needed (no lock)
+        let code_and_mtime = self.js_code.load();
+        let (_, last_mtime) = &**code_and_mtime;
+
+        if current_mtime != *last_mtime && current_mtime.is_some() {
+            // Slow path: acquire lock to prevent concurrent reloads (singleflight)
+            let _guard = self.reload_lock.lock().await;
+
+            // Double-check: file might have been reloaded while waiting for lock
+            let code_and_mtime = self.js_code.load();
+            let (_, last_mtime) = &**code_and_mtime;
+
+            if current_mtime != *last_mtime && current_mtime.is_some() {
+                info!("Detected change in JS rules file: {:?}", path);
+
+                // Re-read and validate the file
+                match std::fs::read_to_string(path) {
+                    Ok(new_code) => {
+                        // Validate the new code before reloading
+                        if let Err(e) = Self::validate_js_code(&new_code) {
+                            error!(
+                                "Failed to validate updated JS code: {}. Keeping existing rules.",
+                                e
+                            );
+                        } else {
+                            // Update the code and mtime atomically (lock-free swap)
+                            self.js_code.store(Arc::new((new_code, current_mtime)));
+                            info!("Successfully reloaded JS rules from file");
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to read updated JS file: {}. Keeping existing rules.",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load the current JS code from the ArcSwap (lock-free operation).
+    fn load_js_code(&self) -> String {
+        let code_and_mtime = self.js_code.load();
+        let (js_code, _) = &**code_and_mtime;
+        js_code.clone()
+    }
+
+    /// Execute JavaScript in a blocking task to handle V8's single-threaded nature.
+    /// Returns (allowed, context, max_tx_bytes).
+    async fn execute_js_blocking(
+        js_code: String,
+        method: Method,
+        url: &str,
+        requester_ip: &str,
+    ) -> (bool, Option<String>, Option<u64>) {
+        let method_clone = method.clone();
+        let url_clone = url.to_string();
+        let ip_clone = requester_ip.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let request_info = match RequestInfo::from_request(&method_clone, &url_clone, &ip_clone)
+            {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!("Failed to parse request info: {}", e);
+                    return (false, Some("Invalid request format".to_string()), None);
+                }
+            };
+
+            match Self::execute_with_code(&js_code, &request_info) {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("JavaScript execution failed: {}", e);
+                    (false, Some("JavaScript execution failed".to_string()), None)
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Failed to spawn V8 evaluation task: {}", e);
+            (false, Some("Evaluation failed".to_string()), None)
+        })
+    }
+
+    /// Build an EvaluationResult from the execution outcome.
+    fn build_evaluation_result(
+        allowed: bool,
+        context: Option<String>,
+        max_tx_bytes: Option<u64>,
+    ) -> EvaluationResult {
+        let mut result = if allowed {
+            EvaluationResult::allow()
+        } else {
+            EvaluationResult::deny()
+        };
+
+        if let Some(ctx) = context {
+            result = result.with_context(ctx);
+        }
+
+        if allowed {
+            if let Some(bytes) = max_tx_bytes {
+                result = result.with_max_tx_bytes(bytes);
+            }
+        }
+
+        result
     }
 }
 
 #[async_trait]
 impl RuleEngineTrait for V8JsRuleEngine {
     async fn evaluate(&self, method: Method, url: &str, requester_ip: &str) -> EvaluationResult {
-        // Run the JavaScript evaluation in a blocking task to avoid
-        // issues with V8's single-threaded nature
-        let method_clone = method.clone();
-        let url_clone = url.to_string();
-        let ip_clone = requester_ip.to_string();
+        // Check if file has changed and reload if necessary
+        self.check_and_reload_file().await;
 
-        // Clone self to move into the closure
-        let self_clone = Self {
-            js_code: self.js_code.clone(),
-            runtime: self.runtime.clone(),
-        };
+        // Load the current JS code (lock-free operation)
+        let js_code = self.load_js_code();
 
-        let (allowed, context, max_tx_bytes) = tokio::task::spawn_blocking(move || {
-            self_clone.execute(&method_clone, &url_clone, &ip_clone)
-        })
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Failed to spawn V8 evaluation task: {}", e);
-            (false, Some("Evaluation failed".to_string()), None)
-        });
+        // Execute JavaScript in blocking task
+        let (allowed, context, max_tx_bytes) =
+            Self::execute_js_blocking(js_code, method, url, requester_ip).await;
 
-        if allowed {
-            let mut result = EvaluationResult::allow();
-            if let Some(ctx) = context {
-                result = result.with_context(ctx);
-            }
-            if let Some(bytes) = max_tx_bytes {
-                result = result.with_max_tx_bytes(bytes);
-            }
-            result
-        } else {
-            let mut result = EvaluationResult::deny();
-            if let Some(ctx) = context {
-                result = result.with_context(ctx);
-            }
-            result
-        }
+        // Build and return the result
+        Self::build_evaluation_result(allowed, context, max_tx_bytes)
     }
 
     fn name(&self) -> &str {

@@ -16,6 +16,7 @@ httpjail follows a simple configuration hierarchy:
 Choose how requests are evaluated:
 
 - **JavaScript** (`--js` or `--js-file`) - Fast, sandboxed evaluation
+  - Files specified with `--js-file` are automatically reloaded when changed
 - **Shell Script** (`--sh`) - System integration, external tools
 - **Line Processor** (`--proc`) - Stateful, streaming evaluation
 

@@ -80,6 +80,8 @@ isAllowed && r.method !== 'DELETE';
 httpjail --js-file rules.js -- npm install
 ```
 
+> **Tip:** Rules files are automatically reloaded when they change - perfect for development and debugging! Just edit `rules.js` and the changes take effect on the next request.
+
 ### Request Logging
 
 Monitor what requests are being made:

@@ -33,9 +33,10 @@ Or download a pre-built binary from the [releases page](https://github.com/coder
 # Allow only requests to github.com (JS)
 httpjail --js "r.host === 'github.com'" -- your-app
 
-# Load JS from a file
+# Load JS from a file (auto-reloads on file changes)
 echo "/^api\\.example\\.com$/.test(r.host) && r.method === 'GET'" > rules.js
 httpjail --js-file rules.js -- curl https://api.example.com/health
+# File changes are detected and reloaded automatically on each request
 
 # Log requests to a file
 httpjail --request-log requests.log --js "true" -- npm install
