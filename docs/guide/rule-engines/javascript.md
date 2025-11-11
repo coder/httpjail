@@ -133,6 +133,38 @@ const requestString = `${r.method} ${r.host}${r.path}`;
 patterns.some(pattern => pattern.test(requestString))
 ```
 
+## Debugging with console.log()
+
+You can use `console.log()` to debug your JavaScript rules. The output appears in debug logs:
+
+```javascript
+// Debug the request object
+console.log("Evaluating request:", r.method, r.url);
+console.log("Request object:", r);
+
+// Debug conditional logic
+if (r.host.endsWith('.github.com')) {
+    console.log("Allowing GitHub subdomain:", r.host);
+    true
+} else {
+    console.log("Denying non-GitHub request");
+    false
+}
+```
+
+To see console.log() output, run with debug logging:
+
+```bash
+RUST_LOG=debug httpjail --js-file rules.js -- command
+```
+
+The logs will show output like:
+
+```
+DEBUG httpjail::rules::js: Evaluating request: GET https://api.github.com/users
+DEBUG httpjail::rules::js: Request object: {"url":"https://api.github.com/users","method":"GET",...}
+```
+
 ## When to Use
 
 Best for:

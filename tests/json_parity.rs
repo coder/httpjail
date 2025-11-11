@@ -113,3 +113,31 @@ async fn test_response_parity() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_console_log() {
+    // Test that console.log() works in JavaScript rules
+    // The output should appear in debug logs
+    let js_engine = V8JsRuleEngine::new(
+        r#"
+        console.log("Testing console.log");
+        console.log("Number:", 42);
+        console.log("Object:", {foo: "bar", count: 123});
+        console.log("Array:", [1, 2, 3]);
+        console.log("Multiple", "arguments", "test");
+        true
+        "#
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = js_engine
+        .evaluate(Method::GET, "https://example.com", "127.0.0.1")
+        .await;
+
+    // Should allow since the expression returns true
+    assert!(matches!(result.action, Action::Allow));
+
+    // The console.log output should be visible in debug logs
+    // To verify manually: RUST_LOG=debug cargo test test_console_log -- --nocapture
+}
