@@ -115,16 +115,25 @@ async fn test_response_parity() {
 }
 
 #[tokio::test]
-async fn test_console_log() {
-    // Test that console.log() works in JavaScript rules
-    // The output should appear in debug logs
+async fn test_console_api() {
+    // Test that all console methods work in JavaScript rules
+    // The output should appear in appropriate log levels
     let js_engine = V8JsRuleEngine::new(
         r#"
+        console.debug("Testing console.debug");
         console.log("Testing console.log");
+        console.info("Testing console.info");
+        console.warn("Testing console.warn");
+        console.error("Testing console.error");
+        
+        // Test with various types
+        console.log("String:", "hello");
         console.log("Number:", 42);
+        console.log("Boolean:", true);
         console.log("Object:", {foo: "bar", count: 123});
         console.log("Array:", [1, 2, 3]);
         console.log("Multiple", "arguments", "test");
+        
         true
         "#
         .to_string(),
@@ -138,6 +147,9 @@ async fn test_console_log() {
     // Should allow since the expression returns true
     assert!(matches!(result.action, Action::Allow));
 
-    // The console.log output should be visible in debug logs
-    // To verify manually: RUST_LOG=debug cargo test test_console_log -- --nocapture
+    // The console output should be visible in logs at appropriate levels:
+    // RUST_LOG=debug: shows debug, log, info, warn, error
+    // RUST_LOG=info: shows info, warn, error
+    // RUST_LOG=warn: shows warn, error
+    // To verify manually: RUST_LOG=debug cargo test test_console_api -- --nocapture
 }

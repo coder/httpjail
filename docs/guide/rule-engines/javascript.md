@@ -133,36 +133,69 @@ const requestString = `${r.method} ${r.host}${r.path}`;
 patterns.some(pattern => pattern.test(requestString))
 ```
 
-## Debugging with console.log()
+## Debugging with Console API
 
-You can use `console.log()` to debug your JavaScript rules. The output appears in debug logs:
+JavaScript rules support the full console API for debugging. Each method maps to a corresponding tracing level:
+
+| Console Method | Tracing Level | Use Case |
+|----------------|---------------|----------|
+| `console.debug()` | DEBUG | Detailed troubleshooting information |
+| `console.log()` | DEBUG | General debugging messages |
+| `console.info()` | INFO | Informational messages (e.g., allowed requests) |
+| `console.warn()` | WARN | Warning messages (e.g., suspicious patterns) |
+| `console.error()` | ERROR | Error messages (e.g., blocked threats) |
+
+### Example
 
 ```javascript
-// Debug the request object
-console.log("Evaluating request:", r.method, r.url);
-console.log("Request object:", r);
+// Debug: detailed information
+console.debug("Evaluating request:", r.method, r.url);
+console.debug("Full request:", r);
 
-// Debug conditional logic
-if (r.host.endsWith('.github.com')) {
-    console.log("Allowing GitHub subdomain:", r.host);
-    true
-} else {
-    console.log("Denying non-GitHub request");
-    false
-}
+// Info: general messages
+console.info("Allowing trusted domain:", r.host);
+
+// Warn: suspicious patterns
+console.warn("Suspicious path detected:", r.path);
+
+// Error: security issues
+console.error("Blocked malicious request:", r.url);
 ```
 
-To see console.log() output, run with debug logging:
+### Viewing Console Output
+
+Set `RUST_LOG` to control which messages appear:
 
 ```bash
+# Show debug and above (debug, info, warn, error)
 RUST_LOG=debug httpjail --js-file rules.js -- command
+
+# Show info and above (info, warn, error) - recommended for production
+RUST_LOG=info httpjail --js-file rules.js -- command
+
+# Show only warnings and errors
+RUST_LOG=warn httpjail --js-file rules.js -- command
 ```
 
-The logs will show output like:
+Example output with color coding:
 
 ```
 DEBUG httpjail::rules::js: Evaluating request: GET https://api.github.com/users
-DEBUG httpjail::rules::js: Request object: {"url":"https://api.github.com/users","method":"GET",...}
+INFO  httpjail::rules::js: Allowing trusted domain: api.github.com
+WARN  httpjail::rules::js: Suspicious path detected: /admin
+ERROR httpjail::rules::js: Blocked malicious request: https://evil.com/exploit
+```
+
+### Objects and Arrays
+
+Objects and arrays are automatically JSON-stringified:
+
+```javascript
+console.log("Request:", r);
+// Output: Request: {"url":"https://...","method":"GET",...}
+
+console.log("Complex:", {hosts: ["a.com", "b.com"], count: 42});
+// Output: Complex: {"hosts":["a.com","b.com"],"count":42}
 ```
 
 ## When to Use

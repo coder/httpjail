@@ -115,81 +115,102 @@ impl V8JsRuleEngine {
         }
     }
 
-    /// console.log() callback function for V8
+    /// Convert a V8 value to a string, using JSON.stringify for objects
+    fn v8_value_to_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String {
+        // For objects and arrays, try JSON.stringify
+        if value.is_object() && !value.is_null() && !value.is_undefined() {
+            if let Some(json_str) = Self::try_json_stringify(scope, value) {
+                return json_str;
+            }
+        }
+
+        // Fallback to toString() for all types
+        value
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_else(|| "[value]".to_string())
+    }
+
+    /// Try to JSON.stringify a value, returning None if it fails
+    fn try_json_stringify(
+        scope: &mut v8::HandleScope,
+        value: v8::Local<v8::Value>,
+    ) -> Option<String> {
+        let global = scope.get_current_context().global(scope);
+        let json_key = v8::String::new(scope, "JSON")?;
+        let stringify_key = v8::String::new(scope, "stringify")?;
+
+        let json_obj = global.get(scope, json_key.into())?.to_object(scope)?;
+        let stringify_fn = json_obj.get(scope, stringify_key.into())?;
+        let stringify_fn = v8::Local::<v8::Function>::try_from(stringify_fn).ok()?;
+
+        let result = stringify_fn.call(scope, json_obj.into(), &[value])?;
+        result
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+    }
+
+    /// Format console arguments into a single string
+    fn format_console_args(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+    ) -> String {
+        let mut log_parts = Vec::new();
+        for i in 0..args.length() {
+            let arg = args.get(i);
+            log_parts.push(Self::v8_value_to_string(scope, arg));
+        }
+        log_parts.join(" ")
+    }
+
+    /// console.debug() callback
+    fn console_debug_callback(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let message = Self::format_console_args(scope, args);
+        debug!(target: "httpjail::rules::js", "{}", message);
+    }
+
+    /// console.log() callback
     fn console_log_callback(
         scope: &mut v8::HandleScope,
         args: v8::FunctionCallbackArguments,
         _retval: v8::ReturnValue,
     ) {
-        let mut log_parts = Vec::new();
-        for i in 0..args.length() {
-            let arg = args.get(i);
+        let message = Self::format_console_args(scope, args);
+        debug!(target: "httpjail::rules::js", "{}", message);
+    }
 
-            // For objects and arrays, try JSON.stringify first
-            let log_str = if arg.is_object() && !arg.is_null() && !arg.is_undefined() {
-                let global = scope.get_current_context().global(scope);
-                let json_key = v8::String::new(scope, "JSON").unwrap();
-                let stringify_key = v8::String::new(scope, "stringify").unwrap();
+    /// console.info() callback
+    fn console_info_callback(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let message = Self::format_console_args(scope, args);
+        info!(target: "httpjail::rules::js", "{}", message);
+    }
 
-                if let Some(json_obj) = global.get(scope, json_key.into()) {
-                    if let Some(json_obj) = json_obj.to_object(scope) {
-                        if let Some(stringify_fn) = json_obj.get(scope, stringify_key.into()) {
-                            if let Ok(stringify_fn) =
-                                v8::Local::<v8::Function>::try_from(stringify_fn)
-                            {
-                                if let Some(result) =
-                                    stringify_fn.call(scope, json_obj.into(), &[arg])
-                                {
-                                    if let Some(s) = result.to_string(scope) {
-                                        s.to_rust_string_lossy(scope)
-                                    } else {
-                                        // Fallback to toString()
-                                        arg.to_string(scope)
-                                            .map(|s| s.to_rust_string_lossy(scope))
-                                            .unwrap_or_else(|| "[object]".to_string())
-                                    }
-                                } else {
-                                    // Fallback to toString()
-                                    arg.to_string(scope)
-                                        .map(|s| s.to_rust_string_lossy(scope))
-                                        .unwrap_or_else(|| "[object]".to_string())
-                                }
-                            } else {
-                                // Fallback to toString()
-                                arg.to_string(scope)
-                                    .map(|s| s.to_rust_string_lossy(scope))
-                                    .unwrap_or_else(|| "[object]".to_string())
-                            }
-                        } else {
-                            // Fallback to toString()
-                            arg.to_string(scope)
-                                .map(|s| s.to_rust_string_lossy(scope))
-                                .unwrap_or_else(|| "[object]".to_string())
-                        }
-                    } else {
-                        // Fallback to toString()
-                        arg.to_string(scope)
-                            .map(|s| s.to_rust_string_lossy(scope))
-                            .unwrap_or_else(|| "[object]".to_string())
-                    }
-                } else {
-                    // Fallback to toString()
-                    arg.to_string(scope)
-                        .map(|s| s.to_rust_string_lossy(scope))
-                        .unwrap_or_else(|| "[object]".to_string())
-                }
-            } else {
-                // For primitives (strings, numbers, booleans, null, undefined), use toString()
-                arg.to_string(scope)
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_else(|| "[value]".to_string())
-            };
+    /// console.warn() callback
+    fn console_warn_callback(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let message = Self::format_console_args(scope, args);
+        warn!(target: "httpjail::rules::js", "{}", message);
+    }
 
-            log_parts.push(log_str);
-        }
-
-        // Use debug! for console.log output
-        debug!(target: "httpjail::rules::js", "{}", log_parts.join(" "));
+    /// console.error() callback
+    fn console_error_callback(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _retval: v8::ReturnValue,
+    ) {
+        let message = Self::format_console_args(scope, args);
+        tracing::error!(target: "httpjail::rules::js", "{}", message);
     }
 
     #[allow(clippy::type_complexity)]
@@ -204,12 +225,35 @@ impl V8JsRuleEngine {
 
         let global = context.global(context_scope);
 
-        // Set up console.log()
+        // Set up console object with debug, log, info, warn, error methods
         let console_key = v8::String::new(context_scope, "console").unwrap();
         let console_obj = v8::Object::new(context_scope);
+
+        // console.debug()
+        let debug_key = v8::String::new(context_scope, "debug").unwrap();
+        let debug_fn = v8::Function::new(context_scope, Self::console_debug_callback).unwrap();
+        console_obj.set(context_scope, debug_key.into(), debug_fn.into());
+
+        // console.log()
         let log_key = v8::String::new(context_scope, "log").unwrap();
         let log_fn = v8::Function::new(context_scope, Self::console_log_callback).unwrap();
         console_obj.set(context_scope, log_key.into(), log_fn.into());
+
+        // console.info()
+        let info_key = v8::String::new(context_scope, "info").unwrap();
+        let info_fn = v8::Function::new(context_scope, Self::console_info_callback).unwrap();
+        console_obj.set(context_scope, info_key.into(), info_fn.into());
+
+        // console.warn()
+        let warn_key = v8::String::new(context_scope, "warn").unwrap();
+        let warn_fn = v8::Function::new(context_scope, Self::console_warn_callback).unwrap();
+        console_obj.set(context_scope, warn_key.into(), warn_fn.into());
+
+        // console.error()
+        let error_key = v8::String::new(context_scope, "error").unwrap();
+        let error_fn = v8::Function::new(context_scope, Self::console_error_callback).unwrap();
+        console_obj.set(context_scope, error_key.into(), error_fn.into());
+
         global.set(context_scope, console_key.into(), console_obj.into());
 
         // Serialize RequestInfo to JSON - this is the exact same JSON sent to proc
