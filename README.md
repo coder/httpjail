@@ -61,6 +61,11 @@ httpjail --server --js "true"
 
 # Run Docker containers with network isolation (Linux only)
 httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest wget -qO- https://api.github.com
+
+# Or run httpjail itself as a standalone proxy in Docker (see docs/advanced/docker.md)
+cd examples/
+docker build -t httpjail:latest .
+docker run -d -p 8080:8080 -p 8443:8443 httpjail:latest
 ```
 
 ## Documentation
