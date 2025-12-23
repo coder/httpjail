@@ -365,7 +365,9 @@ impl CertificateManager {
             // Python requests
             ("REQUESTS_CA_BUNDLE".to_string(), ca_path_str.clone()),
             // Node.js
-            ("NODE_EXTRA_CA_CERTS".to_string(), ca_path_str),
+            ("NODE_EXTRA_CA_CERTS".to_string(), ca_path_str.clone()),
+            // Deno
+            ("DENO_CERT".to_string(), ca_path_str),
         ];
 
         Ok(env_vars)
