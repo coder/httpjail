@@ -138,5 +138,6 @@ httpjail sets these variables for the child process to trust the CA certificate:
 - `CURL_CA_BUNDLE` - curl
 - `REQUESTS_CA_BUNDLE` - Python requests
 - `NODE_EXTRA_CA_CERTS` - Node.js
+- `DENO_CERT` - Deno
 - `CARGO_HTTP_CAINFO` - Cargo
 - `GIT_SSL_CAINFO` - Git
