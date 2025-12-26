@@ -65,9 +65,15 @@ ensure_mdbook_mermaid() {
         exit 1
     fi
 
-    # Initialize mermaid support in the book
+}
+
+# Ensure mermaid assets (JS files) are present
+ensure_mermaid_assets() {
     cd "${PROJECT_ROOT}"
-    mdbook-mermaid install .
+    if [ ! -f "mermaid.min.js" ] || [ ! -f "mermaid-init.js" ]; then
+        log_info "Installing mermaid assets..."
+        mdbook-mermaid install .
+    fi
 }
 
 # Install mdbook-linkcheck if not present
@@ -94,6 +100,7 @@ main() {
     ensure_mdbook
     ensure_mdbook_mermaid
     ensure_mdbook_linkcheck
+    ensure_mermaid_assets
 
     log_info "All prerequisites satisfied"
 

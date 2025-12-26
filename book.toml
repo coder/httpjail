@@ -1,7 +1,6 @@
 [book]
 authors = ["Ammar Bandukwala"]
 language = "en"
-multilingual = false
 src = "docs"
 title = "httpjail"
 description = "HTTP(S) Request Jailing: Control what your processes can request"
