@@ -19,12 +19,11 @@ command = "mdbook-mermaid"
 default-theme = "rust"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/coder/httpjail"
-git-repository-icon = "fa-github"
+git-repository-icon = "fab-github"
 edit-url-template = "https://github.com/coder/httpjail/edit/main/{path}"
 site-url = "https://coder.github.io/httpjail/"
 cname = ""
 mathjax-support = false
-copy-fonts = true
 additional-css = ["docs/custom.css"]
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 no-section-label = false
@@ -48,12 +47,9 @@ heading-split-level = 3
 
 [output.html.redirect]
 
-[output.linkcheck]
-# Optional: Only check internal links (faster builds)
-follow-web-links = false
-# Optional: Allow links outside book root
-traverse-parent-directories = false
-# Optional: Exclude patterns (regex)
-exclude = [ "^https://crates\\.io", "^https://docs\\.rs" ]
-# Optional: HTTP request configuration
-warning-policy = "warn"
+# Disabled: mdbook-linkcheck 0.7.7 is incompatible with mdbook 0.5.x
+# [output.linkcheck]
+# follow-web-links = false
+# traverse-parent-directories = false
+# exclude = [ "^https://crates\\.io", "^https://docs\\.rs" ]
+# warning-policy = "warn"

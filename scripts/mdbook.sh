@@ -76,22 +76,20 @@ ensure_mermaid_assets() {
     fi
 }
 
-# Install mdbook-linkcheck if not present
-ensure_mdbook_linkcheck() {
-    if command_exists mdbook-linkcheck; then
-        log_info "mdbook-linkcheck is already installed ($(mdbook-linkcheck --version 2>&1 | head -1 || echo 'unknown version'))"
-        return 0
-    fi
-
-    log_warn "mdbook-linkcheck not found, installing..."
-
-    if command_exists cargo; then
-        cargo install mdbook-linkcheck --locked
-    else
-        log_error "cargo not found. Please install Rust toolchain first: https://rustup.rs/"
-        exit 1
-    fi
-}
+# Disabled: mdbook-linkcheck 0.7.7 is incompatible with mdbook 0.5.x
+# ensure_mdbook_linkcheck() {
+#     if command_exists mdbook-linkcheck; then
+#         log_info "mdbook-linkcheck is already installed"
+#         return 0
+#     fi
+#     log_warn "mdbook-linkcheck not found, installing..."
+#     if command_exists cargo; then
+#         cargo install mdbook-linkcheck --locked
+#     else
+#         log_error "cargo not found"
+#         exit 1
+#     fi
+# }
 
 # Main installation check
 main() {
@@ -99,7 +97,6 @@ main() {
 
     ensure_mdbook
     ensure_mdbook_mermaid
-    ensure_mdbook_linkcheck
     ensure_mermaid_assets
 
     log_info "All prerequisites satisfied"
