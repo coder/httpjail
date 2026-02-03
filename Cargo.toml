@@ -19,7 +19,7 @@ tokio = { version = "1.35", features = ["full"] }
 hyper = { version = "1.7", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
-bytes = "1.5"
+bytes = "1.11"
 tokio-rustls = "0.26"
 rustls = "0.23"
 rcgen = "0.13"
