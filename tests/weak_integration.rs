@@ -121,54 +121,65 @@ fn test_weak_mode_allows_localhost() {
     }
 }
 
+/// The parent's proxy variables configure httpjail's own egress and must not
+/// reach the jailed process. An inherited NO_PROXY entry in particular would let
+/// the process reach that destination directly, with no rule evaluation.
+///
+/// Both spellings are set on the parent, with different values, so that a leak
+/// through either one is detected and named.
 #[test]
-fn test_weak_mode_appends_no_proxy() {
-    // Ensure existing NO_PROXY values are preserved and localhost entries appended
+fn test_weak_mode_does_not_inherit_parent_proxy_env() {
     let result = HttpjailCommand::new()
         .weak()
         .js("true")
-        .env("NO_PROXY", "example.com")
+        .env("NO_PROXY", "upper.internal.corp")
+        .env("no_proxy", "lower.internal.corp")
+        .env("ALL_PROXY", "http://upper:3128")
+        .env("all_proxy", "http://lower:3128")
+        .env("HTTP_PROXY", "http://upper:8080")
+        .env("http_proxy", "http://lower:8080")
         .verbose(2)
         .command(vec!["env"])
         .execute();
 
-    match result {
-        Ok((exit_code, stdout, _stderr)) => {
-            assert_eq!(exit_code, 0, "env command should succeed");
+    let (exit_code, stdout, _stderr) = result.expect("Failed to execute httpjail");
+    assert_eq!(exit_code, 0, "env command should succeed");
 
-            let mut found_upper = false;
-            let mut found_lower = false;
+    let child_env: std::collections::HashMap<&str, &str> = stdout
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
 
-            for line in stdout.lines() {
-                if let Some((key, value)) = line.split_once('=') {
-                    if key == "NO_PROXY" {
-                        found_upper = true;
-                        assert!(
-                            value.contains("example.com")
-                                && value.contains("localhost")
-                                && value.contains("127.0.0.1")
-                                && value.contains("::1"),
-                            "NO_PROXY missing expected entries: {}",
-                            value
-                        );
-                    } else if key == "no_proxy" {
-                        found_lower = true;
-                        assert!(
-                            value.contains("example.com")
-                                && value.contains("localhost")
-                                && value.contains("127.0.0.1")
-                                && value.contains("::1"),
-                            "no_proxy missing expected entries: {}",
-                            value
-                        );
-                    }
-                }
-            }
+    // ALL_PROXY has no httpjail equivalent, so it must simply be gone.
+    for key in ["ALL_PROXY", "all_proxy"] {
+        assert!(
+            !child_env.contains_key(key),
+            "{key} leaked into the jailed process: {:?}",
+            child_env.get(key)
+        );
+    }
 
-            assert!(found_upper, "NO_PROXY variable not found");
-            assert!(found_lower, "no_proxy variable not found");
-        }
-        Err(e) => panic!("Failed to execute httpjail: {}", e),
+    // Both spellings are set for the child, and neither may carry the parent's
+    // entries: those hosts would bypass httpjail entirely.
+    for key in ["NO_PROXY", "no_proxy"] {
+        let value = child_env
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} should be set for the jailed process"));
+        assert_eq!(
+            *value, "localhost,127.0.0.1,::1",
+            "{key} should list only local addresses"
+        );
+    }
+
+    // The child must talk to httpjail, not to the parent's proxy.
+    for key in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+        let value = child_env
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} should point at httpjail"));
+        assert!(
+            value.starts_with("http://127.0.0.1:"),
+            "{key} should point at httpjail, got {value}"
+        );
     }
 }
 

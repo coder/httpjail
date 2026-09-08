@@ -590,7 +590,18 @@ async fn main() -> Result<()> {
         }
     };
 
-    let mut proxy = ProxyServer::new(http_bind, https_bind, rule_engine);
+    let upstream_proxies = httpjail::upstream::UpstreamProxies::from_env()
+        .context("Failed to configure upstream proxy from environment")?;
+    if upstream_proxies.is_some() {
+        debug!("Routing httpjail upstream requests through the proxy environment");
+    }
+
+    let mut proxy = ProxyServer::new_with_upstream_proxies(
+        http_bind,
+        https_bind,
+        rule_engine,
+        upstream_proxies,
+    );
 
     // Start proxy in background if running as server; otherwise start with random ports
     let (actual_http_port, actual_https_port) = proxy.start().await?;

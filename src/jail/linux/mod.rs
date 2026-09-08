@@ -544,6 +544,11 @@ impl Jail for LinuxJail {
             cmd.env(key, value);
         }
 
+        // The parent process may use proxy env vars for httpjail's own egress.
+        // Do not leak those credentials or settings into the jailed command;
+        // native Linux isolation redirects traffic transparently.
+        crate::jail::remove_parent_proxy_env(&mut cmd);
+
         // Preserve SUDO environment variables for consistency with macOS
         if let Ok(sudo_user) = std::env::var("SUDO_USER") {
             cmd.env("SUDO_USER", sudo_user);

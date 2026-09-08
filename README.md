@@ -23,6 +23,7 @@ Or download a pre-built binary from the [releases page](https://github.com/coder
 - 🌐 **HTTP/HTTPS interception** - Transparent proxy with TLS certificate injection
 - 🛡️ **DNS exfiltration protection** - Prevents data leakage through DNS queries
 - 🔧 **Multiple evaluation approaches** - JS expressions or custom programs
+- 🏢 **Upstream proxy support** - Chain httpjail's egress through a corporate proxy
 - 🖥️ **Cross-platform** - Native support for Linux and macOS
 
 ## Quick Start
@@ -61,7 +62,29 @@ httpjail --server --js "true"
 
 # Run Docker containers with network isolation (Linux only)
 httpjail --js "r.host === 'api.github.com'" --docker-run -- --rm alpine:latest wget -qO- https://api.github.com
+
+# Route httpjail's own egress through an upstream (corporate) proxy
+HTTPS_PROXY=http://proxy.corp:3128 httpjail --js "true" -- curl https://api.github.com
+# Basic authentication is supported: http://user:pass@proxy.corp:3128
 ```
+
+### Upstream (corporate) proxy
+
+When httpjail itself runs in an environment with no direct internet access, set
+the `HTTP_PROXY` and/or `HTTPS_PROXY` environment variables to route httpjail's
+outbound requests through an upstream proxy. Rule evaluation still happens
+locally on the intercepted traffic; only the re-originated request is forwarded
+through the proxy.
+
+- `http://host:port` and bare `host:port` (http assumed) forms are accepted.
+  Reaching the proxy itself over TLS (`https://proxy`) is not supported.
+- Basic authentication is supported via `http://user:pass@host:port`.
+- `NO_PROXY` lists destinations to contact directly by domain, IP address or
+  IPv4/IPv6 CIDR. `*` disables upstream proxying.
+- HTTPS destinations are reached via a `CONNECT` tunnel through the proxy, while
+  plain HTTP destinations are forwarded in absolute-form.
+- In weak mode, httpjail overwrites proxy env vars inside the jailed process to
+  point sandboxed processes at httpjail itself.
 
 ## Documentation
 
@@ -82,6 +105,7 @@ Table of Contents:
 - [TLS Interception](https://coder.github.io/httpjail/advanced/tls-interception.html)
 - [DNS Exfiltration](https://coder.github.io/httpjail/advanced/dns-exfiltration.html)
 - [Server Mode](https://coder.github.io/httpjail/advanced/server-mode.html)
+- [Upstream Proxy](https://coder.github.io/httpjail/advanced/upstream-proxy.html)
 
 ## License
 

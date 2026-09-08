@@ -486,8 +486,14 @@ async fn handle_decrypted_https_request(
     match evaluation.action {
         Action::Allow => {
             debug!("Request allowed: {}", full_url);
-            match proxy_https_request(req, &host, evaluation.max_tx_bytes, &context.loop_nonce)
-                .await
+            match proxy_https_request(
+                req,
+                &host,
+                evaluation.max_tx_bytes,
+                &context.loop_nonce,
+                &context.upstream_client,
+            )
+            .await
             {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
@@ -509,6 +515,7 @@ async fn proxy_https_request(
     host: &str,
     max_tx_bytes: Option<u64>,
     loop_nonce: &str,
+    client: &crate::proxy::UpstreamClient,
 ) -> Result<Response<BoxBody<Bytes, HyperError>>> {
     // Build the target URL
     let path = req
@@ -548,9 +555,6 @@ async fn proxy_https_request(
         let (parts, body) = prepared_req.into_parts();
         Request::from_parts(parts, body.boxed())
     };
-
-    // Use the shared HTTP/HTTPS client from proxy module
-    let client = crate::proxy::get_client();
 
     // Forward the request - no timeout to support long-running connections (WebSocket, gRPC, etc.)
     debug!("Sending HTTPS request to upstream server: {}", target_url);
@@ -595,7 +599,7 @@ async fn proxy_https_request(
 
             // The hyper_util error doesn't expose underlying IO errors directly
 
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -650,6 +654,22 @@ mod tests {
         };
         let engine = crate::rules::v8_js::V8JsRuleEngine::new(js).unwrap();
         Arc::new(RuleEngine::from_trait(Box::new(engine), None))
+    }
+
+    /// Assemble a ProxyContext for the handler under test, with a direct
+    /// (no upstream proxy) client trusting the test CA.
+    fn create_test_context(
+        rule_engine: Arc<RuleEngine>,
+        cert_manager: Arc<CertificateManager>,
+    ) -> ProxyContext {
+        let upstream_client =
+            crate::proxy::UpstreamClient::new(cert_manager.get_ca_cert_der(), None);
+        ProxyContext {
+            rule_engine,
+            cert_manager,
+            upstream_client: Arc::new(upstream_client),
+            loop_nonce: Arc::new("test-nonce".to_string()),
+        }
     }
 
     /// Create a TLS client config that trusts any certificate (for testing)
@@ -724,11 +744,7 @@ mod tests {
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
-            let context = ProxyContext {
-                rule_engine,
-                cert_manager,
-                loop_nonce: Arc::new("test-nonce".to_string()),
-            };
+            let context = create_test_context(rule_engine, cert_manager);
             let _ = handle_connect_tunnel(stream, context, addr).await;
         });
 
@@ -764,11 +780,7 @@ mod tests {
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
-            let context = ProxyContext {
-                rule_engine: rule_engine.clone(),
-                cert_manager: Arc::clone(&cert_manager),
-                loop_nonce: Arc::new("test-nonce".to_string()),
-            };
+            let context = create_test_context(rule_engine.clone(), Arc::clone(&cert_manager));
             let _ = handle_connect_tunnel(stream, context, addr).await;
         });
 
@@ -806,11 +818,7 @@ mod tests {
         // Spawn proxy handler
         tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
-            let context = ProxyContext {
-                rule_engine: rule_engine.clone(),
-                cert_manager: Arc::clone(&cert_manager),
-                loop_nonce: Arc::new("test-nonce".to_string()),
-            };
+            let context = create_test_context(rule_engine.clone(), Arc::clone(&cert_manager));
             let _ = handle_transparent_tls(stream, context, addr).await;
         });
 
@@ -883,11 +891,7 @@ mod tests {
             let rule_engine = rule_engine.clone();
             tokio::spawn(async move {
                 let (stream, addr) = listener.accept().await.unwrap();
-                let context = ProxyContext {
-                    rule_engine: rule_engine.clone(),
-                    cert_manager: cert_manager.clone(),
-                    loop_nonce: Arc::new("test-nonce".to_string()),
-                };
+                let context = create_test_context(rule_engine.clone(), cert_manager.clone());
                 let _ = handle_https_connection(stream, context, addr).await;
             });
 
@@ -922,11 +926,7 @@ mod tests {
         tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
             // Use the actual transparent TLS handler (which will extract SNI, etc.)
-            let context = ProxyContext {
-                rule_engine,
-                cert_manager,
-                loop_nonce: Arc::new("test-nonce".to_string()),
-            };
+            let context = create_test_context(rule_engine, cert_manager);
             let _ = handle_transparent_tls(stream, context, addr).await;
         });
 

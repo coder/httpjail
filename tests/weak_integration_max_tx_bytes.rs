@@ -100,6 +100,11 @@ async fn start_httpjail(js_config: &str, proxy_port: u16) -> std::process::Child
         .arg("--js")
         .arg(js_config)
         .env("HTTPJAIL_HTTP_BIND", proxy_port.to_string())
+        // These tests use only HTTP. Avoid racing on the default HTTPS port.
+        .env("HTTPJAIL_HTTPS_BIND", "127.0.0.1:0")
+        // The backend is local and must not inherit the developer's proxy route.
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
         .env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

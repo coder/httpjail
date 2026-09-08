@@ -46,6 +46,11 @@ impl Jail for WeakJail {
             cmd.arg(arg);
         }
 
+        // The parent's proxy variables configure httpjail's own egress. None of
+        // them may survive into the jailed process, so clear them all before
+        // setting the ones that point at httpjail.
+        super::remove_parent_proxy_env(&mut cmd);
+
         // Set proxy environment variables
         let http_proxy = format!("http://127.0.0.1:{}", self.config.http_proxy_port);
         let https_proxy = format!("http://127.0.0.1:{}", self.config.https_proxy_port);
@@ -55,18 +60,15 @@ impl Jail for WeakJail {
         cmd.env("http_proxy", &http_proxy);
         cmd.env("https_proxy", &https_proxy);
 
-        // Also set NO_PROXY for localhost to avoid proxying local connections
-        // Preserve any existing NO_PROXY settings by appending them
-        let mut no_proxy_hosts = "localhost,127.0.0.1,::1".to_string();
-
-        if let Ok(existing) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy"))
-            && !existing.is_empty()
-        {
-            no_proxy_hosts = format!("{},{}", existing, no_proxy_hosts);
-        }
-
-        cmd.env("NO_PROXY", &no_proxy_hosts);
-        cmd.env("no_proxy", &no_proxy_hosts);
+        // Keep local connections off the proxy, which would otherwise loop back
+        // through httpjail. The parent's NO_PROXY is deliberately not merged in:
+        // any entry it names would let the jailed process reach that destination
+        // directly, with no rule evaluation at all.
+        //
+        // Both spellings are set because tools disagree on which they read.
+        let no_proxy_hosts = "localhost,127.0.0.1,::1";
+        cmd.env("NO_PROXY", no_proxy_hosts);
+        cmd.env("no_proxy", no_proxy_hosts);
 
         // Set any extra environment variables
         for (key, value) in extra_env {

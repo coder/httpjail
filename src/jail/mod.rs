@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rand::Rng;
+use std::process::Command;
 
 pub mod weak;
 
@@ -8,6 +9,39 @@ pub mod linux;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod managed;
+
+/// Proxy environment variables that configure httpjail's *own* egress and must
+/// never reach a jailed process.
+///
+/// `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` can carry the upstream proxy's
+/// credentials, and a jailed process that honored them would talk to that proxy
+/// instead of to httpjail. `NO_PROXY` is worse: it names destinations to reach
+/// directly, so an inherited value lets the process skip httpjail entirely and
+/// escape rule evaluation.
+///
+/// Both spellings of each name are listed. Tools differ in which they read —
+/// curl prefers the lowercase one — so removing only the uppercase spelling
+/// would leave the hole open.
+pub const PARENT_PROXY_ENV_VARS: [&str; 8] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// Drop every variable in [`PARENT_PROXY_ENV_VARS`] from a child's environment.
+///
+/// Callers that need a proxy variable set for the child (weak mode points the
+/// process at httpjail) assign it *after* calling this.
+pub fn remove_parent_proxy_env(cmd: &mut Command) {
+    for key in PARENT_PROXY_ENV_VARS {
+        cmd.env_remove(key);
+    }
+}
 
 /// Trait for platform-specific jail implementations
 #[allow(dead_code)]
@@ -212,5 +246,23 @@ mod tests {
 
         // We generated 1000 unique IDs
         assert_eq!(ids.len(), 1000);
+    }
+
+    /// Every proxy variable must be stripped in both spellings. Missing the
+    /// lowercase one is the dangerous case: curl reads it first, so a leftover
+    /// `no_proxy` would let a jailed process skip httpjail.
+    #[test]
+    fn parent_proxy_env_covers_both_spellings() {
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+            assert!(
+                PARENT_PROXY_ENV_VARS.contains(&name),
+                "{name} is not stripped from jailed processes"
+            );
+            let lower = name.to_ascii_lowercase();
+            assert!(
+                PARENT_PROXY_ENV_VARS.contains(&lower.as_str()),
+                "{lower} is not stripped from jailed processes"
+            );
+        }
     }
 }
