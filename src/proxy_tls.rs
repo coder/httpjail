@@ -800,11 +800,14 @@ mod tests {
             .await
             .unwrap();
         let mut response = [0; 64];
-        let count = timeout(Duration::from_secs(2), client.read(&mut response))
+        let result = timeout(Duration::from_secs(2), client.read(&mut response))
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(count, 0, "oversized CONNECT header must not open a tunnel");
+        // Closing with unread request bytes may send RST rather than FIN.
+        match result {
+            Ok(count) => assert_eq!(count, 0, "oversized CONNECT header must not open a tunnel"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset),
+        }
     }
 
     #[tokio::test]
