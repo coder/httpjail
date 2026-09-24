@@ -21,12 +21,12 @@ hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 bytes = "1.11"
 tokio-rustls = "0.26"
-rustls = "0.23"
+rustls = "0.23.45"
 rcgen = "0.13"
 webpki-roots = "0.26"
-lru = "0.12"
-rand = "0.8"
-anyhow = "1.0"
+lru = "0.18.2"
+rand = "0.8.6"
+anyhow = "1.0.103"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 chrono = "0.4"
@@ -46,7 +46,6 @@ arc-swap = "1.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
-atty = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
@@ -56,10 +55,10 @@ socket2 = "0.5"
 tempfile = "3.8"
 assert_cmd = "2.0"
 predicates = "3.0"
-serial_test = "3.0"
+serial_test = "3.5"
 ctor = "0.2"
 criterion = { version = "0.5", features = ["async_tokio"] }
-pprof = { version = "0.14", features = ["protobuf-codec", "criterion"] }
+pprof = { version = "0.15", features = ["protobuf-codec", "criterion"] }
 
 [package.metadata.cargo-udeps.ignore]
 dev = ["serial_test"]
