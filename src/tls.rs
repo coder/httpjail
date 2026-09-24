@@ -208,8 +208,9 @@ impl CertificateManager {
             // Skip automatic keychain installation if:
             // 1. Explicitly disabled via environment variable (for tests)
             // 2. Not running in a TTY (non-interactive, CI/automation)
+            use std::io::IsTerminal;
             let skip_env = std::env::var("HTTPJAIL_SKIP_KEYCHAIN_INSTALL").is_ok();
-            let is_tty = atty::is(atty::Stream::Stdout);
+            let is_tty = std::io::stdout().is_terminal();
 
             if skip_env {
                 debug!(
