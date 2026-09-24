@@ -13,10 +13,34 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Detection job that runs first and determines if only docs changed
+  detect-docs-only:
+    name: Detect docs-only changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.docs-check.outputs.docs-only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for docs-only changes
+        id: docs-check
+        uses: ./.github/actions/check-docs-only
+
+      - name: Display detection result
+        run: |
+          if [[ "${{ steps.docs-check.outputs.docs-only }}" == "true" ]]; then
+            echo "📚 Documentation-only changes detected - expensive checks will be skipped"
+          else
+            echo "🔧 Code changes detected - all checks will run"
+          fi
+
   test-macos:
     name: macOS Integration Tests
     runs-on: macos-15-xlarge
-
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only != 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +65,8 @@ jobs:
   test-linux:
     name: Linux Tests
     runs-on: [self-hosted, linux]
-
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only != 'true'
     steps:
       - name: Fix permissions from previous runs
         run: |
@@ -55,6 +80,7 @@ jobs:
           if [ -d /home/ci/.cargo ]; then
             sudo chown -R ci:ci /home/ci/.cargo || true
           fi
+          
       - uses: actions/checkout@v4
 
       - name: Install Rust
@@ -120,10 +146,11 @@ jobs:
   clippy:
     name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only != 'true'
     strategy:
       matrix:
         os: [ubuntu-latest-8-cores, macos-latest]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -144,7 +171,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest-8-cores
-
+    # Format always runs - even for docs changes we want consistent formatting
     steps:
       - uses: actions/checkout@v4
 
@@ -165,7 +192,8 @@ jobs:
   udeps:
     name: Unused dependency check
     runs-on: ubuntu-latest-8-cores
-
+    needs: detect-docs-only
+    if: needs.detect-docs-only.outputs.docs-only != 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -206,3 +234,21 @@ jobs:
             echo "Unused dependencies detected"
             exit 1
           fi
+
+  # Single required job that depends on all others
+  # This should be the ONLY required status check in branch protection
+  all-checks-pass:
+    name: All checks pass
+    if: always()
+    needs: 
+      - test-macos
+      - test-linux
+      - clippy
+      - fmt
+      - udeps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
