@@ -8,7 +8,6 @@ use httpjail::rules::v8_js::V8JsRuleEngine;
 use httpjail::rules::{Action, RuleEngine};
 use hyper::Method;
 use std::fs::OpenOptions;
-use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
@@ -139,6 +138,103 @@ struct RunArgs {
     exec_command: Vec<String>,
 }
 
+#[cfg(target_os = "linux")]
+fn trusted_policy_path(path: &str, shell_rule: bool) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    anyhow::ensure!(
+        !shell_rule || !path.chars().any(char::is_whitespace),
+        "Linux strong mode requires --sh to name one trusted executable, not a shell command"
+    );
+    let resolved = std::fs::canonicalize(path)
+        .with_context(|| format!("Failed to resolve rule executable: {path}"))?;
+    for component in resolved.ancestors() {
+        let metadata = std::fs::metadata(component)?;
+        anyhow::ensure!(
+            metadata.uid() == 0 && metadata.mode() & 0o022 == 0,
+            "Linux strong mode requires root-owned, non-writable rule executable and ancestors: {}",
+            component.display()
+        );
+    }
+    Ok(resolved
+        .to_str()
+        .context("Rule executable path must be UTF-8")?
+        .to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn open_request_log_as_invoker(path: &str) -> Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::path::Path;
+
+    let uid = std::env::var("SUDO_UID")
+        .context("Root request logs require an invoking sudo user")?
+        .parse::<u32>()?;
+    let gid = std::env::var("SUDO_GID")
+        .context("Root request logs require an invoking sudo group")?
+        .parse::<u32>()?;
+    anyhow::ensure!(
+        uid != 0,
+        "Root request logs require a non-root invoking user"
+    );
+
+    let path = Path::new(path);
+    let name = path.file_name().context("Request log needs a filename")?;
+    anyhow::ensure!(name != "." && name != "..", "Invalid request log name");
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    // Pin a directory the invoking user owns. Even if a parent pathname is
+    // swapped afterward, openat stays anchored to this checked directory.
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(parent)
+        .context("Failed to open request-log directory")?;
+    anyhow::ensure!(
+        dir.metadata()?.uid() == uid,
+        "Request-log directory must be owned by invoking user"
+    );
+    let name = CString::new(name.as_bytes())?;
+    let flags =
+        libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let (fd, created) = unsafe {
+        let fd = libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        );
+        if fd >= 0 {
+            (fd, true)
+        } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+            (libc::openat(dir.as_raw_fd(), name.as_ptr(), flags), false)
+        } else {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    anyhow::ensure!(metadata.is_file(), "Request log must be a regular file");
+    if created {
+        let result = unsafe { libc::fchown(fd, uid, gid) };
+        anyhow::ensure!(result == 0, "Failed to assign request log to invoking user");
+    } else {
+        anyhow::ensure!(
+            metadata.uid() == uid,
+            "Existing request log must be owned by invoking user"
+        );
+    }
+    Ok(file)
+}
+
 fn setup_logging(verbosity: u8) {
     use tracing_subscriber::fmt::time::FormatTime;
 
@@ -184,8 +280,6 @@ fn setup_logging(verbosity: u8) {
 fn cleanup_orphans() -> Result<()> {
     use anyhow::Context;
     use std::fs;
-    #[cfg(target_os = "linux")]
-    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
     use tracing::{debug, info};
 
@@ -228,6 +322,12 @@ fn cleanup_orphans() -> Result<()> {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
+                if !httpjail::jail::valid_jail_id(jail_id)
+                    || httpjail::jail::canary_owner_alive(&path)
+                {
+                    debug!("Skipping live or invalid jail canary: {:?}", path);
+                    continue;
+                }
 
                 info!(
                     "Found orphaned jail '{}' via canary file (age: {:?}), cleaning up",
@@ -267,33 +367,10 @@ fn cleanup_orphans() -> Result<()> {
         debug!("Canary directory does not exist");
     }
 
-    // On Linux, also scan for orphaned namespace configs directly
-    // This handles cases where canary files were deleted (e.g., /tmp cleanup)
-    #[cfg(target_os = "linux")]
-    {
-        let netns_dir = PathBuf::from("/etc/netns");
-        if netns_dir.exists() {
-            debug!("Scanning for orphaned namespace configs in {:?}", netns_dir);
-            for entry in fs::read_dir(&netns_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-                // Only process httpjail namespace configs
-                if name.starts_with("httpjail_") && !cleaned_jails.contains(name) {
-                    info!(
-                        "Found orphaned namespace config '{}' without canary file, cleaning up",
-                        name
-                    );
-
-                    <httpjail::jail::linux::LinuxJail as httpjail::jail::Jail>::cleanup_orphaned(
-                        name,
-                    )?;
-                    cleaned_jails.insert(name.to_string());
-                }
-            }
-        }
-    }
+    // A namespace without a trusted canary may still belong to a live older
+    // jail (possibly under another user's legacy HOME). Never infer it is dead
+    // just from a missing canary. Orphaned canaryless namespaces need manual
+    // administrator inspection instead of automatic destructive cleanup.
 
     if cleaned_jails.is_empty() {
         debug!("No orphaned jails found");
@@ -340,19 +417,10 @@ async fn main() -> Result<()> {
         }
 
         if *install {
-            // First ensure CA exists
-            let config_dir = dirs::config_dir()
-                .context("Could not find user config directory")?
-                .join("httpjail");
-            let ca_cert_path = config_dir.join("ca-cert.pem");
-
-            if !ca_cert_path.exists() {
-                // Generate CA first
-                info!("Generating CA certificate...");
-                let _ = httpjail::tls::CertificateManager::new()?;
-            }
-
-            keychain_manager.install_ca(&ca_cert_path)?;
+            // Repair incomplete credentials before trusting the public certificate.
+            let _ = httpjail::tls::CertificateManager::new()?;
+            let ca_cert_path = httpjail::tls::CertificateManager::get_ca_cert_path()?;
+            keychain_manager.install_ca(ca_cert_path.as_std_path())?;
             println!("✓ httpjail CA certificate installed successfully");
             return Ok(());
         }
@@ -396,25 +464,68 @@ async fn main() -> Result<()> {
 
     // Build rule engine based on script or JS
     let request_log = if let Some(path) = &args.run_args.request_log {
-        Some(Arc::new(Mutex::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .with_context(|| format!("Failed to open request log file: {}", path))?,
-        )))
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(target_os = "linux")]
+        let file = if unsafe { libc::geteuid() == 0 } {
+            open_request_log_as_invoker(path)
+        } else {
+            options.open(path).map_err(Into::into)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let file: Result<std::fs::File> = options.open(path).map_err(Into::into);
+        Some(Arc::new(Mutex::new(file.with_context(|| {
+            format!("Failed to open request log file: {}", path)
+        })?)))
     } else {
         None
     };
 
+    #[cfg(target_os = "linux")]
+    // Dry-run evaluates rules too; it must not bypass root rule-engine restrictions.
+    let strong_rule = unsafe { libc::geteuid() == 0 };
+
     let rule_engine = if let Some(script) = &args.run_args.sh {
+        #[cfg(target_os = "linux")]
+        let script = if strong_rule {
+            trusted_policy_path(script, true)?
+        } else {
+            script.clone()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let script = script.clone();
         info!("Using shell script rule evaluation: {}", script);
-        let shell_engine = Box::new(ShellRuleEngine::new(script.clone()));
-        RuleEngine::from_trait(shell_engine, request_log)
+        let shell_engine = ShellRuleEngine::new(script);
+        #[cfg(target_os = "linux")]
+        let shell_engine = if strong_rule {
+            shell_engine.restricted()
+        } else {
+            shell_engine
+        };
+        RuleEngine::from_trait(Box::new(shell_engine), request_log)
     } else if let Some(proc) = &args.run_args.proc {
+        #[cfg(target_os = "linux")]
+        let proc = if strong_rule {
+            trusted_policy_path(proc, false)?
+        } else {
+            proc.clone()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let proc = proc.clone();
         info!("Using line processor rule evaluation: {}", proc);
-        let proc_engine = Box::new(ProcRuleEngine::new(proc.clone()));
-        RuleEngine::from_trait(proc_engine, request_log)
+        let proc_engine = ProcRuleEngine::new(proc);
+        #[cfg(target_os = "linux")]
+        let proc_engine = if strong_rule {
+            proc_engine.restricted()
+        } else {
+            proc_engine
+        };
+        RuleEngine::from_trait(Box::new(proc_engine), request_log)
     } else if let Some(js_code) = &args.run_args.js {
         info!("Using V8 JavaScript rule evaluation");
         let js_engine = match V8JsRuleEngine::new(js_code.clone()) {
@@ -429,8 +540,14 @@ async fn main() -> Result<()> {
         info!("Using V8 JavaScript rule evaluation from file: {}", js_file);
         let code = std::fs::read_to_string(js_file)
             .with_context(|| format!("Failed to read JS file: {}", js_file))?;
-        let js_file_path = std::path::PathBuf::from(js_file);
-        let js_engine = match V8JsRuleEngine::new_with_file(code, Some(js_file_path)) {
+        // A jailed command may share write access to this file. Freeze the
+        // policy while it executes; hot reload is safe only in server mode,
+        // where no untrusted command is launched by this process.
+        let reload_path = args
+            .run_args
+            .server
+            .then(|| std::path::PathBuf::from(js_file));
+        let js_engine = match V8JsRuleEngine::new_with_file(code, reload_path) {
             Ok(engine) => Box::new(engine),
             Err(e) => {
                 eprintln!("Failed to create V8 JavaScript engine: {}", e);
@@ -689,27 +806,20 @@ async fn main() -> Result<()> {
     let status = if let Some(timeout_secs) = args.run_args.timeout {
         info!("Executing command with {}s timeout", timeout_secs);
 
-        // Use tokio to handle timeout
         let command = args.run_args.exec_command.clone();
-        let extra_env_clone = extra_env.clone();
         let jail_clone = jail.clone();
-
-        // We need to use spawn_blocking since jail.execute is blocking
-        let handle =
-            tokio::task::spawn_blocking(move || jail_clone.execute(&command, &extra_env_clone));
-
-        // Apply timeout to the blocking task
-        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), handle).await {
-            Ok(Ok(result)) => result?,
-            Ok(Err(e)) => anyhow::bail!("Task execution failed: {}", e),
-            Err(_) => {
-                warn!("Command timed out after {}s", timeout_secs);
-                // Note: We can't actually kill the process from here since it's in a separate
-                // process/namespace. The process will continue running but we return timeout.
-                // This matches the behavior of GNU timeout when it can't kill the process.
-                std::process::ExitStatus::from_raw(124 << 8)
-            }
+        let duration = std::time::Duration::from_secs(timeout_secs);
+        // Keep the blocking task alive until it has killed and reaped the child.
+        // Detaching a timed-out spawn_blocking task would let it run after jail cleanup.
+        let status = tokio::task::spawn_blocking(move || {
+            jail_clone.execute_with_timeout(&command, &extra_env, duration)
+        })
+        .await
+        .context("Command execution task failed")??;
+        if status.code() == Some(124) {
+            warn!("Command timed out after {}s", timeout_secs);
         }
+        status
     } else {
         jail.execute(&args.run_args.exec_command, &extra_env)?
     };

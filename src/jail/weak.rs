@@ -13,24 +13,8 @@ impl WeakJail {
     pub fn new(config: JailConfig) -> Result<Self> {
         Ok(Self { config })
     }
-}
 
-impl Jail for WeakJail {
-    fn setup(&mut self, _proxy_port: u16) -> Result<()> {
-        info!("Setting up weak jail (environment variables only)");
-        info!(
-            "HTTP proxy will be set to: http://127.0.0.1:{}",
-            self.config.http_proxy_port
-        );
-        info!(
-            "HTTPS proxy will be set to: http://127.0.0.1:{}",
-            self.config.https_proxy_port
-        );
-
-        Ok(())
-    }
-
-    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
+    fn build_command(&self, command: &[String], extra_env: &[(String, String)]) -> Result<Command> {
         if command.is_empty() {
             anyhow::bail!("No command specified");
         }
@@ -78,11 +62,36 @@ impl Jail for WeakJail {
             http_proxy, https_proxy
         );
 
-        let status = cmd
-            .status()
-            .map_err(|e| anyhow::anyhow!("Failed to execute command: {}", e))?;
+        Ok(cmd)
+    }
+}
 
-        Ok(status)
+impl Jail for WeakJail {
+    fn setup(&mut self, _proxy_port: u16) -> Result<()> {
+        info!("Setting up weak jail (environment variables only)");
+        info!(
+            "HTTP proxy will be set to: http://127.0.0.1:{}",
+            self.config.http_proxy_port
+        );
+        info!(
+            "HTTPS proxy will be set to: http://127.0.0.1:{}",
+            self.config.https_proxy_port
+        );
+
+        Ok(())
+    }
+
+    fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
+        super::run_command(self.build_command(command, extra_env)?, None)
+    }
+
+    fn execute_with_timeout(
+        &self,
+        command: &[String],
+        extra_env: &[(String, String)],
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus> {
+        super::run_command(self.build_command(command, extra_env)?, Some(timeout))
     }
 
     fn cleanup(&self) -> Result<()> {

@@ -209,7 +209,27 @@ pub fn test_jail_method_specific_rules<P: JailTestPlatform>() {
 pub fn test_jail_request_log<P: JailTestPlatform>() {
     P::require_privileges();
 
-    let log_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+    let log_dir = tempfile::tempdir().expect("Failed to create log directory");
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() == 0 } {
+        use std::os::unix::ffi::OsStrExt;
+        let uid: u32 = std::env::var("SUDO_UID").unwrap().parse().unwrap();
+        let gid: u32 = std::env::var("SUDO_GID").unwrap().parse().unwrap();
+        let path = std::ffi::CString::new(log_dir.path().as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::chown(path.as_ptr(), uid, gid) }, 0);
+    }
+    let log_file =
+        tempfile::NamedTempFile::new_in(log_dir.path()).expect("Failed to create temp file");
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() == 0 } {
+        use std::os::unix::io::AsRawFd;
+        let uid: u32 = std::env::var("SUDO_UID").unwrap().parse().unwrap();
+        let gid: u32 = std::env::var("SUDO_GID").unwrap().parse().unwrap();
+        assert_eq!(
+            unsafe { libc::fchown(log_file.as_file().as_raw_fd(), uid, gid) },
+            0
+        );
+    }
     let log_path = log_file.path().to_str().unwrap().to_string();
 
     let mut cmd = httpjail_cmd();

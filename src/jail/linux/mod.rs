@@ -1,15 +1,17 @@
 pub mod dns;
 mod nftables;
 mod resources;
+mod seccomp;
 
 #[cfg(target_os = "linux")]
 pub mod docker;
 
 use super::Jail;
 use super::JailConfig;
-use crate::sys_resource::ManagedResource;
+use crate::sys_resource::{ManagedResource, SystemResource};
 use anyhow::{Context, Result};
 use resources::{NFTable, NetnsResolv, NetworkNamespace, VethPair};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
@@ -82,6 +84,132 @@ pub struct LinuxJail {
 }
 
 impl LinuxJail {
+    fn validate_invoking_user() -> Result<()> {
+        let uid = std::env::var("SUDO_UID")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok());
+        let gid = std::env::var("SUDO_GID")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok());
+        anyhow::ensure!(
+            uid.is_some_and(|uid| uid != 0) && gid.is_some(),
+            "Linux strong mode requires sudo from a non-root user"
+        );
+        Ok(())
+    }
+
+    fn build_command(&self, command: &[String], extra_env: &[(String, String)]) -> Result<Command> {
+        if command.is_empty() {
+            anyhow::bail!("No command specified");
+        }
+
+        debug!(
+            "Executing command in namespace {}: {:?}",
+            self.namespace_name(),
+            command
+        );
+
+        // Check if we're running as root and should drop privileges
+        let current_uid = unsafe { libc::getuid() };
+        let drop_privs = if current_uid == 0 {
+            // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
+            match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
+                (Ok(uid), Ok(gid))
+                    if uid.parse::<u32>().is_ok_and(|uid| uid != 0)
+                        && gid.parse::<u32>().is_ok() =>
+                {
+                    debug!(
+                        "Will drop privileges to uid={} gid={} after entering namespace",
+                        uid, gid
+                    );
+                    Some((uid, gid))
+                }
+                _ => {
+                    anyhow::bail!(
+                        "Linux strong mode requires sudo from a non-root user so the command cannot alter its own network policy"
+                    );
+                }
+            }
+        } else {
+            // Not root - no privilege dropping needed
+            None
+        };
+
+        // DNS CONFIGURATION: Use standard ip netns exec approach
+        //
+        // ip netns exec automatically creates a mount namespace and bind-mounts
+        // /etc/netns/<namespace>/resolv.conf over /etc/resolv.conf when present.
+        //
+        // KNOWN LIMITATION: This may fail on systems where /etc/resolv.conf is a symlink
+        // to a target that doesn't exist in the mount namespace (e.g., systemd-resolved).
+        // In such cases, DNS queries will still reach our dummy DNS server via the nftables
+        // rules, but applications that directly check /etc/resolv.conf may see stale content.
+        //
+        // We cannot safely "fix" this because:
+        // - Mount namespaces only isolate mount tables, not filesystems
+        // - Any file operations (rm, cp, touch) affect the host
+        // - Bind-mounts over symlinks require the symlink target to exist
+        //
+        // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
+
+        // A private PID namespace and fresh /proc prevent same-UID payloads
+        // from tracing or importing sockets from host-network processes.
+        let mut cmd = Command::new("/usr/sbin/ip");
+        cmd.args([
+            "netns",
+            "exec",
+            &self.namespace_name(),
+            "/usr/bin/unshare",
+            "--pid",
+            "--fork",
+            "--kill-child=SIGKILL",
+            "--mount-proc",
+        ]);
+
+        // Add setpriv for privilege dropping if needed
+        if let Some((uid, gid)) = drop_privs {
+            cmd.arg("/usr/bin/setpriv");
+            cmd.arg("--no-new-privs");
+            cmd.arg(format!("--reuid={}", uid));
+            cmd.arg(format!("--regid={}", gid));
+            cmd.arg("--clear-groups");
+            cmd.arg("--");
+        }
+
+        // Add user command
+        for arg in command {
+            cmd.arg(arg);
+        }
+
+        // Set environment variables
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
+
+        // Preserve SUDO environment variables for consistency with macOS
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            cmd.env("SUDO_USER", sudo_user);
+        }
+        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+            cmd.env("SUDO_UID", sudo_uid);
+        }
+        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
+            cmd.env("SUDO_GID", sudo_gid);
+        }
+
+        debug!("Executing command: {:?}", cmd);
+
+        // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
+        // The jail uses nftables rules to transparently redirect traffic to the proxy,
+        // making it work with applications that don't respect proxy environment variables.
+
+        // Prevent access to host pathname Unix sockets (including local agents
+        // capable of making requests outside this network namespace).
+        // SAFETY: the pre-exec hook uses only raw syscalls and static BPF data.
+        unsafe { cmd.pre_exec(seccomp::block_unix_sockets) };
+        Ok(cmd)
+    }
+
     pub fn new(config: JailConfig) -> Result<Self> {
         let (host_ip, host_cidr, guest_cidr, subnet_cidr) =
             Self::compute_subnet_for_jail(&config.jail_id);
@@ -190,7 +318,7 @@ impl LinuxJail {
         );
 
         // Move veth_ns end into the namespace
-        let output = Command::new("ip")
+        let output = Command::new("/usr/sbin/ip")
             .args([
                 "link",
                 "set",
@@ -222,16 +350,23 @@ impl LinuxJail {
         // Commands to run inside the namespace
         let commands = vec![
             // Bring up loopback
-            vec!["ip", "link", "set", "lo", "up"],
+            vec!["/usr/sbin/ip", "link", "set", "lo", "up"],
             // Configure veth interface with IP
-            vec!["ip", "addr", "add", &self.guest_cidr, "dev", &veth_ns],
-            vec!["ip", "link", "set", &veth_ns, "up"],
+            vec![
+                "/usr/sbin/ip",
+                "addr",
+                "add",
+                &self.guest_cidr,
+                "dev",
+                &veth_ns,
+            ],
+            vec!["/usr/sbin/ip", "link", "set", &veth_ns, "up"],
             // Add default route pointing to host
-            vec!["ip", "route", "add", "default", "via", &host_ip],
+            vec!["/usr/sbin/ip", "route", "add", "default", "via", &host_ip],
         ];
 
         for cmd_args in commands {
-            let mut cmd = Command::new("ip");
+            let mut cmd = Command::new("/usr/sbin/ip");
             cmd.args(["netns", "exec", &namespace_name]);
             cmd.args(&cmd_args);
 
@@ -252,8 +387,15 @@ impl LinuxJail {
         }
 
         // Verify routes were added
-        let mut verify_cmd = Command::new("ip");
-        verify_cmd.args(["netns", "exec", &namespace_name, "ip", "route", "show"]);
+        let mut verify_cmd = Command::new("/usr/sbin/ip");
+        verify_cmd.args([
+            "netns",
+            "exec",
+            &namespace_name,
+            "/usr/sbin/ip",
+            "route",
+            "show",
+        ]);
         if let Ok(output) = verify_cmd.output() {
             let routes = String::from_utf8_lossy(&output.stdout);
             info!(
@@ -284,7 +426,7 @@ impl LinuxJail {
         ];
 
         for cmd_args in commands {
-            let output = Command::new("ip")
+            let output = Command::new("/usr/sbin/ip")
                 .args(&cmd_args)
                 .output()
                 .context(format!("Failed to execute: ip {:?}", cmd_args))?;
@@ -302,18 +444,8 @@ impl LinuxJail {
             }
         }
 
-        // Enable IP forwarding for this interface
-        let output = Command::new("sysctl")
-            .args(["-w", "net.ipv4.ip_forward=1"])
-            .output()
-            .context("Failed to enable IP forwarding")?;
-
-        if !output.status.success() {
-            warn!(
-                "Failed to enable IP forwarding: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        // Proxy and dummy DNS traffic is delivered to the host locally; host-wide
+        // IP forwarding is unnecessary and must not be changed by a jail.
 
         debug!("Configured host side networking for {}", veth_host);
         Ok(())
@@ -438,8 +570,9 @@ impl Drop for LinuxJail {
 
 impl Jail for LinuxJail {
     fn setup(&mut self, _proxy_port: u16) -> Result<()> {
-        // Check for root access
+        // Reject unsafe privilege retention before allocating jail resources.
         Self::check_root()?;
+        Self::validate_invoking_user()?;
 
         // Create network namespace
         self.create_namespace()?;
@@ -472,100 +605,16 @@ impl Jail for LinuxJail {
     }
 
     fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
-        if command.is_empty() {
-            anyhow::bail!("No command specified");
-        }
+        super::run_command(self.build_command(command, extra_env)?, None)
+    }
 
-        debug!(
-            "Executing command in namespace {}: {:?}",
-            self.namespace_name(),
-            command
-        );
-
-        // Check if we're running as root and should drop privileges
-        let current_uid = unsafe { libc::getuid() };
-        let drop_privs = if current_uid == 0 {
-            // Running as root - check for SUDO_UID/SUDO_GID to drop privileges to original user
-            match (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
-                (Ok(uid), Ok(gid)) => {
-                    debug!(
-                        "Will drop privileges to uid={} gid={} after entering namespace",
-                        uid, gid
-                    );
-                    Some((uid, gid))
-                }
-                _ => {
-                    debug!("Running as root but no SUDO_UID/SUDO_GID found, continuing as root");
-                    None
-                }
-            }
-        } else {
-            // Not root - no privilege dropping needed
-            None
-        };
-
-        // DNS CONFIGURATION: Use standard ip netns exec approach
-        //
-        // ip netns exec automatically creates a mount namespace and bind-mounts
-        // /etc/netns/<namespace>/resolv.conf over /etc/resolv.conf when present.
-        //
-        // KNOWN LIMITATION: This may fail on systems where /etc/resolv.conf is a symlink
-        // to a target that doesn't exist in the mount namespace (e.g., systemd-resolved).
-        // In such cases, DNS queries will still reach our dummy DNS server via the nftables
-        // rules, but applications that directly check /etc/resolv.conf may see stale content.
-        //
-        // We cannot safely "fix" this because:
-        // - Mount namespaces only isolate mount tables, not filesystems
-        // - Any file operations (rm, cp, touch) affect the host
-        // - Bind-mounts over symlinks require the symlink target to exist
-        //
-        // Reference: https://man7.org/linux/man-pages/man8/ip-netns.8.html
-
-        // Build command: ip netns exec <namespace> [setpriv ...] <command>
-        let mut cmd = Command::new("ip");
-        cmd.args(["netns", "exec", &self.namespace_name()]);
-
-        // Add setpriv for privilege dropping if needed
-        if let Some((uid, gid)) = drop_privs {
-            cmd.arg("setpriv");
-            cmd.arg(format!("--reuid={}", uid));
-            cmd.arg(format!("--regid={}", gid));
-            cmd.arg("--init-groups");
-            cmd.arg("--");
-        }
-
-        // Add user command
-        for arg in command {
-            cmd.arg(arg);
-        }
-
-        // Set environment variables
-        for (key, value) in extra_env {
-            cmd.env(key, value);
-        }
-
-        // Preserve SUDO environment variables for consistency with macOS
-        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-            cmd.env("SUDO_USER", sudo_user);
-        }
-        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
-            cmd.env("SUDO_UID", sudo_uid);
-        }
-        if let Ok(sudo_gid) = std::env::var("SUDO_GID") {
-            cmd.env("SUDO_GID", sudo_gid);
-        }
-
-        debug!("Executing command: {:?}", cmd);
-
-        // Note: We do NOT set HTTP_PROXY/HTTPS_PROXY environment variables here.
-        // The jail uses nftables rules to transparently redirect traffic to the proxy,
-        // making it work with applications that don't respect proxy environment variables.
-
-        let status = cmd
-            .status()
-            .context("Failed to execute command in namespace")?;
-
-        Ok(status)
+    fn execute_with_timeout(
+        &self,
+        command: &[String],
+        extra_env: &[(String, String)],
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus> {
+        super::run_command(self.build_command(command, extra_env)?, Some(timeout))
     }
 
     fn cleanup(&self) -> Result<()> {
@@ -592,13 +641,12 @@ impl Jail for LinuxJail {
     {
         debug!("Cleaning up orphaned Linux jail: {}", jail_id);
 
-        // Create managed resources for existing system resources
-        // When these go out of scope, they will clean themselves up
-        let _namespace = ManagedResource::<NetworkNamespace>::for_existing(jail_id);
-        let _veth = ManagedResource::<VethPair>::for_existing(jail_id);
-        let _nftables = ManagedResource::<NFTable>::for_existing(jail_id);
-        let _netns_resolv = ManagedResource::<NetnsResolv>::for_existing(jail_id);
-
+        // Propagate failures instead of relying on Drop (which can only log them).
+        // Only remove the namespace name after deleting host-side resources.
+        NetnsResolv::for_existing(jail_id).cleanup()?;
+        NFTable::for_existing(jail_id).cleanup()?;
+        VethPair::for_existing(jail_id).cleanup()?;
+        NetworkNamespace::for_existing(jail_id).cleanup()?;
         Ok(())
     }
 }

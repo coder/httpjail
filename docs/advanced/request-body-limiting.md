@@ -6,12 +6,15 @@ This is primarily designed for mitigating code exfiltration attacks through cove
 
 ## Size Calculation
 
-The `max_tx_bytes` limit applies to **complete** HTTP requests, including:
+The `max_tx_bytes` limit applies to request fields (before transport encoding), including:
 
 1. **Request line**: `METHOD /path HTTP/1.1\r\n`
 2. **Headers**: Each header as `Name: Value\r\n`
 3. **Header separator**: Final `\r\n` between headers and body
-4. **Body**: Request body bytes
+4. **Body**: Request body data bytes
+5. **Trailers**: Trailer names, values, and separators when present
+
+HTTP/1 chunk delimiters and other framing inserted by the HTTP client are not included in this logical-byte budget. Do not use `max_tx_bytes` as an exact wire-byte accounting guarantee.
 
 ## Response Format
 
@@ -47,7 +50,7 @@ When the request includes a `Content-Length` header (most standard HTTP clients)
 HTTP/1.1 413 Payload Too Large
 Content-Type: text/plain
 
-Request body size (5000 bytes) exceeds maximum allowed (1024 bytes)
+Request size (5000 bytes) exceeds maximum allowed (1024 bytes)
 ```
 
 ### Without Content-Length Header
@@ -55,7 +58,7 @@ Request body size (5000 bytes) exceeds maximum allowed (1024 bytes)
 When the request uses chunked encoding or doesn't include `Content-Length`:
 
 1. **Stream Truncation**: The request body is truncated at the limit during streaming
-2. **Upstream Receives Partial**: The upstream server receives exactly `max_tx_bytes` total bytes (url + headers + truncated body)
+2. **Upstream Receives Partial**: The upstream receives no more than the logical request budget (URL + headers + truncated body/trailers); framing may add wire bytes.
 3. **Connection Closes**: The connection terminates after reaching the limit
 
 ## Examples

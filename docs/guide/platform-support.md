@@ -9,11 +9,11 @@ httpjail works differently on each platform due to OS-specific networking capabi
 | Traffic isolation | ✅ Namespaces + nftables | ⚠️ Env vars only       | 🚧 Planned |
 | TLS interception  | ✅ Transparent           | ✅ Via proxy settings  | 🚧 Planned |
 | Sudo required     | ⚠️ Yes                   | ✅ No                  | 🚧         |
-| Force all traffic | ✅ Yes                   | ❌ Apps must cooperate | 🚧         |
+| Force direct IP traffic | ✅ Yes              | ❌ Apps must cooperate | 🚧         |
 
 ## Linux
 
-Full network isolation using namespaces and nftables.
+Direct IP traffic isolation uses namespaces and nftables. Native strong mode denies new connections to host Unix-domain services with seccomp (while allowing local stream socketpairs); it does not isolate the filesystem or explicitly inherited file descriptors. Some workloads that rely on local IPC will not work.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -38,10 +38,11 @@ Full network isolation using namespaces and nftables.
 
 ### Prerequisites
 
-- Linux kernel 3.8+ (network namespace support)
-- nftables (`nft` command)
+- Linux kernel with network namespaces and seccomp filter support (4.14+ recommended)
+- `ip` at `/usr/sbin/ip`, `nft` at `/usr/sbin/nft`, `setpriv` at `/usr/bin/setpriv`, and `unshare` at `/usr/bin/unshare`
 - libssl-dev (for TLS)
-- sudo access (for namespace creation)
+- `sudo` from a non-root user (direct-root invocation is refused)
+- Docker mode: Docker CLI at `/usr/bin/docker`
 
 ### How It Works
 
@@ -53,7 +54,7 @@ Full network isolation using namespaces and nftables.
 ### Usage
 
 ```bash
-# Strong mode (default) - full isolation
+# Strong mode (default) - direct IP isolation, not filesystem isolation
 sudo httpjail --js "r.host === 'github.com'" -- curl https://api.github.com
 
 # Weak mode - environment variables only (no sudo)

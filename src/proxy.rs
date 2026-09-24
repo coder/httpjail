@@ -12,7 +12,7 @@ use hyper::service::service_fn;
 use hyper::{Error as HyperError, Request, Response, StatusCode, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rand::Rng;
 
 #[cfg(target_os = "linux")]
@@ -68,8 +68,8 @@ use crate::limited_body::LimitedBody;
 pub enum ByteLimitResult {
     /// Request is within limit (or no Content-Length), proceed with wrapped body
     WithinLimit(Box<Request<BoxBody<Bytes, HyperError>>>),
-    /// Request exceeds limit based on Content-Length header
-    ExceedsLimit { content_length: u64, max_bytes: u64 },
+    /// Request exceeds limit based on headers or a Content-Length header
+    ExceedsLimit { request_size: u64, max_bytes: u64 },
 }
 
 /// Applies a byte limit to an outgoing request by wrapping its body.
@@ -117,6 +117,14 @@ pub fn apply_request_byte_limit(
     // Final "\r\n" separator between headers and body
     let total_header_size = request_line_size + headers_size + 2;
 
+    // Header bytes are transmitted even when there is no Content-Length/body.
+    if total_header_size > max_bytes {
+        return ByteLimitResult::ExceedsLimit {
+            request_size: total_header_size,
+            max_bytes,
+        };
+    }
+
     // Check Content-Length as a heuristic to reject oversized requests early
     // This both provides convenience (immediate error) and prevents hangs
     if let Some(content_length) = parts
@@ -125,7 +133,7 @@ pub fn apply_request_byte_limit(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
     {
-        let total_size = total_header_size + content_length;
+        let total_size = total_header_size.saturating_add(content_length);
         if total_size > max_bytes {
             debug!(
                 content_length = content_length,
@@ -135,7 +143,7 @@ pub fn apply_request_byte_limit(
                 "Request exceeds byte limit based on Content-Length"
             );
             return ByteLimitResult::ExceedsLimit {
-                content_length,
+                request_size: total_size,
                 max_bytes,
             };
         }
@@ -476,6 +484,17 @@ impl ProxyServer {
     }
 }
 
+/// Limit only request-header parsing, not long-lived response bodies or upgrades.
+pub(crate) fn http1_builder() -> http1::Builder {
+    let mut builder = http1::Builder::new();
+    builder
+        .preserve_header_case(true)
+        .title_case_headers(false)
+        .timer(TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(10));
+    builder
+}
+
 /// Generic listener task spawner to avoid code duplication between HTTP and HTTPS
 fn spawn_listener_task<F, Fut>(
     listener: TcpListener,
@@ -517,11 +536,7 @@ async fn handle_http_connection(
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| handle_http_request(req, context.clone(), remote_addr));
 
-    http1::Builder::new()
-        .preserve_header_case(true)
-        .title_case_headers(false)
-        .serve_connection(io, service)
-        .await?;
+    http1_builder().serve_connection(io, service).await?;
 
     Ok(())
 }
@@ -535,6 +550,18 @@ async fn handle_https_connection(
     crate::proxy_tls::handle_https_connection(stream, context, remote_addr).await
 }
 
+/// Detect our nonce among all loop-prevention headers (including chained proxies).
+pub(crate) fn has_loop_nonce(headers: &hyper::HeaderMap, nonce: &str) -> bool {
+    headers
+        .get_all(HTTPJAIL_LOOP_DETECTION_HEADER)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.split(',').any(|part| part.trim() == nonce))
+        })
+}
+
 pub async fn handle_http_request(
     req: Request<Incoming>,
     context: ProxyContext,
@@ -544,23 +571,11 @@ pub async fn handle_http_request(
     let uri = req.uri().clone();
     let headers = req.headers().clone();
 
-    // SECURITY: Check for loop detection header (Issue #84)
-    // HTTP supports multiple values for the same header name.
-    // Each httpjail instance adds its nonce; if we see our own, it's a loop.
-    let our_nonce = context.loop_nonce.as_str();
-    for value in headers.get_all(HTTPJAIL_LOOP_DETECTION_HEADER).iter() {
-        if let Ok(nonce) = value.to_str() {
-            if nonce == our_nonce {
-                debug!(
-                    "Loop detected: our nonce '{}' found in request to {}",
-                    nonce, uri
-                );
-                return create_forbidden_response(Some(
-                    "Loop detected: request already processed by this httpjail instance"
-                        .to_string(),
-                ));
-            }
-        }
+    if has_loop_nonce(&headers, &context.loop_nonce) {
+        debug!("Loop detected in HTTP request to {}", uri);
+        return create_forbidden_response(Some(
+            "Loop detected: request already processed by this httpjail instance".to_string(),
+        ));
     }
 
     // Check if the URI already contains the full URL (proxy request)
@@ -628,13 +643,12 @@ async fn proxy_request(
         match apply_request_byte_limit(prepared_req, max_bytes) {
             ByteLimitResult::WithinLimit(req) => *req,
             ByteLimitResult::ExceedsLimit {
-                content_length,
+                request_size,
                 max_bytes,
             } => {
-                // Request exceeds limit based on Content-Length - reject immediately
                 let message = format!(
-                    "Request body size ({} bytes) exceeds maximum allowed ({} bytes)",
-                    content_length, max_bytes
+                    "Request size ({} bytes) exceeds maximum allowed ({} bytes)",
+                    request_size, max_bytes
                 );
                 return Ok(create_error_response(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -725,6 +739,64 @@ pub fn create_error_response(
 mod tests {
     use super::*;
     use crate::rules::v8_js::V8JsRuleEngine;
+
+    #[test]
+    fn loop_nonce_matches_any_header_value() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(HTTPJAIL_LOOP_DETECTION_HEADER, "other".parse().unwrap());
+        headers.append(
+            HTTPJAIL_LOOP_DETECTION_HEADER,
+            "foreign, ours".parse().unwrap(),
+        );
+        assert!(has_loop_nonce(&headers, "ours"));
+        assert!(!has_loop_nonce(&headers, "unknown"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_http_header_expires() {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service_fn(|_: Request<Incoming>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::new())))
+            });
+            let mut builder = http1_builder();
+            builder.header_read_timeout(Duration::from_millis(50));
+            builder
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+        });
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err(), "incomplete header was not timed out");
+    }
+
+    #[test]
+    fn zero_byte_limit_rejects_headers_without_content_length() {
+        let request = Request::builder()
+            .uri("http://example.invalid/?token=canary")
+            .header("X-Canary", "secret")
+            .body(
+                http_body_util::Empty::<Bytes>::new()
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .unwrap();
+        assert!(matches!(
+            apply_request_byte_limit(request, 0),
+            ByteLimitResult::ExceedsLimit { .. }
+        ));
+    }
 
     #[tokio::test]
     async fn test_proxy_server_creation() {

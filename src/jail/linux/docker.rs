@@ -20,11 +20,6 @@ impl DockerNetwork {
         format!("{}{}", Self::NETWORK_PREFIX, jail_id)
     }
 
-    /// Extract jail ID from network name
-    fn jail_id_from_network_name(network_name: &str) -> Option<&str> {
-        network_name.strip_prefix(Self::NETWORK_PREFIX)
-    }
-
     /// Check if a Docker command failed due to resource not existing
     fn is_not_found_error(stderr: &str) -> bool {
         stderr.contains("not found")
@@ -63,20 +58,22 @@ impl SystemResource for DockerRoutingTable {
     fn cleanup(&mut self) -> Result<()> {
         debug!("Cleaning up Docker routing table: {}", self.table_name);
 
-        let output = Command::new("nft")
-            .args(["delete", "table", "ip", &self.table_name])
-            .output()
-            .context("Failed to delete Docker routing table")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if DockerNetwork::is_not_found_error(&stderr) {
-                debug!("Docker routing table {} already removed", self.table_name);
+        for family in ["inet", "ip"] {
+            let output = Command::new("/usr/sbin/nft")
+                .args(["delete", "table", family, &self.table_name])
+                .output()
+                .context("Failed to delete Docker routing table")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !DockerNetwork::is_not_found_error(&stderr) {
+                    anyhow::bail!("Failed to delete Docker routing table: {}", stderr);
+                }
             } else {
-                warn!("Failed to delete Docker routing table: {}", stderr);
+                info!(
+                    "Removed Docker {} routing table {}",
+                    family, self.table_name
+                );
             }
-        } else {
-            info!("Removed Docker routing table {}", self.table_name);
         }
 
         Ok(())
@@ -90,6 +87,17 @@ impl SystemResource for DockerRoutingTable {
     }
 }
 
+// The nftables guard is installed on this host, so Docker must use its local daemon.
+// Ignore caller-selected contexts; a remote daemon would bypass the bridge guard.
+fn local_docker_command() -> Command {
+    let mut cmd = Command::new("/usr/bin/docker");
+    cmd.env_remove("DOCKER_HOST")
+        .env_remove("DOCKER_CONTEXT")
+        .env_remove("DOCKER_CONFIG")
+        .arg("--host=unix:///var/run/docker.sock");
+    cmd
+}
+
 impl SystemResource for DockerNetwork {
     fn create(jail_id: &str) -> Result<Self> {
         let network_name = Self::network_name_from_jail_id(jail_id);
@@ -98,7 +106,7 @@ impl SystemResource for DockerNetwork {
         // Using a /24 subnet in the 172.20.x.x range
         let subnet = Self::compute_docker_subnet(jail_id);
 
-        let output = Command::new("docker")
+        let output = local_docker_command()
             .args([
                 "network",
                 "create",
@@ -133,7 +141,7 @@ impl SystemResource for DockerNetwork {
     fn cleanup(&mut self) -> Result<()> {
         debug!("Cleaning up Docker network: {}", self.network_name);
 
-        let output = Command::new("docker")
+        let output = local_docker_command()
             .args(["network", "rm", &self.network_name])
             .output()
             .context("Failed to remove Docker network")?;
@@ -143,7 +151,7 @@ impl SystemResource for DockerNetwork {
             if Self::is_not_found_error(&stderr) {
                 debug!("Docker network {} already removed", self.network_name);
             } else {
-                warn!("Failed to remove Docker network: {}", stderr);
+                anyhow::bail!("Failed to remove Docker network: {}", stderr);
             }
         } else {
             info!("Removed Docker network {}", self.network_name);
@@ -172,7 +180,7 @@ impl DockerNetwork {
 
     /// Get the Docker bridge interface name for this network
     fn get_bridge_name(&self) -> Result<String> {
-        let output = Command::new("docker")
+        let output = local_docker_command()
             .args(["network", "inspect", &self.network_name, "-f", "{{.Id}}"])
             .output()
             .context("Failed to inspect Docker network")?;
@@ -187,7 +195,14 @@ impl DockerNetwork {
             .take(12)
             .collect::<String>();
 
-        Ok(format!("br-{}", network_id))
+        let bridge = format!("br-{}", network_id);
+        anyhow::ensure!(
+            std::path::Path::new("/sys/class/net")
+                .join(&bridge)
+                .exists(),
+            "Docker bridge {bridge} is not present on the local host"
+        );
+        Ok(bridge)
     }
 }
 
@@ -226,62 +241,32 @@ impl DockerLinux {
         })
     }
 
-    /// Clean up all orphaned Docker networks that don't have corresponding canary files
-    fn cleanup_all_orphaned_docker_networks() -> Result<()> {
-        debug!("Scanning for orphaned Docker networks");
-
-        // List all Docker networks
-        let output = Command::new("docker")
-            .args(["network", "ls", "--format", "{{.Name}}"])
-            .output()
-            .context("Failed to list Docker networks")?;
-
-        if !output.status.success() {
-            warn!("Failed to list Docker networks for cleanup");
-            return Ok(());
-        }
-
-        let networks = String::from_utf8_lossy(&output.stdout);
-        let canary_dir = crate::jail::get_canary_dir();
-
-        for network_name in networks.lines() {
-            // Extract jail_id from network name (skip non-httpjail networks)
-            let Some(jail_id) = DockerNetwork::jail_id_from_network_name(network_name) else {
-                continue;
-            };
-
-            // Check if canary file exists for this jail
-            let canary_path = canary_dir.join(jail_id);
-            if !canary_path.exists() {
-                info!(
-                    "Found orphaned Docker network {} without canary, removing",
-                    network_name
-                );
-
-                // Remove the orphaned network
-                let rm_output = Command::new("docker")
-                    .args(["network", "rm", network_name])
-                    .output()
-                    .context("Failed to remove orphaned Docker network")?;
-
-                if !rm_output.status.success() {
-                    let stderr = String::from_utf8_lossy(&rm_output.stderr);
-                    if !DockerNetwork::is_not_found_error(&stderr) {
-                        warn!(
-                            "Failed to remove orphaned Docker network {}: {}",
-                            network_name, stderr
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(())
+    fn container_name(&self) -> String {
+        format!("httpjail_{}_run", self.config.jail_id)
     }
 
-    /// Docker flags that take a value as the next argument
-    const FLAGS_WITH_VALUES: &'static [&'static str] =
-        &["-e", "-v", "-p", "--name", "--entrypoint", "-w", "--user"];
+    /// Only options that cannot change the container's network, privileges, or host access.
+    const SAFE_VALUE_FLAGS: &'static [&'static str] = &[
+        "-e",
+        "--env",
+        "--entrypoint",
+        "-w",
+        "--workdir",
+        "-u",
+        "--user",
+        "--pull",
+        "--memory",
+        "--cpus",
+        "--label",
+    ];
+    const SAFE_BOOL_FLAGS: &'static [&'static str] = &[
+        "--rm",
+        "--read-only",
+        "--init",
+        "--no-healthcheck",
+        "-i",
+        "-t",
+    ];
 
     /// Build the docker command with isolated network
     #[allow(clippy::collapsible_if)]
@@ -289,55 +274,84 @@ impl DockerLinux {
         &self,
         docker_args: &[String],
         extra_env: &[(String, String)],
-    ) -> Result<Command> {
+    ) -> Result<(Command, Option<tempfile::TempDir>)> {
         let network_name = DockerNetwork::network_name_from_jail_id(&self.config.jail_id);
-        // Parse docker arguments to filter out conflicting options and find the image
-        let modified_args = Self::filter_network_args(docker_args);
-
-        // Find where the image name is in the args
-        let image_idx = Self::find_image_index(&modified_args)
-            .context("Could not find Docker image in arguments")?;
-
-        // Split args into: docker options, image, and command
-        let docker_opts = &modified_args[..image_idx];
-        let image = &modified_args[image_idx];
-        let user_command = if modified_args.len() > image_idx + 1 {
-            &modified_args[image_idx + 1..]
-        } else {
-            &[]
-        };
+        let image_idx = Self::find_image_index(docker_args)?;
+        let docker_opts = &docker_args[..image_idx];
+        let image = &docker_args[image_idx];
+        let user_command = &docker_args[image_idx + 1..];
 
         // Build the docker run command
-        let mut cmd = Command::new("docker");
+        let mut cmd = local_docker_command();
         cmd.arg("run");
 
-        // Use our isolated Docker network
-        cmd.args(["--network", &network_name]);
+        // Route DNS to the dummy resolver, never Docker's host-configured resolver.
+        let host_ip =
+            super::format_ip(LinuxJail::compute_host_ip_for_jail_id(&self.config.jail_id));
+        let container_name = self.container_name();
+        cmd.args([
+            "--network",
+            &network_name,
+            "--dns",
+            &host_ip,
+            "--name",
+            &container_name,
+            "--cap-drop=NET_RAW",
+            "--rm",
+        ]);
 
-        // Add CA certificate environment variables and bind mount the CA certificate
+        // Mount only a public certificate snapshot, never the CA key directory.
         let mut ca_cert_path = None;
         for (key, value) in extra_env {
+            if key == "SSL_CERT_DIR" {
+                continue; // That directory also holds the CA private key.
+            }
             cmd.arg("-e").arg(format!("{}={}", key, value));
-
-            // Track the CA certificate path for bind mounting
             if key == "SSL_CERT_FILE" && ca_cert_path.is_none() {
                 ca_cert_path = Some(value.clone());
             }
         }
 
-        // Bind mount the CA certificate if we have one
+        // Docker resolves bind sources later. A separate local actor could change
+        // the original path in between, so mount a root-private regular-file copy.
+        let mut cert_dir = None;
         if let Some(cert_path) = ca_cert_path {
-            // Mount the CA certificate to the same path in the container (read-only)
-            cmd.arg("-v").arg(format!("{}:{}:ro", cert_path, cert_path));
-
-            // Also mount the parent directory if it exists (for SSL_CERT_DIR)
-            if let Some(parent) = std::path::Path::new(&cert_path).parent()
-                && parent.exists()
-            {
-                let parent_str = parent.to_string_lossy();
-                cmd.arg("-v")
-                    .arg(format!("{}:{}:ro", parent_str, parent_str));
+            use std::io::Read;
+            use std::os::unix::fs::OpenOptionsExt;
+            let cert = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&cert_path)
+                .context("Failed to open public CA certificate")?;
+            let metadata = cert.metadata()?;
+            anyhow::ensure!(
+                metadata.is_file() && metadata.len() < 1024 * 1024,
+                "Invalid public CA certificate"
+            );
+            let mut pem = String::new();
+            cert.take(1024 * 1024).read_to_string(&mut pem)?;
+            anyhow::ensure!(
+                pem.trim_start().starts_with("-----BEGIN CERTIFICATE-----")
+                    && pem.contains("-----END CERTIFICATE-----")
+                    && !pem.contains("PRIVATE KEY"),
+                "Invalid public CA certificate"
+            );
+            let dir = if unsafe { libc::geteuid() == 0 } {
+                let root_dir = std::path::Path::new("/var/lib/httpjail");
+                crate::jail::ensure_trusted_root_dir(root_dir)?;
+                tempfile::Builder::new()
+                    .prefix("cert-")
+                    .tempdir_in(root_dir)
+            } else {
+                tempfile::tempdir()
             }
+            .context("Failed to create protected CA mount directory")?;
+            let snapshot = dir.path().join("ca-cert.pem");
+            std::fs::write(&snapshot, pem).context("Failed to write public CA snapshot")?;
+            cmd.arg("-v")
+                .arg(format!("{}:{}:ro", snapshot.display(), cert_path));
+            cert_dir = Some(dir);
+            cmd.env_remove("SSL_CERT_DIR");
         }
 
         // Add user's docker options
@@ -353,55 +367,48 @@ impl DockerLinux {
             cmd.arg(arg);
         }
 
-        Ok(cmd)
+        Ok((cmd, cert_dir))
     }
 
-    /// Find the index of the Docker image in the arguments
-    fn find_image_index(args: &[String]) -> Option<usize> {
-        let mut skip_next = false;
-
-        for (i, arg) in args.iter().enumerate() {
-            if skip_next {
-                skip_next = false;
-                continue;
-            }
-
-            // Skip known flags that take values
-            if Self::FLAGS_WITH_VALUES.contains(&arg.as_str()) {
-                skip_next = true;
-                continue;
-            }
-
-            // If it doesn't start with -, it's likely the image
-            if !arg.starts_with('-') {
-                return Some(i);
-            }
-        }
-
-        None
-    }
-
-    /// Filter out any existing --network arguments from docker args
-    fn filter_network_args(docker_args: &[String]) -> Vec<String> {
-        let mut modified_args = Vec::new();
+    /// Find the image while rejecting Docker options that could bypass isolation.
+    /// Everything after the image belongs to the container command, not Docker.
+    fn find_image_index(args: &[String]) -> Result<usize> {
         let mut i = 0;
-
-        while i < docker_args.len() {
-            if docker_args[i] == "--network" || docker_args[i].starts_with("--network=") {
-                info!("Overriding Docker --network flag with httpjail namespace");
-
-                if docker_args[i] == "--network" {
-                    // Skip the next argument too
-                    i += 2;
-                    continue;
-                }
-            } else {
-                modified_args.push(docker_args[i].clone());
+        while let Some(arg) = args.get(i) {
+            if !arg.starts_with('-') {
+                anyhow::ensure!(!arg.is_empty(), "Docker image must not be empty");
+                return Ok(i);
             }
-            i += 1;
+            if Self::SAFE_BOOL_FLAGS.contains(&arg.as_str()) {
+                i += 1;
+                continue;
+            }
+            let (flag, inline_value) = arg
+                .split_once('=')
+                .map_or((arg.as_str(), None), |(name, value)| (name, Some(value)));
+            anyhow::ensure!(
+                Self::SAFE_VALUE_FLAGS.contains(&flag),
+                "Docker option not permitted in an isolated jail: {}",
+                arg
+            );
+            if let Some(value) = inline_value {
+                anyhow::ensure!(
+                    !value.is_empty(),
+                    "Missing value for Docker option {}",
+                    flag
+                );
+                i += 1;
+            } else {
+                let value = args.get(i + 1).context("Missing Docker option value")?;
+                anyhow::ensure!(
+                    !value.starts_with('-'),
+                    "Invalid value for Docker option {}",
+                    flag
+                );
+                i += 2;
+            }
         }
-
-        modified_args
+        anyhow::bail!("Could not find Docker image in arguments")
     }
 
     /// Setup nftables rules to route Docker network traffic to jail
@@ -428,36 +435,46 @@ impl DockerLinux {
             // 2. DNAT HTTP/HTTPS traffic to the proxy
             let table_name = DockerRoutingTable::table_name_from_jail_id(&self.config.jail_id);
 
-            // Create nftables rules
+            // HTTP(S) is DNATed to a local host listener (INPUT). Forwarded
+            // bridge traffic is denied by the single inet guard below.
             let nft_rules = format!(
-                "table ip {} {{
+                r#"table ip {table_name} {{
                     chain prerouting {{
                         type nat hook prerouting priority -100;
-                        iifname \"{}\" tcp dport 80 dnat to {}:{};
-                        iifname \"{}\" tcp dport 443 dnat to {}:{};
+                        iifname "{bridge_name}" tcp dport 80 dnat to {host_ip_str}:{http_port};
+                        iifname "{bridge_name}" tcp dport 443 dnat to {host_ip_str}:{https_port};
                     }}
-                    
-                    chain forward {{
-                        type filter hook forward priority 0;
-                        iifname \"{}\" oifname \"vh_{}\" accept;
-                        iifname \"vh_{}\" oifname \"{}\" ct state established,related accept;
-                    }}
-                }}",
-                table_name,
-                bridge_name,
-                host_ip_str,
-                self.config.http_proxy_port,
-                bridge_name,
-                host_ip_str,
-                self.config.https_proxy_port,
-                bridge_name,
-                self.config.jail_id,
-                self.config.jail_id,
-                bridge_name
+                }}"#,
+                http_port = self.config.http_proxy_port,
+                https_port = self.config.https_proxy_port,
             );
 
+            // Docker bridge traffic to its host gateway takes INPUT, not FORWARD.
+            // This inet guard blocks both IPv4 and IPv6 outside proxy and dummy DNS.
+            let guard = format!(
+                r#"table inet {table_name} {{
+                    chain input {{
+                        type filter hook input priority -5; policy accept;
+                        iifname "{bridge_name}" ip saddr {docker_subnet} ip daddr {host_ip_str} tcp dport {{ {http_port}, {https_port} }} accept
+                        iifname "{bridge_name}" ip saddr {docker_subnet} ip daddr {host_ip_str} udp dport 53 accept
+                        iifname "{bridge_name}" drop
+                    }}
+                    chain forward {{
+                        type filter hook forward priority -5; policy accept;
+                        iifname "{bridge_name}" drop
+                    }}
+                }}"#,
+                table_name = table_name,
+                bridge_name = bridge_name,
+                docker_subnet = DockerNetwork::compute_docker_subnet(&self.config.jail_id),
+                host_ip_str = host_ip_str,
+                http_port = self.config.http_proxy_port,
+                https_port = self.config.https_proxy_port,
+            );
+            let nft_rules = format!("{nft_rules}\n{guard}");
+
             // Apply the rules
-            let mut nft_cmd = Command::new("nft");
+            let mut nft_cmd = Command::new("/usr/sbin/nft");
             nft_cmd.arg("-f").arg("-");
             nft_cmd.stdin(std::process::Stdio::piped());
 
@@ -491,9 +508,8 @@ impl DockerLinux {
 
 impl Jail for DockerLinux {
     fn setup(&mut self, proxy_port: u16) -> Result<()> {
-        // Clean up any orphaned Docker networks first
-        // This handles cases where Docker networks exist without corresponding canary files
-        Self::cleanup_all_orphaned_docker_networks()?;
+        // A missing canary cannot prove an older jail is dead: it may live
+        // beneath another sudo-preserved HOME. Never delete its network here.
 
         // First setup the inner Linux jail
         self.inner_jail.setup(proxy_port)?;
@@ -514,23 +530,47 @@ impl Jail for DockerLinux {
         info!("Executing Docker container in isolated network");
 
         // Build and execute the docker command
-        let mut cmd = self.build_docker_command(command, extra_env)?;
+        let (cmd, _cert_dir) = self.build_docker_command(command, extra_env)?;
 
         debug!("Docker command: {:?}", cmd);
 
         // Execute docker run and wait for it to complete
-        let status = cmd
-            .status()
-            .context("Failed to execute docker run command")?;
+        crate::jail::run_command(cmd, None).context("Failed to execute docker run command")
+    }
 
+    fn execute_with_timeout(
+        &self,
+        command: &[String],
+        extra_env: &[(String, String)],
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus> {
+        let (cmd, _cert_dir) = self.build_docker_command(command, extra_env)?;
+        let status = crate::jail::run_command(cmd, Some(timeout))
+            .context("Failed to execute docker run command")?;
+        if status.code() == Some(124) {
+            // Killing the Docker CLI does not necessarily stop its daemon-owned container.
+            let output = local_docker_command()
+                .args(["rm", "-f", &self.container_name()])
+                .output()
+                .context("Failed to stop timed-out Docker container")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::ensure!(
+                    DockerNetwork::is_not_found_error(&stderr),
+                    "Failed to stop timed-out Docker container: {}",
+                    stderr
+                );
+            }
+        }
         Ok(status)
     }
 
     fn cleanup(&self) -> Result<()> {
-        // Docker network and routing will be cleaned up automatically via ManagedResource drop
-
-        // Delegate to inner jail for cleanup
-        self.inner_jail.cleanup()
+        // The command may exit via process::exit and a signal handler holds a
+        // clone, so do not rely on Drop to clean up daemon-owned resources.
+        // Remove the network before its guard; on failure retain both and the
+        // canary so a later orphan cleanup can retry without exposing traffic.
+        Self::cleanup_orphaned(&self.config.jail_id)
     }
 
     fn jail_id(&self) -> &str {
@@ -541,13 +581,30 @@ impl Jail for DockerLinux {
     where
         Self: Sized,
     {
-        // Clean up Docker-specific resources first
-        // These will be automatically cleaned up when they go out of scope
-        let _docker_network = ManagedResource::<DockerNetwork>::for_existing(jail_id);
-        let _docker_routing = ManagedResource::<DockerRoutingTable>::for_existing(jail_id);
-
-        // Then delegate to LinuxJail for standard orphan cleanup
+        // Keep the bridge firewall until Docker confirms the network is gone.
+        DockerNetwork::for_existing(jail_id).cleanup()?;
+        DockerRoutingTable::for_existing(jail_id).cleanup()?;
         LinuxJail::cleanup_orphaned(jail_id)
+    }
+}
+
+impl Drop for DockerLinux {
+    fn drop(&mut self) {
+        // Never remove the firewall guard while Docker still reports an active
+        // network: a surviving container would regain direct host/Internet access.
+        if let Some(mut network) = self.docker_network.take() {
+            let result = network.inner_mut().map_or(Ok(()), SystemResource::cleanup);
+            if let Err(error) = result {
+                warn!(
+                    "Retaining Docker bridge firewall after network cleanup failure: {}",
+                    error
+                );
+                if let Some(guard) = self.docker_routing.take() {
+                    std::mem::forget(guard);
+                }
+            }
+        }
+        // Otherwise the routing guard is removed after the network.
     }
 }
 
@@ -558,6 +615,95 @@ impl Clone for DockerLinux {
             config: self.config.clone(),
             docker_network: None,
             docker_routing: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DockerLinux;
+
+    #[test]
+    fn docker_mounts_only_public_ca_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("ca-cert.pem");
+        std::fs::write(
+            &cert,
+            b"-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("ca-key.pem"), b"dummy private key").unwrap();
+        let cert_path = cert.to_string_lossy().to_string();
+        let parent = dir.path().to_string_lossy().to_string();
+        let jail = DockerLinux::new(crate::jail::JailConfig::new()).unwrap();
+        let (cmd, _cert_dir) = jail
+            .build_docker_command(
+                &["alpine:latest".to_string()],
+                &[
+                    ("SSL_CERT_FILE".to_string(), cert_path.clone()),
+                    ("SSL_CERT_DIR".to_string(), parent.clone()),
+                ],
+            )
+            .unwrap();
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let mount = args
+            .iter()
+            .find(|arg| arg.ends_with(&format!(":{cert_path}:ro")))
+            .unwrap();
+        let source = mount.strip_suffix(&format!(":{cert_path}:ro")).unwrap();
+        assert_ne!(source, cert_path);
+        assert!(
+            std::fs::read_to_string(source)
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert!(!args.contains(&format!("{parent}:{parent}:ro")));
+        assert!(!args.iter().any(|arg| arg.starts_with("SSL_CERT_DIR=")));
+
+        std::fs::remove_file(&cert).unwrap();
+        std::os::unix::fs::symlink("ca-key.pem", &cert).unwrap();
+        assert!(
+            std::fs::read_to_string(source)
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert!(
+            jail.build_docker_command(
+                &["alpine:latest".to_string()],
+                &[("SSL_CERT_FILE".to_string(), cert_path)]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn docker_options_cannot_override_isolation() {
+        let args = |parts: &[&str]| parts.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            DockerLinux::find_image_index(&args(&[
+                "--rm",
+                "-e",
+                "FOO=bar",
+                "alpine",
+                "--net=other"
+            ]))
+            .unwrap(),
+            3
+        );
+        for option in [
+            "--net=other",
+            "--network=host",
+            "--privileged",
+            "--dns=8.8.8.8",
+            "-v",
+        ] {
+            assert!(
+                DockerLinux::find_image_index(&args(&[option, "alpine"])).is_err(),
+                "unsafe Docker option {option} was accepted"
+            );
         }
     }
 }

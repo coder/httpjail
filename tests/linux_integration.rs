@@ -39,6 +39,231 @@ mod tests {
     // Linux-specific tests below
     use serial_test::serial;
 
+    #[test]
+    fn test_root_dry_run_enforces_restricted_policy() {
+        LinuxPlatform::require_privileges();
+        assert_eq!(
+            httpjail::jail::get_canary_dir(),
+            std::path::PathBuf::from("/var/lib/httpjail/canaries")
+        );
+        let mut inline = httpjail_cmd();
+        let rejected = inline
+            .args([
+                "--sh",
+                "/usr/bin/id -u",
+                "--test",
+                "https://example.invalid/",
+            ])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("one trusted executable"));
+
+        let mut trusted = httpjail_cmd();
+        let output = trusted
+            .args(["--sh", "/usr/bin/id", "--test", "https://example.invalid/"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("uid=65534"));
+    }
+
+    #[test]
+    fn test_public_ca_is_readable_without_exposing_key() {
+        LinuxPlatform::require_privileges();
+        let mut cmd = httpjail_cmd();
+        let run = cmd
+            .args(["--js", "false", "--", "/usr/bin/true"])
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let cert = httpjail::tls::CertificateManager::get_ca_cert_path().unwrap();
+        let uid = std::env::var("SUDO_UID").unwrap();
+        let gid = std::env::var("SUDO_GID").unwrap();
+        let read = |path: &std::path::Path| {
+            std::process::Command::new("/usr/bin/setpriv")
+                .args([
+                    "--no-new-privs",
+                    &format!("--reuid={uid}"),
+                    &format!("--regid={gid}"),
+                    "--clear-groups",
+                    "--",
+                    "/usr/bin/cat",
+                ])
+                .arg(path)
+                .output()
+                .unwrap()
+        };
+        let cert_read = read(cert.as_std_path());
+        assert!(cert_read.status.success());
+        assert!(String::from_utf8_lossy(&cert_read.stdout).contains("BEGIN CERTIFICATE"));
+        let key = cert.with_file_name("ca-key.pem");
+        assert!(!read(key.as_std_path()).status.success());
+    }
+
+    #[test]
+    fn test_root_request_log_cannot_append_protected_file() {
+        LinuxPlatform::require_privileges();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("protected");
+        std::fs::write(&target, "unchanged").unwrap();
+        let mut cmd = httpjail_cmd();
+        let output = cmd
+            .args(["--js", "false", "--request-log"])
+            .arg(&target)
+            .args(["--test", "https://example.invalid/\nINJECTED"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "unchanged");
+    }
+
+    #[test]
+    #[ignore]
+    fn pid_namespace_probe_helper() {
+        assert_eq!(unsafe { libc::getpid() }, 1);
+        assert!(
+            std::fs::read_to_string("/proc/1/comm")
+                .unwrap()
+                .starts_with("linux_integrat")
+        );
+    }
+
+    #[test]
+    fn test_native_jail_has_private_pid_namespace() {
+        LinuxPlatform::require_privileges();
+        let mut cmd = httpjail_cmd();
+        cmd.args(["--js", "false", "--"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "tests::pid_namespace_probe_helper"]);
+        let output = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "PID namespace probe failed: {stdout} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn unix_socket_probe_helper() {
+        let path = std::env::var("HTTPJAIL_TEST_UNIX_SOCKET").unwrap();
+        let error = std::os::unix::net::UnixStream::connect(path).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        // Local stream socketpairs are needed by threaded DNS resolvers.
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(a);
+        let mut pair = [-1_i32; 2];
+        let result =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, pair.as_mut_ptr()) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        );
+        // io_uring can create sockets without calling socket(2), so its
+        // submission syscalls must also be denied in this namespace.
+        let result = unsafe { libc::syscall(libc::SYS_io_uring_setup, 1, std::ptr::null::<u8>()) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        );
+        let vsock = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) };
+        assert_eq!(vsock, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        );
+    }
+
+    #[test]
+    fn test_native_jail_blocks_host_unix_sockets() {
+        LinuxPlatform::require_privileges();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mut cmd = httpjail_cmd();
+        cmd.args(["--js", "false", "--"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "tests::unix_socket_probe_helper"])
+            .env("HTTPJAIL_TEST_UNIX_SOCKET", &path);
+        let output = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "Unix socket probe failed: {stdout} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn test_strong_jail_rejects_user_writable_policy_program() {
+        LinuxPlatform::require_privileges();
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("policy.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut cmd = httpjail_cmd();
+        cmd.arg("--sh").arg(&script).args(["--", "true"]);
+        let output = cmd.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("root-owned, non-writable"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn test_direct_root_strong_jail_refused() {
+        LinuxPlatform::require_privileges();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_httpjail"))
+            .env_remove("SUDO_UID")
+            .env_remove("SUDO_GID")
+            .args(["--js", "false", "--", "true"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("requires sudo from a non-root user"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn test_strong_jail_clears_groups_and_blocks_setuid() {
+        LinuxPlatform::require_privileges();
+        let mut groups = httpjail_cmd();
+        groups.args(["--js", "true", "--", "id", "-G"]);
+        let output = groups.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected = std::env::var("SUDO_GID").expect("run as sudo from non-root user");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+
+        let mut sudo = httpjail_cmd();
+        sudo.args(["--js", "true", "--", "sudo", "-n", "id", "-u"]);
+        let output = sudo.output().unwrap();
+        assert!(
+            !output.status.success(),
+            "jailed process regained root via sudo"
+        );
+    }
+
     /// Linux-specific test: verify namespace cleanup
     #[test]
     #[serial]
@@ -313,6 +538,225 @@ mod tests {
             "Non-HTTP outbound TCP should be blocked. stdout: {}, stderr: {}",
             stdout.trim(),
             stderr.trim()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn ipv6_host_probe_helper() {
+        let Some(host) = std::env::var("HTTPJAIL_TEST_HOST_IPV6").ok() else {
+            return;
+        };
+        let iface =
+            std::ffi::CString::new(std::env::var("HTTPJAIL_TEST_GUEST_IFACE").unwrap()).unwrap();
+        let index = unsafe { libc::if_nametoindex(iface.as_ptr()) };
+        assert_ne!(index, 0);
+        let ip = host.parse::<std::net::Ipv6Addr>().unwrap();
+        let port = std::env::var("HTTPJAIL_TEST_HOST_PORT")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let target = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(ip, port, 0, index));
+        let connection =
+            std::net::TcpStream::connect_timeout(&target, std::time::Duration::from_millis(300));
+        let expected = std::env::var_os("HTTPJAIL_TEST_ALLOW_IPV6").is_some();
+        assert_eq!(
+            connection.is_ok(),
+            expected,
+            "Unexpected IPv6 host-veth reachability: {connection:?}"
+        );
+    }
+
+    #[test]
+    fn test_namespace_blocks_host_ipv6_link_local() {
+        LinuxPlatform::require_privileges();
+        let listener = std::net::TcpListener::bind("[::]:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut jail = std::process::Command::new(env!("CARGO_BIN_EXE_httpjail"));
+        jail.env("HTTPJAIL_SKIP_KEYCHAIN_INSTALL", "1").args([
+            "--timeout",
+            "15",
+            "--js",
+            "false",
+            "--",
+            "sleep",
+            "5",
+        ]);
+        let mut child = jail.spawn().unwrap();
+        let canary_dir = httpjail::jail::get_canary_dir();
+        let id = (0..60)
+            .find_map(|_| {
+                let match_id = std::fs::read_dir(&canary_dir).ok().and_then(|entries| {
+                    entries.flatten().find_map(|entry| {
+                        (std::fs::read_to_string(entry.path()).ok()?.trim()
+                            == child.id().to_string())
+                        .then(|| entry.file_name().to_string_lossy().into_owned())
+                    })
+                });
+                if match_id.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                match_id
+            })
+            .expect("jail canary did not appear");
+        let host_iface = format!("vh_{id}");
+        let namespace = format!("httpjail_{id}");
+        let address = (0..60)
+            .find_map(|_| {
+                let output = std::process::Command::new("ip")
+                    .args([
+                        "-6",
+                        "-o",
+                        "addr",
+                        "show",
+                        "dev",
+                        &host_iface,
+                        "scope",
+                        "link",
+                    ])
+                    .output()
+                    .ok()?;
+                let ip = String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .find_map(|part| {
+                        part.strip_suffix("/64")
+                            .filter(|ip| ip.starts_with("fe80::"))
+                    })
+                    .map(str::to_owned);
+                let ready = std::process::Command::new("ip")
+                    .args([
+                        "netns",
+                        "exec",
+                        &namespace,
+                        "nft",
+                        "list",
+                        "table",
+                        "ip6",
+                        "httpjail6",
+                    ])
+                    .output()
+                    .is_ok_and(|output| output.status.success());
+                if ip.is_none() || !ready {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                ip.filter(|_| ready)
+            })
+            .expect("IPv6 veth and output filter did not become ready");
+        // Some hosts disable automatic guest veth IPv6 addresses. Give this
+        // disposable namespace its own link-local source for the control probe.
+        let guest_iface = format!("vn_{id}");
+        let enable = std::process::Command::new("/usr/sbin/ip")
+            .args(["netns", "exec", &namespace, "/usr/sbin/sysctl", "-w"])
+            .arg(format!("net.ipv6.conf.{guest_iface}.disable_ipv6=0"))
+            .output()
+            .unwrap();
+        assert!(
+            enable.status.success(),
+            "{}",
+            String::from_utf8_lossy(&enable.stderr)
+        );
+        let add = std::process::Command::new("/usr/sbin/ip")
+            .args([
+                "netns",
+                "exec",
+                &namespace,
+                "/usr/sbin/ip",
+                "-6",
+                "addr",
+                "add",
+                "fe80::2/64",
+                "dev",
+                &guest_iface,
+                "nodad",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            add.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        let probe = std::process::Command::new("ip")
+            .args(["netns", "exec", &format!("httpjail_{id}")])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "tests::ipv6_host_probe_helper"])
+            .env("HTTPJAIL_TEST_HOST_IPV6", &address)
+            .env("HTTPJAIL_TEST_GUEST_IFACE", format!("vn_{id}"))
+            .env("HTTPJAIL_TEST_HOST_PORT", port.to_string())
+            .output()
+            .unwrap();
+        // Control: only inside this disposable jail namespace, remove the IPv6
+        // output table and confirm the same host service becomes reachable.
+        let removal = std::process::Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                &namespace,
+                "nft",
+                "delete",
+                "table",
+                "ip6",
+                "httpjail6",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            removal.status.success(),
+            "{}",
+            String::from_utf8_lossy(&removal.stderr)
+        );
+        let control = std::process::Command::new("ip")
+            .args(["netns", "exec", &namespace])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "tests::ipv6_host_probe_helper"])
+            .env("HTTPJAIL_TEST_HOST_IPV6", &address)
+            .env("HTTPJAIL_TEST_GUEST_IFACE", format!("vn_{id}"))
+            .env("HTTPJAIL_TEST_HOST_PORT", port.to_string())
+            .env("HTTPJAIL_TEST_ALLOW_IPV6", "1")
+            .output()
+            .unwrap();
+        let _ = child.wait();
+        let stdout = String::from_utf8_lossy(&probe.stdout);
+        assert!(
+            probe.status.success() && stdout.contains("1 passed"),
+            "IPv6 probe did not run or failed: {stdout} {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        if !control.status.success() {
+            eprintln!(
+                "Host IPv6 networking also blocks the control probe; only the jail table and blocked probe were verified: {}",
+                String::from_utf8_lossy(&control.stderr)
+            );
+            return;
+        }
+        assert!(String::from_utf8_lossy(&control.stdout).contains("1 passed"));
+    }
+
+    /// Docker bridge traffic to the host gateway must not bypass HTTP rules.
+    #[test]
+    fn test_docker_cannot_reach_host_gateway_service() {
+        LinuxPlatform::require_privileges();
+        let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut cmd = httpjail_cmd();
+        cmd.args(["--js", "false", "--docker-run", "--", "--rm", "alpine:latest", "sh", "-c"])
+            .arg(format!(
+                r#"gw=$(ip route | awk '$1=="default" {{print $3; exit}}'); wget -q -T 2 -O - http://$gw:{port}/ >/dev/null 2>&1 && echo REACHED || echo BLOCKED"#
+            ));
+        let output = cmd.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("BLOCKED"),
+            "Docker container reached a host gateway service"
+        );
+        assert!(
+            listener.accept().is_err(),
+            "Host listener received a Docker request"
         );
     }
 

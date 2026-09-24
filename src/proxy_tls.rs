@@ -1,6 +1,6 @@
 use crate::proxy::{
     HTTPJAIL_HEADER, HTTPJAIL_HEADER_VALUE, ProxyContext, apply_request_byte_limit,
-    create_connect_403_response_with_context, create_forbidden_response,
+    create_connect_403_response_with_context, create_forbidden_response, has_loop_nonce,
 };
 use crate::rules::Action;
 #[cfg(target_os = "macos")]
@@ -9,14 +9,13 @@ use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Error as HyperError, Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use rustls::ServerConfig;
 use std::sync::Arc;
 use tls_parser::{TlsMessage, parse_tls_plaintext};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::{Duration, Instant, timeout};
 use tokio_rustls::TlsAcceptor;
@@ -26,6 +25,8 @@ use tracing::{debug, error, info, warn};
 const PROTOCOL_DETECT_TIMEOUT: Duration = Duration::from_secs(5);
 // Timeout for reading CONNECT headers
 const CONNECT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONNECT_LINE_BYTES: usize = 8 * 1024;
+const MAX_CONNECT_HEADERS_BYTES: usize = 64 * 1024;
 // Timeout for TLS handshake
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 // Timeout for writing responses
@@ -218,13 +219,30 @@ async fn handle_transparent_tls(
     });
 
     debug!("Starting HTTP/1.1 server for decrypted requests");
-    http1::Builder::new()
-        .preserve_header_case(true)
-        .title_case_headers(false)
+    crate::proxy::http1_builder()
         .serve_connection(io, service)
         .await?;
 
     Ok(())
+}
+
+// Use a bounded reader: `read_line` by itself buffers an arbitrarily large header.
+async fn read_connect_line(
+    reader: &mut BufReader<TcpStream>,
+    limit: usize,
+) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let count = reader.take((limit + 1) as u64).read_line(&mut line).await?;
+    if count == 0 {
+        return Ok(None);
+    }
+    if count > limit || !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "CONNECT header line exceeds limit or is incomplete",
+        ));
+    }
+    Ok(Some(line))
 }
 
 /// Handle a CONNECT tunnel request with TLS interception
@@ -237,16 +255,20 @@ async fn handle_connect_tunnel(
 
     // Buffer the stream for reading lines
     let mut reader = BufReader::new(stream);
-    let mut first_line = String::new();
 
-    // Read the first line to get the CONNECT request
-    let read_result = timeout(CONNECT_READ_TIMEOUT, reader.read_line(&mut first_line)).await;
-    match read_result {
-        Ok(Ok(0)) => {
+    // Read the first line to get the CONNECT request. A timeout alone does not
+    // prevent a client from making us buffer an arbitrarily large line.
+    let first_line = match timeout(
+        CONNECT_READ_TIMEOUT,
+        read_connect_line(&mut reader, MAX_CONNECT_LINE_BYTES),
+    )
+    .await
+    {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
             debug!("Connection closed before CONNECT request");
             return Ok(());
         }
-        Ok(Ok(_)) => {}
         Ok(Err(e)) => {
             debug!("Failed to read CONNECT request: {}", e);
             return Ok(());
@@ -255,7 +277,7 @@ async fn handle_connect_tunnel(
             warn!("Timeout reading CONNECT request");
             return Ok(());
         }
-    }
+    };
 
     debug!("CONNECT line: {}", first_line.trim());
 
@@ -274,33 +296,32 @@ async fn handle_connect_tunnel(
 
     info!("CONNECT request for: {}", target);
 
-    // Read the rest of the headers until we find the empty line
-    let mut headers = vec![first_line.clone()];
+    // Require the terminating blank line and cap both individual lines and
+    // aggregate header bytes before evaluating any policy or opening a tunnel.
+    let mut total_bytes = first_line.len();
     let start_time = tokio::time::Instant::now();
     loop {
-        // Check if we've exceeded the total timeout
-        if start_time.elapsed() > CONNECT_READ_TIMEOUT {
-            warn!("Timeout reading CONNECT headers");
+        let remaining_time = CONNECT_READ_TIMEOUT.saturating_sub(start_time.elapsed());
+        if remaining_time.is_zero() || total_bytes >= MAX_CONNECT_HEADERS_BYTES {
+            debug!("CONNECT headers timed out or exceeded limit");
             return Ok(());
         }
-
-        let mut line = String::new();
-        let remaining_time = CONNECT_READ_TIMEOUT.saturating_sub(start_time.elapsed());
-        match timeout(remaining_time, reader.read_line(&mut line)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(_)) => {
+        let line_limit = MAX_CONNECT_LINE_BYTES.min(MAX_CONNECT_HEADERS_BYTES - total_bytes);
+        match timeout(remaining_time, read_connect_line(&mut reader, line_limit)).await {
+            Ok(Ok(Some(line))) => {
+                total_bytes += line.len();
                 if line == "\r\n" || line == "\n" {
                     break;
                 }
-                headers.push(line);
             }
+            Ok(Ok(None)) => return Ok(()),
             Ok(Err(e)) => {
-                debug!("Error reading header: {}", e);
-                break;
+                debug!("Invalid CONNECT header: {}", e);
+                return Ok(());
             }
             Err(_) => {
-                warn!("Timeout reading headers");
-                break;
+                debug!("Timeout reading CONNECT headers");
+                return Ok(());
             }
         }
     }
@@ -428,9 +449,7 @@ async fn perform_tls_interception(
     });
 
     debug!("Starting HTTP/1.1 server for decrypted requests");
-    http1::Builder::new()
-        .preserve_header_case(true)
-        .title_case_headers(false)
+    crate::proxy::http1_builder()
         .serve_connection(io, service)
         .await?;
 
@@ -449,9 +468,7 @@ async fn handle_plain_http(
     let service =
         service_fn(move |req| crate::proxy::handle_http_request(req, context.clone(), remote_addr));
 
-    http1::Builder::new()
-        .preserve_header_case(true)
-        .title_case_headers(false)
+    crate::proxy::http1_builder()
         .serve_connection(io, service)
         .await?;
 
@@ -467,6 +484,14 @@ async fn handle_decrypted_https_request(
 ) -> Result<Response<BoxBody<Bytes, HyperError>>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
+
+    // Mirror the HTTP handler's loop guard before any rule evaluation or
+    // upstream connection (including when HTTPS is bound on port 443).
+    if has_loop_nonce(req.headers(), &context.loop_nonce) {
+        return create_forbidden_response(Some(
+            "Loop detected: request already processed by this httpjail instance".to_string(),
+        ));
+    }
 
     // Build the full URL for rule evaluation
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
@@ -529,13 +554,12 @@ async fn proxy_https_request(
         match apply_request_byte_limit(prepared_req, max_bytes) {
             crate::proxy::ByteLimitResult::WithinLimit(req) => *req,
             crate::proxy::ByteLimitResult::ExceedsLimit {
-                content_length,
+                request_size,
                 max_bytes,
             } => {
-                // Request exceeds limit based on Content-Length - reject immediately
                 let message = format!(
-                    "Request body size ({} bytes) exceeds maximum allowed ({} bytes)",
-                    content_length, max_bytes
+                    "Request size ({} bytes) exceeds maximum allowed ({} bytes)",
+                    request_size, max_bytes
                 );
                 return Ok(crate::proxy::create_error_response(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -750,6 +774,40 @@ mod tests {
             "Response: {}",
             response
         );
+    }
+
+    #[tokio::test]
+    async fn test_connect_oversized_header_is_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let context = ProxyContext {
+            rule_engine: create_test_rule_engine(true),
+            cert_manager: create_test_cert_manager().await,
+            loop_nonce: Arc::new("test-nonce".to_string()),
+        };
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            handle_connect_tunnel(stream, context, peer).await.unwrap();
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"CONNECT example.com:443 HTTP/1.1\r\nX-Pad: ")
+            .await
+            .unwrap();
+        client
+            .write_all(&vec![b'a'; MAX_CONNECT_LINE_BYTES + 1])
+            .await
+            .unwrap();
+        let mut response = [0; 64];
+        let result = timeout(Duration::from_secs(2), client.read(&mut response))
+            .await
+            .unwrap();
+        // Closing with unread request bytes may send RST rather than FIN.
+        match result {
+            Ok(count) => assert_eq!(count, 0, "oversized CONNECT header must not open a tunnel"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset),
+        }
     }
 
     #[tokio::test]

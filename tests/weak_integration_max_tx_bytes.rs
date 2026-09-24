@@ -141,6 +141,8 @@ async fn start_httpjail(js_config: &str, proxy_port: u16) -> std::process::Child
     httpjail
 }
 
+// Both cases bind the same HTTP/HTTPS proxy ports.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_max_tx_bytes_truncates_without_content_length() {
     let (backend_listener, backend_port, bytes_counter) = setup_backend().await;
@@ -216,6 +218,8 @@ async fn test_max_tx_bytes_truncates_without_content_length() {
     assert!(bytes_received > 0, "Backend should have received some data");
 }
 
+// Both cases bind the same HTTP/HTTPS proxy ports.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_max_tx_bytes_rejects_with_content_length() {
     let (backend_listener, backend_port, bytes_counter) = setup_backend().await;
