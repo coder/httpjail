@@ -7,76 +7,6 @@ use anyhow::{Context, Result};
 use std::process::{Command, ExitStatus};
 use tracing::{debug, info, warn};
 
-fn stale_docker_table_id<'a>(
-    line: &'a str,
-    networks: &std::collections::HashSet<String>,
-    root_canaries: &std::path::Path,
-    legacy_canaries: Option<&std::path::Path>,
-    namespace_configs: &std::path::Path,
-) -> Option<&'a str> {
-    let mut parts = line.split_whitespace();
-    let (Some("table"), Some(family), Some(name)) = (parts.next(), parts.next(), parts.next())
-    else {
-        return None;
-    };
-    if family != "ip" && family != "inet" {
-        return None;
-    }
-    let id = name.strip_prefix("httpjail_docker_")?;
-    (crate::jail::valid_jail_id(id)
-        && !networks.contains(&DockerNetwork::network_name_from_jail_id(id))
-        && !root_canaries.join(id).exists()
-        && !legacy_canaries.is_some_and(|path| path.join(id).exists())
-        && !namespace_configs.join(format!("httpjail_{id}")).exists())
-    .then_some(id)
-}
-
-/// Reclaim routing tables left behind by older runs whose Docker network was
-/// removed before the process could drop its nftables resources. This is an
-/// explicit maintenance operation, not part of the latency-sensitive startup.
-pub fn cleanup_orphaned_docker_tables() -> Result<()> {
-    use std::collections::HashSet;
-    if !std::path::Path::new("/usr/bin/docker").exists() {
-        return Ok(());
-    }
-    let output = local_docker_command()
-        .args(["network", "ls", "--format", "{{.Name}}"])
-        .output()?;
-    if !output.status.success() {
-        debug!("Docker daemon unavailable; skipping stale routing table cleanup");
-        return Ok(());
-    }
-    let networks: HashSet<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect();
-    let tables = Command::new("/usr/sbin/nft")
-        .args(["list", "tables"])
-        .output()?;
-    anyhow::ensure!(tables.status.success(), "Failed to list nftables tables");
-    let root_canaries = crate::jail::get_canary_dir();
-    crate::jail::ensure_trusted_root_dir(&root_canaries)?;
-    // Previous versions used sudo-preserved HOME. A legacy live process may
-    // still rely on its old canary; err on the side of retaining its guard.
-    let legacy_canaries = dirs::data_dir().map(|path| path.join("httpjail/canaries"));
-    let mut ids = HashSet::new();
-    for line in String::from_utf8_lossy(&tables.stdout).lines() {
-        if let Some(id) = stale_docker_table_id(
-            line,
-            &networks,
-            &root_canaries,
-            legacy_canaries.as_deref(),
-            std::path::Path::new("/etc/netns"),
-        ) {
-            ids.insert(id.to_string());
-        }
-    }
-    for id in ids {
-        DockerRoutingTable::for_existing(&id).cleanup()?;
-    }
-    Ok(())
-}
-
 /// Docker network resource that gets cleaned up on drop
 struct DockerNetwork {
     network_name: String,
@@ -505,32 +435,18 @@ impl DockerLinux {
             // 2. DNAT HTTP/HTTPS traffic to the proxy
             let table_name = DockerRoutingTable::table_name_from_jail_id(&self.config.jail_id);
 
-            // Create nftables rules
+            // HTTP(S) is DNATed to a local host listener (INPUT). Forwarded
+            // bridge traffic is denied by the single inet guard below.
             let nft_rules = format!(
-                "table ip {} {{
+                r#"table ip {table_name} {{
                     chain prerouting {{
                         type nat hook prerouting priority -100;
-                        iifname \"{}\" tcp dport 80 dnat to {}:{};
-                        iifname \"{}\" tcp dport 443 dnat to {}:{};
+                        iifname "{bridge_name}" tcp dport 80 dnat to {host_ip_str}:{http_port};
+                        iifname "{bridge_name}" tcp dport 443 dnat to {host_ip_str}:{https_port};
                     }}
-                    
-                    chain forward {{
-                        type filter hook forward priority 0;
-                        iifname \"{}\" oifname \"vh_{}\" accept;
-                        iifname \"vh_{}\" oifname \"{}\" ct state established,related accept;
-                    }}
-                }}",
-                table_name,
-                bridge_name,
-                host_ip_str,
-                self.config.http_proxy_port,
-                bridge_name,
-                host_ip_str,
-                self.config.https_proxy_port,
-                bridge_name,
-                self.config.jail_id,
-                self.config.jail_id,
-                bridge_name
+                }}"#,
+                http_port = self.config.http_proxy_port,
+                https_port = self.config.https_proxy_port,
             );
 
             // Docker bridge traffic to its host gateway takes INPUT, not FORWARD.
@@ -654,9 +570,7 @@ impl Jail for DockerLinux {
         // clone, so do not rely on Drop to clean up daemon-owned resources.
         // Remove the network before its guard; on failure retain both and the
         // canary so a later orphan cleanup can retry without exposing traffic.
-        DockerNetwork::for_existing(&self.config.jail_id).cleanup()?;
-        DockerRoutingTable::for_existing(&self.config.jail_id).cleanup()?;
-        self.inner_jail.cleanup()
+        Self::cleanup_orphaned(&self.config.jail_id)
     }
 
     fn jail_id(&self) -> &str {
@@ -708,51 +622,6 @@ impl Clone for DockerLinux {
 #[cfg(test)]
 mod tests {
     use super::DockerLinux;
-
-    #[test]
-    fn stale_tables_skip_live_networks_and_canaries() {
-        use std::collections::HashSet;
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let legacy = dir.path().join("legacy");
-        let namespace_configs = dir.path().join("netns");
-        std::fs::create_dir_all(&namespace_configs).unwrap();
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&legacy).unwrap();
-        let line = "table ip httpjail_docker_abcd1234";
-        let mut networks = HashSet::new();
-        assert_eq!(
-            super::stale_docker_table_id(line, &networks, &root, Some(&legacy), &namespace_configs),
-            Some("abcd1234")
-        );
-        networks.insert("httpjail_abcd1234".to_string());
-        assert_eq!(
-            super::stale_docker_table_id(line, &networks, &root, Some(&legacy), &namespace_configs),
-            None
-        );
-        networks.clear();
-        std::fs::write(legacy.join("abcd1234"), "1").unwrap();
-        assert_eq!(
-            super::stale_docker_table_id(line, &networks, &root, Some(&legacy), &namespace_configs),
-            None
-        );
-        std::fs::remove_file(legacy.join("abcd1234")).unwrap();
-        std::fs::create_dir(namespace_configs.join("httpjail_abcd1234")).unwrap();
-        assert_eq!(
-            super::stale_docker_table_id(line, &networks, &root, Some(&legacy), &namespace_configs),
-            None
-        );
-        assert_eq!(
-            super::stale_docker_table_id(
-                "table ip httpjail_docker_bad!",
-                &networks,
-                &root,
-                None,
-                &namespace_configs
-            ),
-            None
-        );
-    }
 
     #[test]
     fn docker_mounts_only_public_ca_file() {

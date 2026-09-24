@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
@@ -88,7 +88,7 @@ impl ProcRuleEngine {
         if let Some(mut process_state) = process_guard.take() {
             match process_state.child.try_wait() {
                 Ok(Some(status)) => {
-                    warn!(
+                    debug!(
                         "Program process exited with status: {:?}, restarting",
                         status
                     );
@@ -194,7 +194,7 @@ impl ProcRuleEngine {
                 return Err("Failed to write to program".to_string());
             }
             Err(_) => {
-                warn!("Program stdin timeout after {:?}", timeout);
+                debug!("Program stdin timeout after {:?}", timeout);
                 if let Some(state) = process_guard.take() {
                     Self::kill_process(state);
                 }
@@ -209,7 +209,7 @@ impl ProcRuleEngine {
         match tokio::time::timeout(timeout, read).await {
             Ok(Ok(0)) => {
                 // EOF - process exited
-                warn!("Program closed stdout unexpectedly");
+                debug!("Program closed stdout unexpectedly");
                 if let Some(state) = process_guard.take() {
                     Self::kill_process(state);
                 }
@@ -243,7 +243,7 @@ impl ProcRuleEngine {
                 Err(format!("Error reading from program: {}", e))
             }
             Err(_) => {
-                warn!("Program response timeout after {:?}", timeout);
+                debug!("Program response timeout after {:?}", timeout);
                 if let Some(state) = process_guard.take() {
                     Self::kill_process(state);
                 }

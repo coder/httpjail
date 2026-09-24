@@ -372,11 +372,6 @@ fn cleanup_orphans() -> Result<()> {
     // just from a missing canary. Orphaned canaryless namespaces need manual
     // administrator inspection instead of automatic destructive cleanup.
 
-    #[cfg(target_os = "linux")]
-    if unsafe { libc::geteuid() == 0 } {
-        httpjail::jail::linux::docker::cleanup_orphaned_docker_tables()?;
-    }
-
     if cleaned_jails.is_empty() {
         debug!("No orphaned jails found");
     } else {
@@ -422,19 +417,10 @@ async fn main() -> Result<()> {
         }
 
         if *install {
-            // First ensure CA exists
-            let config_dir = dirs::config_dir()
-                .context("Could not find user config directory")?
-                .join("httpjail");
-            let ca_cert_path = config_dir.join("ca-cert.pem");
-
-            if !ca_cert_path.exists() {
-                // Generate CA first
-                info!("Generating CA certificate...");
-                let _ = httpjail::tls::CertificateManager::new()?;
-            }
-
-            keychain_manager.install_ca(&ca_cert_path)?;
+            // Repair incomplete credentials before trusting the public certificate.
+            let _ = httpjail::tls::CertificateManager::new()?;
+            let ca_cert_path = httpjail::tls::CertificateManager::get_ca_cert_path()?;
+            keychain_manager.install_ca(ca_cert_path.as_std_path())?;
             println!("✓ httpjail CA certificate installed successfully");
             return Ok(());
         }

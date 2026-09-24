@@ -37,13 +37,19 @@ fn stalled_processor_stdin_times_out() {
     let start = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_httpjail"))
         .args(["--proc", "/usr/bin/caffeinate", "--test"])
+        .env_remove("RUST_LOG")
         .arg(url)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(start.elapsed() < Duration::from_secs(8));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Program stdin timeout"),
+        String::from_utf8_lossy(&output.stdout).contains("Program evaluation timed out"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        output.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
