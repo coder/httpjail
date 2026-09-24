@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Network namespace resource
 pub struct NetworkNamespace {
@@ -22,7 +22,7 @@ impl SystemResource for NetworkNamespace {
     fn create(jail_id: &str) -> Result<Self> {
         let name = format!("httpjail_{}", jail_id);
 
-        let output = Command::new("ip")
+        let output = Command::new("/usr/sbin/ip")
             .args(["netns", "add", &name])
             .output()
             .context("Failed to execute ip netns add")?;
@@ -47,7 +47,7 @@ impl SystemResource for NetworkNamespace {
             return Ok(());
         }
 
-        let output = Command::new("ip")
+        let output = Command::new("/usr/sbin/ip")
             .args(["netns", "del", &self.name])
             .output()
             .context("Failed to execute ip netns del")?;
@@ -102,7 +102,7 @@ impl SystemResource for VethPair {
         let host_name = format!("vh_{}", jail_id);
         let ns_name = format!("vn_{}", jail_id);
 
-        let output = Command::new("ip")
+        let output = Command::new("/usr/sbin/ip")
             .args([
                 "link", "add", &host_name, "type", "veth", "peer", "name", &ns_name,
             ])
@@ -129,11 +129,17 @@ impl SystemResource for VethPair {
             return Ok(());
         }
 
-        // Deleting the host side will automatically delete both ends
-        let _ = Command::new("ip")
+        // Deleting the host side will automatically delete both ends.
+        let output = Command::new("/usr/sbin/ip")
             .args(["link", "del", &self.host_name])
-            .output();
-
+            .output()
+            .context("Failed to execute ip link del")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("Cannot find device") && !stderr.contains("does not exist") {
+                anyhow::bail!("Failed to delete veth pair: {}", stderr);
+            }
+        }
         self.created = false;
         Ok(())
     }
@@ -171,8 +177,9 @@ impl SystemResource for NFTable {
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        // Table cleans itself up via Drop trait
-        self.table = None;
+        if let Some(mut table) = self.table.take() {
+            table.remove()?;
+        }
         Ok(())
     }
 
@@ -202,36 +209,20 @@ impl SystemResource for NFTable {
 ///
 /// 1. **Creation**: Ensure the symlink target exists on the host (we create an empty
 ///    placeholder in /run/systemd/resolve/ if needed - safe since /run is tmpfs)
-/// 2. **Cleanup**: Explicitly unmount the bind-mount at the symlink target during
-///    cleanup to prevent stale mounts from accumulating
+/// 2. **Cleanup**: Remove the namespace configuration directory. Bind mounts
+///    belong to the mount namespace created by `ip netns exec`, not the host.
 ///
 /// # Safety
 ///
 /// - Host's /etc/resolv.conf is never modified directly
 /// - Placeholder creation is best-effort and won't affect systemd-resolved
-/// - Cleanup unmounts are idempotent and won't fail if already unmounted
+/// - Never unmount the host's resolver symlink target during cleanup
 pub struct NetnsResolv {
     netns_dir: PathBuf,
     created: bool,
 }
 
 impl NetnsResolv {
-    /// Resolve /etc/resolv.conf to its canonical path, handling symlinks
-    ///
-    /// Returns None if /etc/resolv.conf is not a symlink or cannot be resolved
-    fn resolve_resolv_conf_target() -> Option<PathBuf> {
-        let symlink_target = fs::read_link("/etc/resolv.conf").ok()?;
-
-        // Convert relative path to absolute (e.g., "../run/systemd/resolve/stub-resolv.conf")
-        let absolute_path = if symlink_target.is_absolute() {
-            symlink_target
-        } else {
-            PathBuf::from("/etc").join(symlink_target)
-        };
-
-        fs::canonicalize(absolute_path).ok()
-    }
-
     /// Create /etc/netns/httpjail_<id>/resolv.conf with specified nameserver
     pub fn create_with_nameserver(jail_id: &str, nameserver_ip: &str) -> Result<Self> {
         let netns_dir = PathBuf::from(format!("/etc/netns/httpjail_{}", jail_id));
@@ -282,21 +273,15 @@ impl SystemResource for NetnsResolv {
             return Ok(());
         }
 
-        // Unmount bind-mount at symlink target (see struct documentation for why)
-        // Best-effort: ignore failures since mount might already be cleaned up
-        if let Some(target_path) = Self::resolve_resolv_conf_target() {
-            let _ = Command::new("umount").arg(&target_path).output();
-            debug!(
-                "Attempted to unmount bind-mount at {}",
-                target_path.display()
-            );
-        }
-
+        // `ip netns exec` owns a separate mount namespace. Unmounting the
+        // symlink target here would operate on the host mount namespace instead.
         // Remove /etc/netns/<namespace>/ directory
         match fs::remove_dir_all(&self.netns_dir) {
             Ok(()) => debug!("Removed {}", self.netns_dir.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn!("Failed to remove {}: {}", self.netns_dir.display(), e),
+            Err(e) => {
+                return Err(e).context(format!("Failed to remove {}", self.netns_dir.display()));
+            }
         }
 
         self.created = false;

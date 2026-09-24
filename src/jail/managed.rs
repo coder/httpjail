@@ -1,6 +1,7 @@
 use super::{Jail, JailConfig};
 use anyhow::{Context, Result};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
-use crate::jail::get_canary_dir;
+use crate::jail::{canary_owner_alive, get_canary_dir, valid_jail_id};
 
 /// Manages jail lifecycle and cleanup with automatic cleanup on drop
 pub struct ManagedJail<J: Jail> {
@@ -44,6 +45,16 @@ impl<J: Jail> ManagedJail<J> {
         })
     }
 
+    fn ensure_canary_dir(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::geteuid() == 0 } {
+            crate::jail::ensure_trusted_root_dir(&self.canary_dir)?;
+            return Ok(());
+        }
+        fs::create_dir_all(&self.canary_dir)?;
+        Ok(())
+    }
+
     /// Public method to trigger orphan cleanup for debugging
     pub fn debug_cleanup_orphans(&self) -> Result<()> {
         self.cleanup_orphans()
@@ -53,10 +64,10 @@ impl<J: Jail> ManagedJail<J> {
     fn cleanup_orphans(&self) -> Result<()> {
         debug!("Starting orphan cleanup scan in {:?}", self.canary_dir);
 
-        // Create directory if it doesn't exist
-        if !self.canary_dir.exists() {
-            debug!("Canary directory does not exist, creating it");
-            fs::create_dir_all(&self.canary_dir).context("Failed to create canary directory")?;
+        let existed = self.canary_dir.exists();
+        self.ensure_canary_dir()
+            .context("Failed to create trusted canary directory")?;
+        if !existed {
             return Ok(());
         }
 
@@ -85,6 +96,10 @@ impl<J: Jail> ManagedJail<J> {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
+                if !valid_jail_id(jail_id) || canary_owner_alive(&path) {
+                    debug!("Skipping canary for live or invalid jail {}", jail_id);
+                    continue;
+                }
 
                 info!(
                     "Found orphaned jail '{}' (age: {:?}), cleaning up",
@@ -113,9 +128,7 @@ impl<J: Jail> ManagedJail<J> {
             return Ok(());
         }
 
-        // Create canary file first
-        self.create_canary()?;
-
+        // The canary is created once before jail setup. Never reopen it for writing.
         // Setup heartbeat thread
         let canary_path = self.canary_path.clone();
         let interval = self.heartbeat_interval;
@@ -176,13 +189,17 @@ impl<J: Jail> ManagedJail<J> {
 
     /// Create the canary file
     fn create_canary(&self) -> Result<()> {
-        // Ensure directory exists
-        if !self.canary_dir.exists() {
-            fs::create_dir_all(&self.canary_dir).context("Failed to create canary directory")?;
-        }
+        self.ensure_canary_dir()
+            .context("Failed to create trusted canary directory")?;
 
-        // Create empty canary file
-        fs::write(&self.canary_path, b"").context("Failed to create canary file")?;
+        // Record the owner so a paused heartbeat cannot cause live-jail cleanup.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.canary_path)
+            .context("Failed to create exclusive canary file")?;
+        file.write_all(std::process::id().to_string().as_bytes())
+            .context("Failed to write canary owner")?;
 
         debug!("Created canary file for jail '{}'", self.jail.jail_id());
         Ok(())
@@ -213,10 +230,8 @@ fn touch_file_mtime(path: &PathBuf) -> Result<()> {
             filetime::FileTime::from_system_time(atime),
             filetime::FileTime::from_system_time(mtime),
         )?;
-    } else {
-        // Create empty file if it doesn't exist
-        fs::write(path, b"")?;
     }
+    // A missing canary is not recreated by the heartbeat thread.
     Ok(())
 }
 
@@ -248,23 +263,28 @@ impl<J: Jail> Jail for ManagedJail<J> {
     }
 
     fn execute(&self, command: &[String], extra_env: &[(String, String)]) -> Result<ExitStatus> {
-        // Simply delegate to the inner jail
         self.jail.execute(command, extra_env)
+    }
+
+    fn execute_with_timeout(
+        &self,
+        command: &[String],
+        extra_env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<ExitStatus> {
+        self.jail.execute_with_timeout(command, extra_env, timeout)
     }
 
     fn cleanup(&self) -> Result<()> {
         // Signal the heartbeat to stop so it doesn't recreate the canary
         self.signal_stop_heartbeat();
 
-        // Cleanup the inner jail first
-        let result = self.jail.cleanup();
-
-        // Delete canary last
+        // Keep the canary if cleanup fails so a later orphan pass can retry.
+        self.jail.cleanup()?;
         if self.enable_heartbeat {
             self.delete_canary()?;
         }
-
-        result
+        Ok(())
     }
 
     fn jail_id(&self) -> &str {
@@ -298,5 +318,26 @@ impl<J: Jail> Drop for ManagedJail<J> {
                 self.jail.jail_id()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canary_creation_never_follows_an_existing_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("sentinel");
+        fs::write(&sentinel, "unchanged").unwrap();
+        let config = JailConfig::new();
+        let weak = crate::jail::weak::WeakJail::new(config.clone()).unwrap();
+        let mut jail = ManagedJail::new(weak, &config).unwrap();
+        jail.enable_heartbeat = false;
+        jail.canary_dir = dir.path().to_path_buf();
+        jail.canary_path = dir.path().join("canary");
+        std::os::unix::fs::symlink(&sentinel, &jail.canary_path).unwrap();
+        assert!(jail.create_canary().is_err());
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
     }
 }

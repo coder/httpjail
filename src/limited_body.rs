@@ -50,7 +50,7 @@ use tracing::debug;
 /// - **Within Limit**: Frames are passed through unchanged
 /// - **At Limit**: Stream terminates immediately (returns `None`)
 /// - **Exceeding Limit**: Frame is truncated to fit remaining bytes
-/// - **Non-Data Frames**: Trailers and other non-data frames pass through unchanged
+/// - **Trailers**: Charged against the remaining budget or dropped if they do not fit
 ///
 /// # Example
 ///
@@ -143,9 +143,20 @@ impl Body for LimitedBody {
                         );
                         Poll::Ready(Some(Ok(frame)))
                     }
+                } else if let Some(trailers) = frame.trailers_ref() {
+                    let trailer_size = trailers.iter().fold(2_u64, |size, (name, value)| {
+                        size.saturating_add(name.as_str().len() as u64 + value.len() as u64 + 4)
+                    });
+                    if trailer_size > self.max_bytes - self.bytes_transmitted {
+                        debug!(trailer_size, "Trailer exceeds remaining byte limit");
+                        Poll::Ready(None)
+                    } else {
+                        self.bytes_transmitted += trailer_size;
+                        Poll::Ready(Some(Ok(frame)))
+                    }
                 } else {
-                    // Non-data frame (like trailers), pass through unchanged
-                    Poll::Ready(Some(Ok(frame)))
+                    // Unknown frame types cannot be charged safely.
+                    Poll::Ready(None)
                 }
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
@@ -195,6 +206,35 @@ mod tests {
             unreachable!("Full body never produces errors")
         })
         .boxed()
+    }
+
+    struct TrailerOnly(Option<hyper::HeaderMap>);
+
+    impl Body for TrailerOnly {
+        type Data = Bytes;
+        type Error = HyperError;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, HyperError>>> {
+            Poll::Ready(self.0.take().map(|headers| Ok(Frame::trailers(headers))))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trailers_obey_byte_limit() {
+        let mut trailers = hyper::HeaderMap::new();
+        trailers.insert("x-secret", "canary".parse().unwrap());
+        let mut limited = LimitedBody::new(TrailerOnly(Some(trailers.clone())).boxed(), 5);
+        assert!(
+            limited.frame().await.is_none(),
+            "oversized trailer was forwarded"
+        );
+
+        let mut limited = LimitedBody::new(TrailerOnly(Some(trailers)).boxed(), 100);
+        let frame = limited.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_trailers().unwrap()["x-secret"], "canary");
     }
 
     #[tokio::test]

@@ -5,14 +5,43 @@ use std::time::Duration;
 use tracing::debug;
 use url::Url;
 
+const MAX_RULE_OUTPUT: usize = 64 * 1024;
+
+async fn read_bounded_output<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_RULE_OUTPUT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_RULE_OUTPUT {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Rule output exceeds 64 KiB",
+        ));
+    }
+    Ok(bytes)
+}
+
 #[derive(Clone)]
 pub struct ShellRuleEngine {
     script: String,
+    restricted: bool,
 }
 
 impl ShellRuleEngine {
     pub fn new(script: String) -> Self {
-        ShellRuleEngine { script }
+        ShellRuleEngine {
+            script,
+            restricted: false,
+        }
+    }
+
+    pub fn restricted(mut self) -> Self {
+        self.restricted = true;
+        self
     }
 
     async fn execute_script(
@@ -39,13 +68,28 @@ impl ShellRuleEngine {
         );
 
         // Build the command
-        let mut cmd = if self.script.contains(' ') {
+        let mut cmd = if self.restricted {
+            let mut cmd = tokio::process::Command::new("/usr/bin/setpriv");
+            cmd.args([
+                "--no-new-privs",
+                "--reuid=65534",
+                "--regid=65534",
+                "--clear-groups",
+                "--",
+                &self.script,
+            ]);
+            cmd
+        } else if self.script.contains(' ') {
             let mut cmd = tokio::process::Command::new("sh");
             cmd.arg("-c").arg(&self.script);
             cmd
         } else {
             tokio::process::Command::new(&self.script)
         };
+
+        if self.restricted {
+            cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+        }
 
         cmd.env("HTTPJAIL_URL", url)
             .env("HTTPJAIL_METHOD", method.as_str())
@@ -58,7 +102,7 @@ impl ShellRuleEngine {
             .kill_on_drop(true); // Ensure child is killed if dropped
 
         // Spawn the child process
-        let child = match cmd.spawn() {
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 debug!("Failed to spawn script: {}", e);
@@ -66,25 +110,34 @@ impl ShellRuleEngine {
             }
         };
 
-        // Wait for completion with timeout
+        // Drain both pipes concurrently, but fail as soon as either exceeds the
+        // limit. wait_with_output would buffer an unbounded stream until timeout.
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let output = async {
+            let (stdout, stderr) =
+                tokio::try_join!(read_bounded_output(stdout), read_bounded_output(stderr))?;
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>((status, stdout, stderr))
+        };
         let timeout = Duration::from_secs(30);
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        match tokio::time::timeout(timeout, output).await {
+            Ok(Ok((status, stdout, stderr))) => {
+                let stdout = String::from_utf8_lossy(&stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
 
                 if !stderr.is_empty() {
                     debug!("Script stderr: {}", stderr);
                 }
 
-                let allowed = output.status.success();
+                let allowed = status.success();
 
                 debug!(
                     "Script returned {} for {} {} (exit code: {:?})",
                     if allowed { "ALLOW" } else { "DENY" },
                     method,
                     url,
-                    output.status.code()
+                    status.code()
                 );
 
                 (allowed, stdout)
@@ -135,6 +188,28 @@ mod tests {
     use crate::rules::Action;
     use std::fs;
     use tempfile::NamedTempFile;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_restricted_rule_runs_without_root() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let engine = ShellRuleEngine::new("/usr/bin/id".to_string()).restricted();
+        let (allowed, stdout) = engine
+            .execute_script(Method::GET, "https://example.invalid/", "127.0.0.1")
+            .await;
+        assert!(allowed, "{stdout}");
+        assert!(stdout.contains("uid=65534"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn unbounded_rule_output_is_rejected() {
+        let error = read_bounded_output(tokio::io::repeat(b'x'))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[tokio::test]
     async fn test_script_allow() {

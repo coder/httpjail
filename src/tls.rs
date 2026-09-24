@@ -3,7 +3,8 @@ use camino::Utf8PathBuf;
 use lru::LruCache;
 use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -13,6 +14,29 @@ use tracing::{debug, info};
 
 #[cfg(target_os = "macos")]
 use crate::macos_keychain::KeychainManager;
+
+fn default_ca_dir() -> Result<Utf8PathBuf> {
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() == 0 } {
+        let dir = std::path::Path::new("/var/lib/httpjail/ca");
+        crate::jail::ensure_trusted_root_dir(dir)?;
+        // The signing key remains 0600, but jailed clients must traverse these
+        // trusted directories to read the public certificate.
+        use std::os::unix::fs::PermissionsExt;
+        for public_dir in [dir.parent().expect("CA parent"), dir] {
+            std::fs::set_permissions(public_dir, std::fs::Permissions::from_mode(0o755))?;
+        }
+        return dir
+            .to_path_buf()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid CA directory path"));
+    }
+    dirs::config_dir()
+        .context("Could not find user config directory")?
+        .join("httpjail")
+        .try_into()
+        .context("Config directory path is not valid UTF-8")
+}
 
 const CERT_CACHE_SIZE: usize = 1024;
 
@@ -41,15 +65,38 @@ impl CertificateManager {
         let config_dir = if let Some(dir) = config_dir {
             dir.clone()
         } else {
-            dirs::config_dir()
-                .context("Could not find user config directory")?
-                .join("httpjail")
-                .try_into()
-                .context("Config directory path is not valid UTF-8")?
+            default_ca_dir()?
         };
 
         // Create directory if it doesn't exist
         fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
+
+        #[cfg(target_os = "linux")]
+        let _ca_lock = if unsafe { libc::geteuid() == 0 } {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Concurrent strong jails must not see a half-written cert/key pair.
+            let lock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(config_dir.join(".ca.lock"))?;
+            use std::os::unix::fs::MetadataExt;
+            let metadata = lock.metadata()?;
+            anyhow::ensure!(
+                metadata.is_file() && metadata.uid() == 0,
+                "CA lock must be root-owned and regular"
+            );
+            anyhow::ensure!(
+                unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == 0,
+                "Failed to lock CA directory"
+            );
+            Some(lock)
+        } else {
+            None
+        };
 
         let ca_cert_path = config_dir.join("ca-cert.pem");
         let ca_key_path = config_dir.join("ca-key.pem");
@@ -58,8 +105,54 @@ impl CertificateManager {
         if ca_cert_path.exists() && ca_key_path.exists() {
             debug!("Loading cached CA certificate from {:?}", ca_cert_path);
 
+            #[cfg(target_os = "linux")]
+            let _cert_pem = if unsafe { libc::geteuid() == 0 } {
+                use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+                let mut cert = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&ca_cert_path)
+                    .context("Failed to open public CA certificate")?;
+                let metadata = cert.metadata()?;
+                anyhow::ensure!(
+                    metadata.is_file() && metadata.uid() == 0,
+                    "CA certificate must be root-owned and regular"
+                );
+                cert.set_permissions(fs::Permissions::from_mode(0o644))?;
+                let mut pem = String::new();
+                cert.read_to_string(&mut pem)?;
+                pem
+            } else {
+                fs::read_to_string(&ca_cert_path).context("Failed to read CA certificate")?
+            };
+            #[cfg(not(target_os = "linux"))]
             let _cert_pem =
                 fs::read_to_string(&ca_cert_path).context("Failed to read CA certificate")?;
+            #[cfg(unix)]
+            let key_pem = {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                let mut key = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&ca_key_path)
+                    .context("Failed to open CA key")?;
+                let metadata = key.metadata()?;
+                anyhow::ensure!(metadata.is_file(), "CA key must be a regular file");
+                #[cfg(target_os = "linux")]
+                if unsafe { libc::geteuid() == 0 } {
+                    use std::os::unix::fs::MetadataExt;
+                    anyhow::ensure!(metadata.uid() == 0, "Privileged CA key must be root-owned");
+                }
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    key.set_permissions(fs::Permissions::from_mode(0o600))
+                        .context("Failed to restrict existing CA key permissions")?;
+                }
+                let mut pem = String::new();
+                key.read_to_string(&mut pem)
+                    .context("Failed to read CA key")?;
+                pem
+            };
+            #[cfg(not(unix))]
             let key_pem = fs::read_to_string(&ca_key_path).context("Failed to read CA key")?;
 
             // Parse the PEM files
@@ -117,18 +210,32 @@ impl CertificateManager {
             .self_signed(&ca_key_pair)
             .context("Failed to generate CA certificate")?;
 
-        // Save to disk
-        fs::write(&ca_cert_path, ca_cert.pem()).context("Failed to write CA certificate")?;
-        fs::write(&ca_key_path, ca_key_pair.serialize_pem()).context("Failed to write CA key")?;
-
-        // Set permissions to 600 (read/write for owner only)
+        // Never follow a preexisting cert symlink into an unrelated root-owned file.
+        let mut cert_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ca_cert_path)
+            .context("Failed to create exclusive CA certificate")?;
+        cert_file
+            .write_all(ca_cert.pem().as_bytes())
+            .context("Failed to write CA certificate")?;
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::geteuid() == 0 } {
+            use std::os::unix::fs::PermissionsExt;
+            cert_file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        }
+        // Restrict permissions at creation, before any private-key bytes are written.
+        let mut key_file = OpenOptions::new();
+        key_file.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&ca_key_path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&ca_key_path, perms)?;
+            use std::os::unix::fs::OpenOptionsExt;
+            key_file.mode(0o600);
         }
+        key_file
+            .open(&ca_key_path)
+            .and_then(|mut file| file.write_all(ca_key_pair.serialize_pem().as_bytes()))
+            .context("Failed to write CA key")?;
 
         info!("Saved new CA certificate to {}", ca_cert_path);
 
@@ -298,13 +405,7 @@ impl CertificateManager {
 
     /// Get the path to the CA certificate file
     pub fn get_ca_cert_path() -> Result<Utf8PathBuf> {
-        let config_dir = dirs::config_dir()
-            .context("Could not find user config directory")?
-            .join("httpjail");
-        let config_dir: Utf8PathBuf = config_dir
-            .try_into()
-            .context("Config directory path is not valid UTF-8")?;
-        Ok(config_dir.join("ca-cert.pem"))
+        Ok(default_ca_dir()?.join("ca-cert.pem"))
     }
 
     /// Generate environment variables for common tools to use the CA certificate
@@ -312,6 +413,14 @@ impl CertificateManager {
         // Try multiple possible locations for the CA certificate
         // This handles cases where the effective user changes (e.g., sudo in CI)
         let mut ca_path = Self::get_ca_cert_path()?;
+
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::geteuid() == 0 } {
+            anyhow::ensure!(
+                ca_path.exists(),
+                "Privileged CA certificate missing from trusted root directory"
+            );
+        }
 
         if !ca_path.exists() {
             // If not found in current user's config, check common locations
@@ -371,5 +480,42 @@ impl CertificateManager {
         ];
 
         Ok(env_vars)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ca_creation_refuses_preexisting_cert_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Utf8PathBuf::from_path_buf(dir.path().join("ca")).unwrap();
+        fs::create_dir(&config).unwrap();
+        let sentinel = dir.path().join("sentinel");
+        fs::write(&sentinel, "unchanged").unwrap();
+        std::os::unix::fs::symlink(&sentinel, config.join("ca-cert.pem")).unwrap();
+        assert!(CertificateManager::load_or_generate_ca_with_dir(Some(&config)).is_err());
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+    }
+
+    #[test]
+    fn ca_key_is_private_on_creation_and_cached_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Utf8PathBuf::from_path_buf(dir.path().join("ca")).unwrap();
+        CertificateManager::load_or_generate_ca_with_dir(Some(&config)).unwrap();
+        let key = config.join("ca-key.pem");
+        assert_eq!(
+            fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        CertificateManager::load_or_generate_ca_with_dir(Some(&config)).unwrap();
+        assert_eq!(
+            fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

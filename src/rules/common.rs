@@ -117,7 +117,7 @@ impl RuleResponse {
 
     /// Convert to evaluation result tuple (allowed, context, max_tx_bytes)
     /// Following the rules:
-    /// - If deny_message exists but allow is not set, default to deny
+    /// - Only an explicit allow policy permits traffic; a missing policy denies
     /// - Only include context message when denying
     /// - max_tx_bytes is returned when allow policy has a byte limit
     pub fn to_evaluation_result(&self) -> (bool, Option<String>, Option<u64>) {
@@ -125,15 +125,7 @@ impl RuleResponse {
             Some(AllowPolicy::Bool(true)) => (true, None, None),
             Some(AllowPolicy::Bool(false)) => (false, self.deny_message.clone(), None),
             Some(AllowPolicy::Limited { max_tx_bytes }) => (true, None, Some(*max_tx_bytes)),
-            None => {
-                // If allow is not specified but deny_message exists, default to deny
-                let allowed = self.deny_message.is_none();
-                if allowed {
-                    (true, None, None)
-                } else {
-                    (false, self.deny_message.clone(), None)
-                }
-            }
+            None => (false, self.deny_message.clone(), None),
         }
     }
 }
@@ -224,12 +216,9 @@ mod tests {
             (false, Some("blocked".to_string()), None)
         );
 
-        // Neither field set (defaults to allow)
-        let resp = RuleResponse {
-            allow: None,
-            deny_message: None,
-        };
-        assert_eq!(resp.to_evaluation_result(), (true, None, None));
+        // An empty object must not silently bypass the default-deny policy.
+        let resp = RuleResponse::from_string("{}");
+        assert_eq!(resp.to_evaluation_result(), (false, None, None));
     }
 
     #[test]

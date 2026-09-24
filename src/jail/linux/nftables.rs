@@ -73,7 +73,7 @@ table ip {table_name} {{
 
         // Apply the ruleset atomically
         use std::io::Write;
-        let mut child = Command::new("nft")
+        let mut child = Command::new("/usr/sbin/nft")
             .arg("-f")
             .arg("-")
             .stdin(std::process::Stdio::piped())
@@ -159,6 +159,14 @@ table ip {table_name} {{
         ip protocol tcp drop
     }}
 }}
+
+# IPv6 link-local addresses on veth pairs must not reach host services.
+table ip6 httpjail6 {{
+    chain outfilter {{
+        type filter hook output priority 0; policy drop;
+        oifname "lo" accept
+    }}
+}}
 "#,
             table_name = table_name,
             host_ip = host_ip,
@@ -172,8 +180,8 @@ table ip {table_name} {{
         );
 
         // Execute nft within the namespace
-        let mut child = Command::new("ip")
-            .args(["netns", "exec", namespace, "nft", "-f", "-"])
+        let mut child = Command::new("/usr/sbin/ip")
+            .args(["netns", "exec", namespace, "/usr/sbin/nft", "-f", "-"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -209,22 +217,53 @@ table ip {table_name} {{
     }
 
     /// Remove the nftables table
-    fn remove(&mut self) -> Result<()> {
+    pub(super) fn remove(&mut self) -> Result<()> {
         if !self.created {
             return Ok(());
         }
 
+        if let Some(ref namespace) = self.namespace {
+            let output = Command::new("/usr/sbin/ip")
+                .args([
+                    "netns",
+                    "exec",
+                    namespace,
+                    "/usr/sbin/nft",
+                    "delete",
+                    "table",
+                    "ip6",
+                    "httpjail6",
+                ])
+                .output()
+                .context("Failed to delete IPv6 nftables table in namespace")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.contains("No such file or directory")
+                    && !stderr.contains("does not exist")
+                {
+                    anyhow::bail!("Failed to remove IPv6 table: {}", stderr);
+                }
+            }
+        }
+
         let output = if let Some(ref namespace) = self.namespace {
             // Delete table in namespace
-            Command::new("ip")
+            Command::new("/usr/sbin/ip")
                 .args([
-                    "netns", "exec", namespace, "nft", "delete", "table", "ip", &self.name,
+                    "netns",
+                    "exec",
+                    namespace,
+                    "/usr/sbin/nft",
+                    "delete",
+                    "table",
+                    "ip",
+                    &self.name,
                 ])
                 .output()
                 .context("Failed to execute nft delete in namespace")?
         } else {
             // Delete table on host
-            Command::new("nft")
+            Command::new("/usr/sbin/nft")
                 .args(["delete", "table", "ip", &self.name])
                 .output()
                 .context("Failed to execute nft delete")?
@@ -234,8 +273,7 @@ table ip {table_name} {{
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Ignore if table doesn't exist (already removed)
             if !stderr.contains("No such file or directory") && !stderr.contains("does not exist") {
-                // Log but don't fail - best effort cleanup
-                debug!("Failed to remove nftables table {}: {}", self.name, stderr);
+                anyhow::bail!("Failed to remove nftables table {}: {}", self.name, stderr);
             }
         } else {
             debug!("Removed nftables table: {}", self.name);

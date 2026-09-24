@@ -113,6 +113,12 @@ fi
 ```
 
 ```bash
+# Linux strong mode: keep policies and their parent dirs outside the jailed user's write access.
+sudo install -d -m 755 /etc/httpjail
+sudo install -o root -g root -m 755 check.sh /etc/httpjail/check.sh
+sudo httpjail --sh /etc/httpjail/check.sh -- git clone https://github.com/user/repo.git
+
+# macOS/weak mode: environment-only proxying (not a hard isolation boundary)
 chmod +x check.sh
 httpjail --sh ./check.sh -- git clone https://github.com/user/repo.git
 ```

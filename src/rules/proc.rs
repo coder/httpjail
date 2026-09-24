@@ -11,9 +11,41 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(bytes.len());
+        }
+        let end = chunk
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(chunk.len(), |pos| pos + 1);
+        let copy = end.min(MAX_RESPONSE_BYTES + 1 - bytes.len());
+        let complete = chunk[copy - 1] == b'\n';
+        bytes.extend_from_slice(&chunk[..copy]);
+        reader.consume(copy);
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Program response exceeds 64 KiB",
+            ));
+        }
+        if complete {
+            return Ok(bytes.len());
+        }
+    }
+}
+
 pub struct ProcRuleEngine {
     program: String,
     process: Arc<Mutex<Option<ProcessState>>>,
+    restricted: bool,
 }
 
 /// State for a running process
@@ -29,7 +61,13 @@ impl ProcRuleEngine {
         ProcRuleEngine {
             program,
             process: Arc::new(Mutex::new(None)),
+            restricted: false,
         }
+    }
+
+    pub fn restricted(mut self) -> Self {
+        self.restricted = true;
+        self
     }
 
     /// Explicitly kill a process by taking ownership and dropping it
@@ -72,7 +110,23 @@ impl ProcRuleEngine {
         if process_guard.is_none() {
             debug!("Starting program process: {}", self.program);
 
-            let mut cmd = Command::new(&self.program);
+            let mut cmd = if self.restricted {
+                let mut cmd = Command::new("/usr/bin/setpriv");
+                cmd.args([
+                    "--no-new-privs",
+                    "--reuid=65534",
+                    "--regid=65534",
+                    "--clear-groups",
+                    "--",
+                    &self.program,
+                ]);
+                cmd
+            } else {
+                Command::new(&self.program)
+            };
+            if self.restricted {
+                cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+            }
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -119,29 +173,40 @@ impl ProcRuleEngine {
         let mut request_line = json_request.to_string();
         request_line.push('\n');
 
-        if let Err(e) = process_state.stdin.write_all(request_line.as_bytes()).await {
-            error!("Failed to write to program stdin: {}", e);
-            if let Some(state) = process_guard.take() {
-                Self::kill_process(state);
-            }
-            return Err("Failed to write to program".to_string());
-        }
-
-        if let Err(e) = process_state.stdin.flush().await {
-            error!("Failed to flush stdin: {}", e);
-            if let Some(state) = process_guard.take() {
-                Self::kill_process(state);
-            }
-            return Err("Failed to flush stdin".to_string());
-        }
-
-        // Read response with timeout
         let timeout = Duration::from_secs(5);
-        let mut response_line = String::new();
-
-        match tokio::time::timeout(timeout, process_state.stdout.read_line(&mut response_line))
-            .await
+        // A stopped processor can fill its stdin pipe before we start the
+        // response timeout. Bound writes and flushes by the same deadline.
+        match tokio::time::timeout(timeout, async {
+            process_state
+                .stdin
+                .write_all(request_line.as_bytes())
+                .await?;
+            process_state.stdin.flush().await
+        })
+        .await
         {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                error!("Failed to write to program stdin: {}", e);
+                if let Some(state) = process_guard.take() {
+                    Self::kill_process(state);
+                }
+                return Err("Failed to write to program".to_string());
+            }
+            Err(_) => {
+                warn!("Program stdin timeout after {:?}", timeout);
+                if let Some(state) = process_guard.take() {
+                    Self::kill_process(state);
+                }
+                return Err("Program stdin timeout".to_string());
+            }
+        }
+
+        // Bound both wait time and memory even when the processor never sends a newline.
+        let mut response_bytes = Vec::new();
+        let read = read_bounded_line(&mut process_state.stdout, &mut response_bytes);
+
+        match tokio::time::timeout(timeout, read).await {
             Ok(Ok(0)) => {
                 // EOF - process exited
                 warn!("Program closed stdout unexpectedly");
@@ -151,6 +216,7 @@ impl ProcRuleEngine {
                 Err("Program closed unexpectedly".to_string())
             }
             Ok(Ok(_)) => {
+                let response_line = String::from_utf8_lossy(&response_bytes);
                 let response = response_line.trim();
                 debug!("Program response: {}", response);
 
@@ -247,6 +313,12 @@ impl ProcRuleEngine {
                 }
                 Err(e) => {
                     debug!("Request failed: {}", e);
+                    if e == "Program stdin timeout" || e == "Program response timeout" {
+                        // An unresponsive processor must not hold the shared mutex
+                        // through another full timeout for the same request.
+                        return EvaluationResult::deny()
+                            .with_context("Program evaluation timed out".to_string());
+                    }
                     if attempt == 0 {
                         debug!("Retrying with fresh process");
                         // Process will be restarted on next iteration by send_request_to_process
@@ -289,6 +361,25 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::{NamedTempFile, TempPath};
+
+    #[tokio::test]
+    async fn unterminated_processor_response_is_bounded() {
+        let mut reader = BufReader::new(tokio::io::repeat(b'x'));
+        let mut bytes = Vec::new();
+        let error = read_bounded_line(&mut reader, &mut bytes)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(bytes.len(), MAX_RESPONSE_BYTES + 1);
+
+        let mut reader = BufReader::new(&b"true\nfalse\n"[..]);
+        bytes.clear();
+        read_bounded_line(&mut reader, &mut bytes).await.unwrap();
+        assert_eq!(bytes, b"true\n");
+        bytes.clear();
+        read_bounded_line(&mut reader, &mut bytes).await.unwrap();
+        assert_eq!(bytes, b"false\n");
+    }
 
     /// Helper function to create an executable program file with the given content
     fn create_program_file(content: &str) -> TempPath {

@@ -59,6 +59,20 @@ async fn test_js_file_reload() {
     let _ = fs::remove_file(&file_path);
 }
 
+#[tokio::test]
+async fn test_frozen_rule_ignores_child_file_edits() {
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), "false").unwrap();
+    // Command mode reads the initial file but does not pass a reload path.
+    let engine =
+        V8JsRuleEngine::new_with_file(fs::read_to_string(file.path()).unwrap(), None).unwrap();
+    fs::write(file.path(), "true").unwrap();
+    let result = engine
+        .evaluate(Method::GET, "https://example.invalid/", "127.0.0.1")
+        .await;
+    assert!(matches!(result.action, httpjail::rules::Action::Deny));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_js_file_reload_syntax_error() {
     // Create a temporary JS file and persist it
