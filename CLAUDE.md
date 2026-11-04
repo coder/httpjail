@@ -227,7 +227,7 @@ To find comment IDs, use:
 ```bash
 # Set up a fresh workspace for your branch
 BRANCH_NAME="your-branch-name"
-gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail --tunnel-through-iap -- "
   rm -rf /tmp/httpjail-$BRANCH_NAME
   git clone https://github.com/coder/httpjail /tmp/httpjail-$BRANCH_NAME
   cd /tmp/httpjail-$BRANCH_NAME
@@ -235,15 +235,15 @@ gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- 
 "
 
 # Sync individual files during debugging (preferred over commits)
-gcloud compute scp src/rules/proc.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/src/rules/ --zone us-central1-f --project httpjail
-gcloud compute scp tests/json_parity.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/tests/ --zone us-central1-f --project httpjail
+gcloud compute scp src/rules/proc.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/src/rules/ --zone us-central1-f --project httpjail --tunnel-through-iap
+gcloud compute scp tests/json_parity.rs root@ci-1:/tmp/httpjail-$BRANCH_NAME/tests/ --zone us-central1-f --project httpjail --tunnel-through-iap
 
 # Or sync entire directories if many files changed
-gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
-gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail
+gcloud compute scp --recurse src/ root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail --tunnel-through-iap
+gcloud compute scp Cargo.toml root@ci-1:/tmp/httpjail-$BRANCH_NAME/ --zone us-central1-f --project httpjail --tunnel-through-iap
 
 # Build and test in the isolated workspace (using shared cargo cache)
-gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "
+gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail --tunnel-through-iap -- "
   cd /tmp/httpjail-$BRANCH_NAME
   export CARGO_HOME=/home/ci/.cargo
   /home/ci/.cargo/bin/cargo build --profile fast
