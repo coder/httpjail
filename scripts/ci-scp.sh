@@ -25,7 +25,7 @@ if [[ "$SOURCE" == *"ci-1:"* ]]; then
     gcloud compute scp --quiet --recurse \
         "root@ci-1:$SOURCE_PATH" \
         "$DEST" \
-        --zone us-central1-f --project httpjail
+        --zone us-central1-f --project httpjail --tunnel-through-iap
 else
     # Uploading to CI-1
     # If destination doesn't start with root@ci-1:, prepend it
@@ -36,5 +36,5 @@ else
     gcloud compute scp --quiet --recurse \
         "$SOURCE" \
         "$DEST" \
-        --zone us-central1-f --project httpjail
+        --zone us-central1-f --project httpjail --tunnel-through-iap
 fi

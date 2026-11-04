@@ -5,8 +5,8 @@ set -e
 
 if [ $# -eq 0 ]; then
     echo "Connecting to CI-1 instance (interactive)..."
-    gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail
+    gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail --tunnel-through-iap
 else
     # Execute command remotely
-    gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail -- "$@"
+    gcloud --quiet compute ssh root@ci-1 --zone us-central1-f --project httpjail --tunnel-through-iap -- "$@"
 fi
