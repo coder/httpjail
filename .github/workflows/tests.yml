@@ -40,6 +40,11 @@ jobs:
 
   test-linux:
     name: Linux Tests
+    # ci-1 is a persistent VM (jobs share the host, the cargo home and sudo), so it only runs code
+    # from this repository: pushes, releases, dispatches and pull requests from branches here.
+    # Pull requests from forks skip this job; to run these tests for one, push its branch to this
+    # repository.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux]
 
     steps:

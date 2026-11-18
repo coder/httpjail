@@ -13,7 +13,8 @@ jobs:
   tests:
     uses: ./.github/workflows/tests.yml
 
-  # Build binaries for different platforms
+  # Build binaries for different platforms. This job and the release job build from a clean
+  # state: they restore no caches, so nothing another run saved can end up in a release.
   build-binaries:
     name: Build ${{ matrix.target }}
     needs: tests
@@ -35,18 +36,13 @@ jobs:
             name: macos-aarch64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ matrix.target }}
 
       - name: Install cross-compilation tools for ARM64 Linux
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -88,7 +84,7 @@ jobs:
           echo "ASSET_NAME=httpjail-${VERSION}-${{ matrix.name }}.tar.gz" >> $GITHUB_ENV
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: binary-${{ matrix.name }}
           path: ${{ env.ASSET_PATH }}
@@ -104,7 +100,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # Need full history for changelog
 
@@ -120,14 +116,9 @@ jobs:
           fi
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}
 
       - name: Verify version matches tag
         if: steps.check_test.outputs.is_test == 'false'
@@ -150,7 +141,7 @@ jobs:
           echo "Version check passed!"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
@@ -209,7 +200,7 @@ jobs:
           echo "PREVIOUS_TAG=$PREVIOUS_TAG" >> $GITHUB_ENV
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           body_path: artifacts/RELEASE_NOTES.md
           files: artifacts/**/*.tar.gz
